@@ -189,7 +189,17 @@ def open_github_pr(worktree_path: Path, task: Task) -> None:
 
     The conductor (harness) opens the PR as a handoff; it never merges. Only a
     human merges to main. Failures here are non-fatal — the branch still exists.
+
+    Gated on ANORYX_PUSH=1. Default (unset) does NOT touch the remote — it just
+    reports the READY handoff so a local run never pushes to the shared repo.
     """
+    if os.environ.get("ANORYX_PUSH") != "1":
+        print(
+            f"[push disabled] gate READY for {task.id}. Set ANORYX_PUSH=1 to push "
+            f"branch task/{task.id} + open a draft PR. Review worktree: {worktree_path}"
+        )
+        return
+
     branch = f"task/{task.id}"
     subprocess.run(
         ["git", "-C", str(worktree_path), "push", "-u", "origin", branch],
