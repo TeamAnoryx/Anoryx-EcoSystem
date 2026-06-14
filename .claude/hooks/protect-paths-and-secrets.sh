@@ -5,17 +5,17 @@
 set -euo pipefail
 INPUT=$(cat)
 
-FILEPATH=$(echo "$INPUT" | python3 -c \
+FILEPATH=$(echo "$INPUT" | python -c \
   "import sys,json; d=json.load(sys.stdin)
 t=d.get('tool_input',{})
 print(t.get('path', t.get('file_path', t.get('new_path',''))))" 2>/dev/null || echo "")
 
-CONTENT=$(echo "$INPUT" | python3 -c \
+CONTENT=$(echo "$INPUT" | python -c \
   "import sys,json; d=json.load(sys.stdin)
 t=d.get('tool_input',{})
 print(t.get('content', t.get('new_string','')))" 2>/dev/null || echo "")
 
-AGENT=$(echo "$INPUT" | python3 -c \
+AGENT=$(echo "$INPUT" | python -c \
   "import sys,json; d=json.load(sys.stdin); print(d.get('agent_id',''))" 2>/dev/null || echo "")
 
 # BLOCK: Anoryx-Sentinel/contracts/ — only api-architect may edit

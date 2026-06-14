@@ -4,7 +4,7 @@
 
 set -euo pipefail
 INPUT=$(cat)
-FILEPATH=$(echo "$INPUT" | python3 -c \
+FILEPATH=$(echo "$INPUT" | python -c \
   "import sys,json; d=json.load(sys.stdin)
 t=d.get('tool_input',{})
 print(t.get('path', t.get('file_path','')))" 2>/dev/null || echo "")
@@ -39,7 +39,7 @@ if command -v semgrep &>/dev/null; then
 fi
 
 if [ -n "$FEEDBACK" ]; then
-  python3 -c "import json,sys; print(json.dumps({'additionalContext': sys.argv[1]}))" \
+  python -c "import json,sys; print(json.dumps({'additionalContext': sys.argv[1]}))" \
     "Post-write checks on $FILEPATH: $FEEDBACK"
 fi
 exit 0

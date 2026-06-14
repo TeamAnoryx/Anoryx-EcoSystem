@@ -5,7 +5,7 @@ set -euo pipefail
 TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 mkdir -p Anoryx-Sentinel/orchestrator
 
-python3 -c "
+python -c "
 import json, sys, select
 raw = sys.stdin.read() if select.select([sys.stdin],[],[],0.1)[0] else '{}'
 try: data = json.loads(raw)
