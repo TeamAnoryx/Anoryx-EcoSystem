@@ -1,0 +1,16 @@
+openapi: "3.1.0"
+info:
+  title: Anoryx Sentinel API
+  version: "0.1.0-stub"
+  description: |
+    Zero-trust AI gateway. OpenAI-compatible surface.
+    SINGLE SOURCE OF TRUTH for all Sentinel API surfaces.
+    ONLY the api-architect agent may edit this file (protect-paths hook enforces this).
+    Every builder agent CONFORMS to this file — never invents endpoints.
+servers:
+  - url: https://sentinel.anoryx.io/v1
+    description: Production
+  - url: http://localhost:8000/v1
+    description: Local development
+paths: {}
+# Phase 0: api-architect defines all paths.

@@ -1,0 +1,30 @@
+tasks:
+  - id: "F-001"
+    title: "Define the OpenAI-compatible API contract"
+    description: |
+      Design and write the complete OpenAI-compatible API surface in
+      Anoryx-Sentinel/contracts/openapi.yaml.
+      Include: POST /v1/chat/completions, POST /v1/completions, GET /v1/models.
+      Add: virtual API key Bearer auth scheme, standard error shapes
+      { error_code, message, request_id }, rate-limit response headers.
+      All four stable IDs from contracts/ids.md must appear in request context.
+      Write Anoryx-Sentinel/docs/adr/0002-openai-compatible-surface.md.
+    klass: architecture
+    builder_agent: api-architect
+    phase: 0
+    depends_on: []
+
+  - id: "F-002"
+    title: "Define the event and policy schemas"
+    description: |
+      Fill Anoryx-Sentinel/contracts/events.schema.json with all event types:
+        usage, pii_blocked, injection_detected, secret_leaked,
+        policy_violated, compliance_checked, shadow_ai_detected.
+      Each must carry all four stable IDs from contracts/ids.md.
+      Fill Anoryx-Sentinel/contracts/policy.schema.json with full policy intake
+      structure that Delta will push: budget_limit, model_allowlist, model_denylist.
+      Both must be valid JSON Schema Draft 2020-12.
+    klass: architecture
+    builder_agent: api-architect
+    phase: 0
+    depends_on: []
