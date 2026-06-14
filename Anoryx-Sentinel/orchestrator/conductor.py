@@ -10,6 +10,7 @@ task's worktree so file operations land in the isolated checkout.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -87,6 +88,9 @@ async def query_agent(
         allowed_tools=_ALLOWED_TOOLS,
         agents={name: agent_def},
         permission_mode="acceptEdits",
+        # Surface the active agent name to the protect-paths hook, which gates
+        # contracts/ edits on identity that Claude Code's hook payload omits.
+        env={**os.environ, "ANORYX_ACTIVE_AGENT": name},
     )
 
     result: ResultMessage | None = None

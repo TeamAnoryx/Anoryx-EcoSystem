@@ -15,8 +15,13 @@ CONTENT=$(echo "$INPUT" | python -c \
 t=d.get('tool_input',{})
 print(t.get('content', t.get('new_string','')))" 2>/dev/null || echo "")
 
-AGENT=$(echo "$INPUT" | python -c \
-  "import sys,json; d=json.load(sys.stdin); print(d.get('agent_id',''))" 2>/dev/null || echo "")
+# Agent identity comes from the conductor via env (Claude Code hook payloads
+# carry no agent_id). Fall back to a JSON agent_id field if present.
+AGENT="${ANORYX_ACTIVE_AGENT:-}"
+if [ -z "$AGENT" ]; then
+  AGENT=$(echo "$INPUT" | python -c \
+    "import sys,json; d=json.load(sys.stdin); print(d.get('agent_id',''))" 2>/dev/null || echo "")
+fi
 
 # BLOCK: Anoryx-Sentinel/contracts/ — only api-architect may edit
 if echo "$FILEPATH" | grep -qE 'Anoryx-Sentinel/contracts/'; then
