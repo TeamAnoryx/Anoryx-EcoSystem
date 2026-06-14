@@ -1,0 +1,37 @@
+{
+  "permissions": { "defaultMode": "default" },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command",
+                    "command": "bash .claude/hooks/block-dangerous-bash.sh",
+                    "timeout": 10 }]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [{ "type": "command",
+                    "command": "bash .claude/hooks/protect-paths-and-secrets.sh",
+                    "timeout": 10 }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [{ "type": "command",
+                    "command": "bash .claude/hooks/format-lint-sast.sh",
+                    "timeout": 60 }]
+      }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command",
+                    "command": "bash .claude/hooks/tests-must-pass.sh",
+                    "timeout": 120 }] }
+    ],
+    "SubagentStop": [
+      { "hooks": [{ "type": "command",
+                    "command": "bash .claude/hooks/record-scorecard.sh",
+                    "timeout": 10 }] }
+    ]
+  }
+}
