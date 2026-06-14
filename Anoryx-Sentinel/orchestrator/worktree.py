@@ -8,6 +8,7 @@ anchored to the monorepo root explicitly.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -40,9 +41,61 @@ def _git(*args: str, cwd: Path = _MONOREPO_ROOT) -> subprocess.CompletedProcess[
     return result
 
 
-def make_worktree(task_id: str) -> Path:
-    """Create worktrees/<task_id> on a fresh branch task/<task_id>; return its path."""
+def _branch_exists(task_id: str) -> bool:
+    """True if local branch task/<task_id> exists. Never raises."""
+    result = subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/task/{task_id}"],
+        cwd=str(_MONOREPO_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def _cleanup_stale(task_id: str) -> None:
+    """Force-remove any leftover worktree, branch, or metadata from a prior run.
+
+    Every step is best-effort: a wedged-but-partial state from a crashed run
+    must never block a fresh `git worktree add`. Nothing here raises.
+    """
     target = WORKTREES_DIR / task_id
+
+    # 1. Worktree directory: try a clean git removal, else force-delete the dir.
+    if target.exists():
+        try:
+            _git("worktree", "remove", str(target), "--force")
+        except Exception:
+            shutil.rmtree(target, ignore_errors=True)
+
+    # Drop dangling worktree registrations regardless of the above.
+    try:
+        _git("worktree", "prune")
+    except Exception:
+        pass
+
+    # 2. Stale branch.
+    if _branch_exists(task_id):
+        try:
+            _git("branch", "-D", f"task/{task_id}")
+        except Exception:
+            pass
+
+    # 3. Lingering .git/worktrees/<task_id> metadata dir.
+    meta = _MONOREPO_ROOT / ".git" / "worktrees" / task_id
+    if meta.exists():
+        shutil.rmtree(meta, ignore_errors=True)
+
+
+def make_worktree(task_id: str) -> Path:
+    """Create worktrees/<task_id> on branch task/<task_id>; return its path.
+
+    Idempotent / self-healing: any leftover worktree, branch, or metadata from
+    a prior crashed run is force-removed first, so a rerun never collides with
+    `fatal: a branch named 'task/<id>' already exists`. The final add uses the
+    hardened _git so a genuine failure still surfaces git's real stderr.
+    """
+    target = WORKTREES_DIR / task_id
+    _cleanup_stale(task_id)
     _git("worktree", "add", str(target), "-b", f"task/{task_id}")
     return target
 

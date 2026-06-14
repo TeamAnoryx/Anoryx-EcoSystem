@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -35,6 +36,27 @@ _AGENTS_DIR = _MONOREPO_ROOT / ".claude" / "agents"
 # Tools the harness auto-approves at the top query() level. "Agent" must be
 # present so subagent invocations do not block on a permission prompt.
 _ALLOWED_TOOLS = ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "Agent"]
+
+# Same ledger the quartermaster writes successful runs to; SDK failures land
+# here too so a crashed run leaves a durable forensic row before it propagates.
+_LEDGER_PATH = Path(__file__).resolve().parent / "ledger.jsonl"
+
+
+def _log_sdk_failure(agent_name: str, task_id: str | None, exc: Exception) -> None:
+    """Append a failed-run row to ledger.jsonl. Never raises (logging must not
+    mask the original SDK exception)."""
+    row = {
+        "event": "sdk_failure",
+        "agent": agent_name,
+        "task_id": task_id,
+        "error": repr(exc),
+    }
+    try:
+        _LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _LEDGER_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row) + "\n")
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -72,11 +94,17 @@ async def query_agent(
     prompt: str,
     model: str | None = None,
     cwd: str | None = None,
+    task_id: str | None = None,
 ) -> ResultMessage | None:
     """Run a single agent via the Agent SDK and return its ResultMessage.
 
     `name` must match a file in .claude/agents/. `model` overrides the agent's
     declared model. `cwd` sets the working directory (the task worktree).
+    `task_id` is used only for failure-logging context.
+
+    Any exception from the SDK is logged to ledger.jsonl as a failed-run row,
+    then re-raised with the agent + task context attached, so a crash inside
+    one agent is never swallowed silently.
     """
     agent_def = _load_agent_definition(name)
     if model:
@@ -94,12 +122,18 @@ async def query_agent(
     )
 
     result: ResultMessage | None = None
-    async for message in query(
-        prompt=f"Use the {name} agent to: {prompt}",
-        options=options,
-    ):
-        if isinstance(message, ResultMessage):
-            result = message
+    try:
+        async for message in query(
+            prompt=f"Use the {name} agent to: {prompt}",
+            options=options,
+        ):
+            if isinstance(message, ResultMessage):
+                result = message
+    except Exception as exc:
+        _log_sdk_failure(name, task_id, exc)
+        raise RuntimeError(
+            f"SDK call to {name} for {task_id or '<no-task>'} failed: {exc}"
+        ) from exc
     return result
 
 
@@ -148,7 +182,13 @@ def build_builder_prompt(task: Task, context_result: ResultMessage | None, attem
 
 
 def run_ci(worktree_path: Path) -> bool:
-    """Run pytest inside the worktree's Anoryx-Sentinel package. True if green."""
+    """Run pytest inside the worktree's Anoryx-Sentinel package. True if green.
+
+    A non-zero exit is a normal gate signal (tests failed) rather than a harness
+    error, so this returns a bool instead of raising — but it surfaces pytest's
+    captured stdout+stderr to this process's stderr so the *reason* for red is
+    never silently swallowed.
+    """
     proc = subprocess.run(
         ["pytest", "-q"],
         cwd=str(worktree_path / "Anoryx-Sentinel"),
@@ -156,6 +196,11 @@ def run_ci(worktree_path: Path) -> bool:
         text=True,
         check=False,
     )
+    if proc.returncode != 0:
+        sys.stderr.write(
+            f"[run_ci] pytest failed (exit {proc.returncode}) in {worktree_path}:\n"
+            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}\n"
+        )
     return proc.returncode == 0
 
 
@@ -201,13 +246,21 @@ def open_github_pr(worktree_path: Path, task: Task) -> None:
         return
 
     branch = f"task/{task.id}"
-    subprocess.run(
+    push = subprocess.run(
         ["git", "-C", str(worktree_path), "push", "-u", "origin", branch],
         capture_output=True,
         text=True,
         check=False,
     )
-    subprocess.run(
+    if push.returncode != 0:
+        # Non-fatal: the branch still exists locally for a human to push.
+        print(
+            f"[open_github_pr] push of {branch} failed (exit {push.returncode}): "
+            f"{push.stderr.strip()}"
+        )
+        return
+
+    pr = subprocess.run(
         [
             "gh",
             "pr",
@@ -227,6 +280,11 @@ def open_github_pr(worktree_path: Path, task: Task) -> None:
         text=True,
         check=False,
     )
+    if pr.returncode != 0:
+        print(
+            f"[open_github_pr] gh pr create for {branch} failed "
+            f"(exit {pr.returncode}): {pr.stderr.strip()}"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -241,7 +299,9 @@ async def run_task(task: Task) -> TaskStatus:
     model, ceiling = quartermaster.allocate(task)
 
     # 1. Context pack from the cartographer (read-only).
-    context_result = await query_agent("cartographer", task.description, cwd=cwd)
+    context_result = await query_agent(
+        "cartographer", task.description, cwd=cwd, task_id=task.id
+    )
 
     review: ResultMessage | None = None
     security: ResultMessage | None = None
@@ -253,6 +313,7 @@ async def run_task(task: Task) -> TaskStatus:
             build_builder_prompt(task, context_result, attempt),
             model=model,
             cwd=cwd,
+            task_id=task.id,
         )
         quartermaster.record(task, builder_result, attempt, "pending")
 
@@ -261,12 +322,17 @@ async def run_task(task: Task) -> TaskStatus:
                 "bench-coach",
                 f"Task {task.id} exceeded its token budget on attempt {attempt}. "
                 "Recommend an action.",
+                task_id=task.id,
             )
             return TaskStatus.human_escalation
 
         diff = worktree.get_diff(wt)
-        review = await query_agent("code-reviewer", diff, model="claude-sonnet-4-6", cwd=cwd)
-        security = await query_agent("security-auditor", diff, model="claude-opus-4-6", cwd=cwd)
+        review = await query_agent(
+            "code-reviewer", diff, model="claude-sonnet-4-6", cwd=cwd, task_id=task.id
+        )
+        security = await query_agent(
+            "security-auditor", diff, model="claude-opus-4-6", cwd=cwd, task_id=task.id
+        )
 
         if _has_high_or_critical(security):
             escalate_to_human(task, security)
@@ -281,10 +347,10 @@ async def run_task(task: Task) -> TaskStatus:
     perf: ResultMessage | None = None
     diff = worktree.get_diff(wt)
     if "src/gateway/" in diff or "src/bulk/" in diff:
-        perf = await query_agent("perf-load-engineer", diff, cwd=cwd)
+        perf = await query_agent("perf-load-engineer", diff, cwd=cwd, task_id=task.id)
 
     gate_input = aggregate_verdicts(review, security, ci_ok, perf)
-    gate = await query_agent("pr-gate", gate_input, cwd=cwd)
+    gate = await query_agent("pr-gate", gate_input, cwd=cwd, task_id=task.id)
     gate_verdict = _extract_json(_result_text(gate)).get("gate_verdict")
 
     if gate_verdict == "READY":
@@ -295,6 +361,7 @@ async def run_task(task: Task) -> TaskStatus:
     await query_agent(
         "bench-coach",
         f"Task {task.id} did not reach a READY gate within {RETRY_CEILING} attempts.",
+        task_id=task.id,
     )
     escalate_to_human(task, gate)
     return TaskStatus.human_escalation

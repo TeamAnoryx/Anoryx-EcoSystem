@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -66,6 +68,60 @@ def _require_auth() -> None:
     )
 
 
+def _clean_all() -> None:
+    """Nuclear reset: remove every task worktree + branch, then prune.
+
+    Recovery path when state gets wedged by a crashed run:
+        python -m orchestrator.run --task F-001 --clean
+    Every step is best-effort and the actions taken are printed.
+    """
+    root = _MONOREPO_ROOT
+
+    # Collect task/* branches up front (before we start deleting).
+    res = subprocess.run(
+        ["git", "branch", "--list", "task/*", "--format=%(refname:short)"],
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+    )
+    branches = [b.strip() for b in res.stdout.splitlines() if b.strip()]
+
+    # Remove every worktrees/* directory (git removal first, then force-rm).
+    removed_worktrees: list[str] = []
+    worktrees_dir = root / "worktrees"
+    if worktrees_dir.exists():
+        for child in sorted(worktrees_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            subprocess.run(
+                ["git", "worktree", "remove", str(child), "--force"],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+            )
+            if child.exists():
+                shutil.rmtree(child, ignore_errors=True)
+            removed_worktrees.append(child.name)
+
+    subprocess.run(
+        ["git", "worktree", "prune"], cwd=str(root), capture_output=True, text=True
+    )
+
+    # Delete the task/* branches.
+    removed_branches: list[str] = []
+    for branch in branches:
+        subprocess.run(
+            ["git", "branch", "-D", branch],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+        )
+        removed_branches.append(branch)
+
+    print(f"[--clean] worktrees removed: {removed_worktrees or 'none'}")
+    print(f"[--clean] branches deleted:  {removed_branches or 'none'}")
+
+
 def load_tasks(path: Path = _TASKS_PATH) -> list[Task]:
     """Parse tasks.yaml into validated Task models."""
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -86,7 +142,11 @@ async def _run_one(task: Task) -> tuple[str, TaskStatus]:
     return task.id, status
 
 
-async def run(selected: str | None = None, dry_run: bool = False) -> None:
+async def run(
+    selected: str | None = None, dry_run: bool = False, clean: bool = False
+) -> None:
+    if clean:
+        _clean_all()  # nuclear reset before anything else
     _load_root_dotenv()
     if not dry_run:
         _require_auth()  # fail before any worktree/API work if auth is missing
@@ -121,8 +181,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Anoryx-Sentinel build fleet runner")
     parser.add_argument("--task", help="Run only this task id (e.g. F-001)")
     parser.add_argument("--dry-run", action="store_true", help="Show the plan, run nothing")
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Nuclear reset: remove all task worktrees + branches before running",
+    )
     args = parser.parse_args()
-    asyncio.run(run(selected=args.task, dry_run=args.dry_run))
+    asyncio.run(run(selected=args.task, dry_run=args.dry_run, clean=args.clean))
 
 
 if __name__ == "__main__":
