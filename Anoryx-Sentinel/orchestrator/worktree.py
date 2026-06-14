@@ -19,13 +19,25 @@ WORKTREES_DIR = _MONOREPO_ROOT / "worktrees"
 
 
 def _git(*args: str, cwd: Path = _MONOREPO_ROOT) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    """Run a git command, surfacing git's real stderr on failure.
+
+    subprocess's check=True raises a bare CalledProcessError that hides git's
+    actual message. Instead we check returncode ourselves and raise a
+    RuntimeError carrying both streams, so a worktree failure prints what git
+    actually said (e.g. "fatal: a branch named 'task/F-001' already exists").
+    """
+    result = subprocess.run(
         ["git", *args],
         cwd=str(cwd),
         capture_output=True,
         text=True,
-        check=True,
     )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git {' '.join(args)} failed (exit {result.returncode}):\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+    return result
 
 
 def make_worktree(task_id: str) -> Path:
