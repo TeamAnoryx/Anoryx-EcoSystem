@@ -132,9 +132,7 @@ class VirtualApiKeyRepository:
 
         return key_row
 
-    async def get_by_id(
-        self, key_id: str, caller_tenant_id: str
-    ) -> VirtualApiKey:
+    async def get_by_id(self, key_id: str, caller_tenant_id: str) -> VirtualApiKey:
         """Return the key row for key_id, or raise VirtualApiKeyNotFoundError.
 
         caller_tenant_id is REQUIRED (LOW-1, ADR-0005 round-2).  The WHERE
@@ -149,9 +147,7 @@ class VirtualApiKeyRepository:
             raise VirtualApiKeyNotFoundError(f"Key not found: {key_id!r}")
         return key_row
 
-    async def deactivate(
-        self, key_id: str, caller_tenant_id: str
-    ) -> VirtualApiKey:
+    async def deactivate(self, key_id: str, caller_tenant_id: str) -> VirtualApiKey:
         """Revoke a virtual API key by marking it inactive."""
         key_row = await self.get_by_id(key_id, caller_tenant_id=caller_tenant_id)
         key_row.is_active = False

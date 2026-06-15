@@ -273,9 +273,7 @@ class AuditLogRepository:
         called _assert_privileged_session() — needs the tip hash.
         """
         stmt = (
-            select(EventsAuditLog.row_hash)
-            .order_by(EventsAuditLog.sequence_number.desc())
-            .limit(1)
+            select(EventsAuditLog.row_hash).order_by(EventsAuditLog.sequence_number.desc()).limit(1)
         )
         result = await self._session.execute(stmt)
         tip_hash = result.scalar_one_or_none()

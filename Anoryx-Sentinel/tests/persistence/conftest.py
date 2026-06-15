@@ -154,17 +154,22 @@ def ensure_schema_at_head() -> None:
 
         app_password = _extract_password(app_url)
         if app_password:
+
             async def _set_password() -> None:
                 try:
                     import asyncpg
+
                     m = _re.match(
                         r"postgresql(?:\+asyncpg)?://([^:]+):([^@]+)@([^:]+):(\d+)/(.+)",
                         db_url,
                     )
                     if m:
                         conn = await asyncpg.connect(
-                            user=m.group(1), password=m.group(2),
-                            host=m.group(3), port=int(m.group(4)), database=m.group(5),
+                            user=m.group(1),
+                            password=m.group(2),
+                            host=m.group(3),
+                            port=int(m.group(4)),
+                            database=m.group(5),
                         )
                         # PostgreSQL DDL (ALTER ROLE … PASSWORD) does not
                         # accept protocol-level bind parameters — the server
@@ -184,13 +189,9 @@ def ensure_schema_at_head() -> None:
                             salt,
                             iters,
                         )
-                        client_key = hmac.new(
-                            salted_pw, b"Client Key", hashlib.sha256
-                        ).digest()
+                        client_key = hmac.new(salted_pw, b"Client Key", hashlib.sha256).digest()
                         stored_key = hashlib.sha256(client_key).digest()
-                        server_key = hmac.new(
-                            salted_pw, b"Server Key", hashlib.sha256
-                        ).digest()
+                        server_key = hmac.new(salted_pw, b"Server Key", hashlib.sha256).digest()
                         verifier = (
                             f"SCRAM-SHA-256${iters}"
                             f":{base64.b64encode(salt).decode()}"
@@ -199,9 +200,7 @@ def ensure_schema_at_head() -> None:
                         )
                         # Only the verifier (opaque hash) is in the SQL —
                         # the plaintext app_password is never a SQL literal.
-                        await conn.execute(
-                            f"ALTER ROLE sentinel_app WITH PASSWORD '{verifier}'"
-                        )
+                        await conn.execute(f"ALTER ROLE sentinel_app WITH PASSWORD '{verifier}'")
                         await conn.close()
                 except Exception as e:
                     # Non-fatal: the role may not exist (schema at a revision < 0006)
@@ -378,9 +377,7 @@ async def tenant_session_empty_guc(app_db_url: str) -> AsyncSession:
     async with factory() as sess:
         async with sess.begin():
             # Explicitly set GUC to empty string.
-            await sess.execute(
-                text("SELECT set_config('app.current_tenant_id', '', true)")
-            )
+            await sess.execute(text("SELECT set_config('app.current_tenant_id', '', true)"))
             nested = await sess.begin_nested()
             yield sess
             await nested.rollback()

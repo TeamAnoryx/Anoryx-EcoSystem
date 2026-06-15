@@ -753,9 +753,7 @@ async def test_tenants_table_readable_under_tenant_session(
     """
     # Any SELECT on tenants from sentinel_app must succeed (no RLS error).
     # If RLS were mistakenly applied, this would raise an exception or return nothing.
-    result = await tenant_session.execute(
-        text("SELECT COUNT(*) FROM tenants")
-    )
+    result = await tenant_session.execute(text("SELECT COUNT(*) FROM tenants"))
     count = result.scalar_one()
     # The count may be 0 or positive depending on test DB state.
     # What matters is no exception was raised and we got a numeric result.
@@ -935,8 +933,7 @@ async def test_chain_ops_reject_sentinel_app_session_even_with_cleared_guc(
     priv_repo = AuditLogRepository(session)
     result = await priv_repo.validate_chain()
     assert result.is_valid is True, (
-        "Privileged session validate_chain must return is_valid=True. "
-        f"Got: {result}"
+        "Privileged session validate_chain must return is_valid=True. " f"Got: {result}"
     )
 
 

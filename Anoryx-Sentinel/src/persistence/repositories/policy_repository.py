@@ -145,9 +145,7 @@ class PolicyRepository:
         await self._session.flush()
         return policy_row, version_row
 
-    async def get_by_id(
-        self, policy_id: str, caller_tenant_id: str
-    ) -> Policy:
+    async def get_by_id(self, policy_id: str, caller_tenant_id: str) -> Policy:
         """Return the current policy row for policy_id, or raise PolicyNotFoundError.
 
         caller_tenant_id is REQUIRED (LOW-1, ADR-0005 round-2).  The WHERE

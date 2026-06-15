@@ -309,12 +309,12 @@ def test_database_module_exposes_session_helpers() -> None:
 
     import persistence.database as db_mod
 
-    assert hasattr(db_mod, "get_async_session"), (
-        "get_async_session must exist in database.py (deprecated back-compat alias)"
-    )
-    assert hasattr(db_mod, "get_privileged_session"), (
-        "get_privileged_session must exist in database.py (F-003b / ADR-0005)"
-    )
-    assert hasattr(db_mod, "get_tenant_session"), (
-        "get_tenant_session must exist in database.py (F-003b / ADR-0005)"
-    )
+    assert hasattr(
+        db_mod, "get_async_session"
+    ), "get_async_session must exist in database.py (deprecated back-compat alias)"
+    assert hasattr(
+        db_mod, "get_privileged_session"
+    ), "get_privileged_session must exist in database.py (F-003b / ADR-0005)"
+    assert hasattr(
+        db_mod, "get_tenant_session"
+    ), "get_tenant_session must exist in database.py (F-003b / ADR-0005)"

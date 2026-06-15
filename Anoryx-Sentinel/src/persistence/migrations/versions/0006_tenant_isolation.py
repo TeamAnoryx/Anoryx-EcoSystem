@@ -69,9 +69,7 @@ _NEW_RLS_TABLES = [
 ]
 
 # The strict NULLIF predicate (ADR-0005 requirement).
-_NULLIF_PREDICATE = (
-    "tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')"
-)
+_NULLIF_PREDICATE = "tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')"
 
 # The old F-003 predicate (used in downgrade to restore prior behaviour).
 _OLD_PREDICATE = (
@@ -309,17 +307,11 @@ def downgrade() -> None:
     #    Order: DELETE then UPDATE then INSERT then SELECT.
     # ------------------------------------------------------------------
     for table in _DELETE_TABLES:
-        conn.execute(
-            sa.text(f"REVOKE DELETE ON {table} FROM sentinel_app")
-        )
+        conn.execute(sa.text(f"REVOKE DELETE ON {table} FROM sentinel_app"))
     for table in _UPDATE_TABLES:
-        conn.execute(
-            sa.text(f"REVOKE UPDATE ON {table} FROM sentinel_app")
-        )
+        conn.execute(sa.text(f"REVOKE UPDATE ON {table} FROM sentinel_app"))
     for table in _INSERT_TABLES:
-        conn.execute(
-            sa.text(f"REVOKE INSERT ON {table} FROM sentinel_app")
-        )
+        conn.execute(sa.text(f"REVOKE INSERT ON {table} FROM sentinel_app"))
     _select_tables = [
         "tenants",
         "agents",
@@ -333,9 +325,7 @@ def downgrade() -> None:
         "events_audit_log",
     ]
     for table in _select_tables:
-        conn.execute(
-            sa.text(f"REVOKE SELECT ON {table} FROM sentinel_app")  # noqa: S608
-        )
+        conn.execute(sa.text(f"REVOKE SELECT ON {table} FROM sentinel_app"))  # noqa: S608
 
     # Revoke sequence grant.
     conn.execute(

@@ -47,9 +47,7 @@ class ProjectRepository:
         await self._session.flush()
         return project
 
-    async def get_by_id(
-        self, project_id: str, caller_tenant_id: str
-    ) -> Project:
+    async def get_by_id(self, project_id: str, caller_tenant_id: str) -> Project:
         """Return the project for project_id, or raise ProjectNotFoundError.
 
         caller_tenant_id is REQUIRED (LOW-1, ADR-0005 round-2).  The WHERE
@@ -87,9 +85,7 @@ class ProjectRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
-    async def deactivate(
-        self, project_id: str, caller_tenant_id: str
-    ) -> Project:
+    async def deactivate(self, project_id: str, caller_tenant_id: str) -> Project:
         """Soft-delete a project by marking it inactive."""
         project = await self.get_by_id(project_id, caller_tenant_id=caller_tenant_id)
         project.is_active = False
