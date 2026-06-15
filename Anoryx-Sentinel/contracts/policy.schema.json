@@ -1,13 +1,211 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "sentinel:policy:v1",
-  "description": "Policies pushed into Sentinel by Anoryx-AI-Orchestrator or Delta. Stub.",
-  "type": "object",
-  "required": ["policy_id","tenant_id","version","rules"],
-  "properties": {
-    "policy_id":  { "type": "string" },
-    "tenant_id":  { "type": "string", "format": "uuid" },
-    "version":    { "type": "integer", "minimum": 1 },
-    "rules":      { "type": "array", "items": { "type": "object" } }
+  "title": "Sentinel Policy Intake",
+  "description": "Policy records pushed DOWN into Sentinel by Delta via Anoryx-AI-Orchestrator (budget limits, model allow/deny lists). Every variant carries the four stable IDs from contracts/ids.md (LOCKED, IMMUTABLE) plus policy_id, policy_version, effective_from, and signature. NORMATIVE DISPATCH: variant selection is determined SOLELY by oneOf plus the policy_type const on each variant; the const values are unique and the variants are mutually exclusive, so exactly one matches a valid record. VALIDATOR DIALECT: Sentinel, Anoryx-AI-Orchestrator, and Delta MUST all validate these records with a JSON Schema Draft 2020-12 validator so no parser-differential exists. All objects are closed (additionalProperties:false) and all fields bounded, per the F-001 audit findings. SECURITY (cross-tenant poisoning defense): the body IDs (tenant_id/team_id/project_id/agent_id) are NOT authoritative. The gateway MUST resolve the authoritative scope SERVER-SIDE from the verified policy 'signature' (F-008) and REJECT any record whose body IDs disagree with the signature-resolved scope. This mirrors the virtual-API-key key-to-ID binding and id_context_mismatch rejection in contracts/openapi.yaml (ADR-0002): supplied IDs are a cross-check only and can never widen or impersonate a scope the signature does not authorize. SECURITY (replay/rollback defense): policy_version is monotonic per policy_id; intake MUST reject any record whose policy_version is <= the currently stored version for the same policy_id, so an attacker cannot re-submit an older signed policy to roll enforcement back. F-008 SCOPE: runtime cryptographic signature verification and the scope-resolve-and-reject obligation are implemented in F-008; THIS SCHEMA enforces only the PRESENCE and FORMAT of the signature field, not its validity. Full lock of this contract is gated on F-008 landing.",
+
+  "oneOf": [
+    { "$ref": "#/$defs/BudgetLimitPolicy" },
+    { "$ref": "#/$defs/ModelAllowlistPolicy" },
+    { "$ref": "#/$defs/ModelDenylistPolicy" }
+  ],
+
+  "$comment": "Dispatch is normative via oneOf + the policy_type const on each variant under JSON Schema Draft 2020-12. The 'discriminator' keyword below is a NON-NORMATIVE hint for OpenAPI tooling ONLY; it is not a 2020-12 keyword and has NO validation effect under this dialect. Do not rely on it for correctness.",
+  "discriminator": { "propertyName": "policy_type" },
+
+  "$defs": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "maxLength": 64,
+      "description": "Stable tenant identifier (UUID v4). LOCKED/IMMUTABLE per contracts/ids.md. NOT AUTHORITATIVE / cross-check ONLY: the gateway resolves the authoritative tenant from the verified signature server-side (F-008) and rejects any record whose body tenant_id disagrees with the signature-resolved scope."
+    },
+    "team_id": {
+      "type": "string",
+      "format": "uuid",
+      "maxLength": 64,
+      "description": "Stable team identifier (UUID v4). LOCKED/IMMUTABLE per contracts/ids.md. Cross-check only; authoritative value resolved from signature server-side."
+    },
+    "project_id": {
+      "type": "string",
+      "format": "uuid",
+      "maxLength": 64,
+      "description": "Stable project identifier (UUID v4). LOCKED/IMMUTABLE per contracts/ids.md. Cross-check only; authoritative value resolved from signature server-side."
+    },
+    "agent_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "maxLength": 64,
+      "description": "Internal Sentinel component name (lowercase slug). LOCKED/IMMUTABLE per contracts/ids.md."
+    },
+    "policy_id": {
+      "type": "string",
+      "format": "uuid",
+      "maxLength": 64,
+      "description": "Stable policy identifier (UUID v4). Joins to policy_id on policy_violated events in contracts/events.schema.json."
+    },
+    "policy_version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "Monotonic version counter PER policy_id (policy_id is the monotonicity target key). Intake MUST reject a record whose policy_version is <= the currently stored version for the same policy_id (replay/rollback defense). Bounded to 9007199254740991 (JS Number.MAX_SAFE_INTEGER) to avoid IEEE-754 precision loss in JSON consumers. The schema enforces only the integer bound; monotonicity itself is a runtime hint until F-008 enforces it against stored state."
+    },
+    "effective_from": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 64,
+      "description": "When this policy begins to apply (RFC 3339 / ISO 8601 date-time, UTC)."
+    },
+    "signature": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 4096,
+      "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$",
+      "description": "Compact-JWS cryptographic signature over the policy record (three dot-separated base64url segments), produced by Delta/Orchestrator. The body IDs (tenant_id/team_id/project_id/agent_id) are NOT authoritative: the gateway MUST resolve the authoritative tenant/team/project scope from this VERIFIED signature SERVER-SIDE and REJECT any record whose body IDs disagree with the signature-resolved scope (cross-tenant poisoning defense; mirrors contracts/openapi.yaml virtual-API-key key-to-ID binding and id_context_mismatch). SCHEMA ENFORCES PRESENCE + FORMAT ONLY (minLength 16, compact-JWS shape); a syntactically valid signature is NOT a verified signature. Runtime cryptographic verification of validity and the scope-resolve-and-reject obligation land in F-008; full lock of this contract is gated on F-008 landing. A present, well-formed, but cryptographically invalid signature MUST be rejected at runtime, not accepted because the schema validated."
+    },
+
+    "BudgetLimitPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Budget cap enforced at the gateway. Supports the Delta budget-enforcement path (throttle over-budget agents). max_cost_cents_per_period is a client-side cost estimate basis, not an authoritative bill. SCHEMA-ENFORCED: at least one of max_tokens_per_period or max_cost_cents_per_period MUST be present (see anyOf), so a budget that limits nothing fails validation.",
+      "anyOf": [
+        { "required": ["max_tokens_per_period"] },
+        { "required": ["max_cost_cents_per_period"] }
+      ],
+      "required": [
+        "policy_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "policy_id",
+        "policy_version",
+        "effective_from",
+        "signature",
+        "period",
+        "scope"
+      ],
+      "properties": {
+        "policy_type": { "const": "budget_limit" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "policy_id": { "$ref": "#/$defs/policy_id" },
+        "policy_version": { "$ref": "#/$defs/policy_version" },
+        "effective_from": { "$ref": "#/$defs/effective_from" },
+        "signature": { "$ref": "#/$defs/signature" },
+        "max_tokens_per_period": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000000,
+          "description": "Maximum total tokens allowed in the period. At least one of max_tokens_per_period or max_cost_cents_per_period MUST be present (enforced by the object-level anyOf); a budget limiting neither fails validation."
+        },
+        "max_cost_cents_per_period": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100000000000,
+          "description": "Maximum client-side cost estimate (cents) allowed in the period. Estimate basis, not an authoritative bill."
+        },
+        "period": {
+          "type": "string",
+          "enum": ["hourly", "daily", "monthly"],
+          "description": "Budget reset window."
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["tenant", "team", "project", "agent"],
+          "description": "Granularity at which the budget is enforced."
+        }
+      }
+    },
+
+    "ModelAllowlistPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Allow-list of model IDs permitted within the signed scope. Filters GET /v1/models and gates request routing in contracts/openapi.yaml.",
+      "required": [
+        "policy_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "policy_id",
+        "policy_version",
+        "effective_from",
+        "signature",
+        "allowed_model_ids"
+      ],
+      "properties": {
+        "policy_type": { "const": "model_allowlist" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "policy_id": { "$ref": "#/$defs/policy_id" },
+        "policy_version": { "$ref": "#/$defs/policy_version" },
+        "effective_from": { "$ref": "#/$defs/effective_from" },
+        "signature": { "$ref": "#/$defs/signature" },
+        "allowed_model_ids": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "description": "Model IDs explicitly permitted. Bounded to 512 entries to cap intake cost."
+        },
+        "effective_until": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64,
+          "description": "OPTIONAL expiry of the allow-list (RFC 3339 / ISO 8601 date-time, UTC). Omit for no expiry."
+        }
+      }
+    },
+
+    "ModelDenylistPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Deny-list of model IDs forbidden within the signed scope. Deny takes precedence over allow at enforcement time.",
+      "required": [
+        "policy_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "policy_id",
+        "policy_version",
+        "effective_from",
+        "signature",
+        "denied_model_ids",
+        "reason"
+      ],
+      "properties": {
+        "policy_type": { "const": "model_denylist" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "policy_id": { "$ref": "#/$defs/policy_id" },
+        "policy_version": { "$ref": "#/$defs/policy_version" },
+        "effective_from": { "$ref": "#/$defs/effective_from" },
+        "signature": { "$ref": "#/$defs/signature" },
+        "denied_model_ids": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "description": "Model IDs explicitly forbidden. Bounded to 512 entries to cap intake cost."
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "Human-readable rationale for the denial (for audit-ready evidence)."
+        }
+      }
+    }
   }
 }
