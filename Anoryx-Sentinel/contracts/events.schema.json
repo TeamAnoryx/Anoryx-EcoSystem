@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sentinel:events:v1",
+  "description": "Events Sentinel emits to Anoryx-AI-Orchestrator via Redis Streams. Stub.",
+  "type": "object",
+  "required": ["event_type","tenant_id","team_id","project_id","agent_id","ts"],
+  "properties": {
+    "event_type": { "type": "string", "enum": [] },
+    "tenant_id":  { "type": "string", "format": "uuid" },
+    "team_id":    { "type": "string", "format": "uuid" },
+    "project_id": { "type": "string", "format": "uuid" },
+    "agent_id":   { "type": "string" },
+    "ts":         { "type": "string", "format": "date-time" },
+    "payload":    { "type": "object" }
+  }
+}

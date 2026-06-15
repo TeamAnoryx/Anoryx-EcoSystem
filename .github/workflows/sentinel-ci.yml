@@ -1,0 +1,29 @@
+name: Anoryx-Sentinel CI
+
+on:
+  push:
+    branches: [main]
+    paths: ['Anoryx-Sentinel/**']
+  pull_request:
+    branches: [main]
+    paths: ['Anoryx-Sentinel/**']
+
+jobs:
+  sentinel:
+    name: Lint · Test · SAST
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Anoryx-Sentinel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install deps
+        run: pip install -e ".[dev]"
+      - name: Lint (ruff + black)
+        run: ruff check . && black --check .
+      - name: SAST (semgrep)
+        run: semgrep scan --config=p/python --config=p/secrets --severity=ERROR --no-git-ignore src/
+      - name: Test (pytest + coverage)
+        run: pytest --tb=short -q --cov=src --cov-report=term-missing

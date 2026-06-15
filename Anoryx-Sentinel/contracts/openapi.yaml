@@ -1,0 +1,794 @@
+openapi: "3.1.0"
+info:
+  title: Anoryx Sentinel API
+  version: "1.0.0"
+  description: |
+    Zero-trust AI gateway. OpenAI-compatible surface.
+
+    SINGLE SOURCE OF TRUTH for all Sentinel API surfaces.
+    ONLY the api-architect agent may edit this file (protect-paths hook enforces this).
+    Every builder agent CONFORMS to this file — never invents endpoints.
+
+    ## OpenAI compatibility
+    Clients change ONE base URL (point an OpenAI SDK at a Sentinel server) and
+    nothing else. Request and response bodies on /v1/chat/completions,
+    /v1/completions, and /v1/models mirror the OpenAI shapes so existing SDKs work
+    unmodified. Sentinel adds a virtual-API-key auth layer and four required
+    routing/attribution headers on top of that surface.
+
+    ## The four stable IDs (see contracts/ids.md — LOCKED, IMMUTABLE)
+    Every inbound request MUST carry all four identifiers as request headers:
+      - X-Anoryx-Tenant-Id   (UUID v4)
+      - X-Anoryx-Team-Id     (UUID v4)
+      - X-Anoryx-Project-Id  (UUID v4)
+      - X-Anoryx-Agent-Id    (lowercase slug; internal Sentinel component name,
+                              NOT the end-user AI model name)
+    Missing or malformed ANY of the four = 400 Bad Request. These IDs are threaded
+    into the request context of every endpoint and propagated onto every outbound
+    event (see contracts/events.schema.json).
+
+    ## Authoritative tenant resolution (key→ID binding)
+    The four ID headers are NOT trusted as the source of truth. Sentinel resolves
+    tenant_id / team_id / project_id AUTHORITATIVELY and SERVER-SIDE from the
+    virtual API key's bound scope. The supplied headers are treated as a
+    cross-check ONLY: if any of X-Anoryx-Tenant-Id / X-Anoryx-Team-Id /
+    X-Anoryx-Project-Id does not match the scope the key is authorized for, the
+    request is REJECTED with 403 (`id_context_mismatch`). Headers MAY NEVER widen,
+    override, or impersonate a context the key does not already authorize. The
+    values propagated onto outbound events and audit logs are always the
+    server-resolved values, never the raw client headers.
+
+    ## Fail-safe semantics
+    On ANY inspection or policy-evaluation error, Sentinel BLOCKS the request and
+    returns a 4xx/5xx error. It never silently passes traffic through on failure.
+
+    ## Request-body bounds (fail-safe sizing)
+    The gateway enforces a global maximum request-body size of 1 MiB (1048576
+    bytes). Oversized requests are rejected with 400 (or 413 Payload Too Large)
+    BEFORE any body parsing or content inspection occurs — size is checked
+    fail-safe at the edge so an attacker cannot exhaust inspection resources. Per
+    field maxLength / maxItems / maximum constraints in the request schemas below
+    are enforced in addition to the global cap. Request bodies set
+    `additionalProperties: false`: unknown keys are rejected, never silently
+    forwarded to the upstream model.
+
+    ## Streaming fail-safe (SSE)
+    A streamed response (`stream: true`) is only complete when it ends with the
+    `data: [DONE]` sentinel. Output chunks are inspected BEFORE they are flushed to
+    the client. If a mid-stream inspection or policy finding fires, the gateway
+    STOPS emitting content chunks and emits a single terminal `event: error` frame
+    carrying the standard Error envelope, then closes the stream WITHOUT `[DONE]`.
+    On an output-policy denial the final emitted chunk (if any) carries
+    `finish_reason: content_filter`. A client that receives a stream which ends
+    WITHOUT `data: [DONE]` MUST treat the result as BLOCKED / incomplete, never as a
+    successful completion.
+
+    ## Privacy
+    Error responses never echo the request body and never contain plaintext PII.
+    Correlate issues using the request_id returned on every response.
+
+    Framing in this document is intentionally "audit-ready" and "risk reduction",
+    never "compliant" or "blocks all attacks".
+servers:
+  - url: https://sentinel.anoryx.io/v1
+    description: Production
+  - url: http://localhost:8000/v1
+    description: Local development
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: chat
+    description: OpenAI-compatible chat completions.
+  - name: completions
+    description: OpenAI-compatible legacy text completions.
+  - name: models
+    description: Model discovery.
+
+paths:
+  /chat/completions:
+    post:
+      tags: [chat]
+      operationId: createChatCompletion
+      summary: Create a chat completion (OpenAI-compatible)
+      description: |
+        Proxies an OpenAI-style chat completion through Sentinel's inspection and
+        policy path. Set `stream: true` to receive a Server-Sent Events (SSE)
+        stream of partial deltas instead of a single JSON body.
+
+        Inbound traffic is inspected (PII, prompt-injection, secret-leak detection)
+        and governed by tenant/team/project/agent policy. On any inspection or
+        policy error the request is BLOCKED (fail-safe) — never passed through.
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/TeamId"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/AgentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateChatCompletionRequest"
+      responses:
+        "200":
+          description: |
+            Chat completion result.
+
+            - Non-streaming (`stream` omitted or false): a single
+              `ChatCompletionResponse` JSON object (`application/json`).
+            - Streaming (`stream: true`): a `text/event-stream` of
+              `ChatCompletionChunk` objects, each on a `data:` line, terminated
+              by a `data: [DONE]` sentinel.
+
+            Streaming fail-safe: output chunks are inspected BEFORE flush. On a
+            mid-stream inspection/policy finding the gateway STOPS sending content
+            and emits a single terminal `event: error` frame carrying the `Error`
+            envelope, then closes the stream WITHOUT `[DONE]`. On an output-policy
+            denial the final emitted chunk carries `finish_reason: content_filter`.
+            A stream that ends WITHOUT `data: [DONE]` MUST be treated by the client
+            as BLOCKED, never complete. See SSEErrorEvent.
+          headers:
+            X-RateLimit-Limit:    { $ref: "#/components/headers/XRateLimitLimit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/XRateLimitRemaining" }
+            X-RateLimit-Reset:    { $ref: "#/components/headers/XRateLimitReset" }
+            X-Request-Id:         { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatCompletionResponse"
+            text/event-stream:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ChatCompletionChunk"
+                  - $ref: "#/components/schemas/SSEErrorEvent"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /completions:
+    post:
+      tags: [completions]
+      operationId: createCompletion
+      summary: Create a text completion (OpenAI-compatible, legacy)
+      description: |
+        Proxies an OpenAI-style legacy text completion through Sentinel's
+        inspection and policy path. Set `stream: true` for an SSE stream of
+        partial deltas. On any inspection or policy error the request is BLOCKED
+        (fail-safe) — never passed through.
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/TeamId"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/AgentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCompletionRequest"
+      responses:
+        "200":
+          description: |
+            Text completion result.
+
+            - Non-streaming: a single `CompletionResponse` JSON object.
+            - Streaming (`stream: true`): a `text/event-stream` of
+              `CompletionChunk` objects terminated by `data: [DONE]`.
+
+            Streaming fail-safe: output chunks are inspected BEFORE flush. On a
+            mid-stream inspection/policy finding the gateway STOPS sending content
+            and emits a single terminal `event: error` frame carrying the `Error`
+            envelope, then closes the stream WITHOUT `[DONE]`. On an output-policy
+            denial the final emitted chunk carries `finish_reason: content_filter`.
+            A stream that ends WITHOUT `data: [DONE]` MUST be treated by the client
+            as BLOCKED, never complete. See SSEErrorEvent.
+          headers:
+            X-RateLimit-Limit:    { $ref: "#/components/headers/XRateLimitLimit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/XRateLimitRemaining" }
+            X-RateLimit-Reset:    { $ref: "#/components/headers/XRateLimitReset" }
+            X-Request-Id:         { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompletionResponse"
+            text/event-stream:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/CompletionChunk"
+                  - $ref: "#/components/schemas/SSEErrorEvent"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /models:
+    get:
+      tags: [models]
+      operationId: listModels
+      summary: List available models (OpenAI-compatible)
+      description: |
+        Returns the models the calling virtual API key is permitted to use, after
+        tenant/team/project/agent allow-list policy is applied. The list reflects
+        policy and may be a subset of upstream provider models.
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/TeamId"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/AgentId"
+      responses:
+        "200":
+          description: A list of model objects permitted for this request context.
+          headers:
+            X-RateLimit-Limit:    { $ref: "#/components/headers/XRateLimitLimit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/XRateLimitRemaining" }
+            X-RateLimit-Reset:    { $ref: "#/components/headers/XRateLimitReset" }
+            X-Request-Id:         { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListModelsResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Virtual API key issued by Sentinel, presented as `Authorization: Bearer <key>`.
+        The virtual key maps server-side to a vaulted upstream provider credential —
+        clients never hold provider keys. A missing, malformed, revoked, or unknown
+        key returns 401. A valid key lacking permission for the requested resource
+        (model, action, or routing context) returns 403.
+
+        AUTHORITATIVE TENANT BINDING (security-critical): the virtual API key is
+        the SOLE source of truth for tenant_id, team_id, and project_id. Sentinel
+        resolves these IDs SERVER-SIDE from the scope bound to the key. The
+        X-Anoryx-Tenant-Id / X-Anoryx-Team-Id / X-Anoryx-Project-Id request headers
+        are a cross-check ONLY and are NEVER trusted as the source of truth. If any
+        supplied ID header does not match the key's authorized scope, the request
+        is REJECTED with 403 (`id_context_mismatch`) — headers can never widen,
+        override, or impersonate a context the key does not already authorize. All
+        attribution propagated onto events and audit logs uses the server-resolved
+        values, not the raw client headers.
+
+  parameters:
+    TenantId:
+      name: X-Anoryx-Tenant-Id
+      in: header
+      required: true
+      description: |
+        Stable tenant identifier (UUID v4). REQUIRED. Missing/malformed = 400.
+        CROSS-CHECK ONLY — NOT the source of truth. Sentinel resolves tenant_id
+        authoritatively server-side from the virtual API key's scope. If this header
+        does not match the key's authorized tenant, the request is REJECTED with 403
+        (`id_context_mismatch`). Overlong values (> 64 chars) are rejected at 400.
+      schema:
+        type: string
+        format: uuid
+        maxLength: 64
+      example: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+    TeamId:
+      name: X-Anoryx-Team-Id
+      in: header
+      required: true
+      description: |
+        Stable team identifier (UUID v4). REQUIRED. Missing/malformed = 400.
+        CROSS-CHECK ONLY — NOT the source of truth. Sentinel resolves team_id
+        authoritatively server-side from the virtual API key's scope. If this header
+        does not match the key's authorized team, the request is REJECTED with 403
+        (`id_context_mismatch`). Overlong values (> 64 chars) are rejected at 400.
+      schema:
+        type: string
+        format: uuid
+        maxLength: 64
+      example: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
+    ProjectId:
+      name: X-Anoryx-Project-Id
+      in: header
+      required: true
+      description: |
+        Stable project identifier (UUID v4). REQUIRED. Missing/malformed = 400.
+        CROSS-CHECK ONLY — NOT the source of truth. Sentinel resolves project_id
+        authoritatively server-side from the virtual API key's scope. If this header
+        does not match the key's authorized project, the request is REJECTED with 403
+        (`id_context_mismatch`). Overlong values (> 64 chars) are rejected at 400.
+      schema:
+        type: string
+        format: uuid
+        maxLength: 64
+      example: "b3c4d5e6-abcd-1234-ef01-234567890abc"
+    AgentId:
+      name: X-Anoryx-Agent-Id
+      in: header
+      required: true
+      description: |
+        Stable agent identifier — a lowercase slug naming the internal Sentinel
+        component, NOT the end-user AI model name. REQUIRED. Missing/malformed = 400.
+        Validated against the virtual API key's authorized component scope; a value
+        outside that scope is REJECTED with 403 (`id_context_mismatch`). Overlong
+        values (> 64 chars) are rejected at 400.
+      schema:
+        type: string
+        maxLength: 64
+        pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+      example: "gateway-core"
+
+  headers:
+    XRateLimitLimit:
+      description: |
+        Requests permitted in the current window for this key/context. These
+        headers REPORT the limit; enforcement is server-side (see the rate-limiting
+        note on the TooManyRequests response). Defaults (Phase 0, overridable by
+        Delta policy via contracts/policy.schema.json): 600 requests / 60 s window.
+      schema: { type: integer, minimum: 0 }
+    XRateLimitRemaining:
+      description: Requests remaining in the current window.
+      schema: { type: integer, minimum: 0 }
+    XRateLimitReset:
+      description: Unix epoch seconds when the current rate-limit window resets.
+      schema: { type: integer, minimum: 0 }
+    XRequestId:
+      description: |
+        Server-generated correlation id for this request. Use it (not request body
+        content) for support and audit correlation. Mirrors `request_id` in error
+        bodies.
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: |
+        Malformed request. Includes missing or malformed required headers (any of
+        the four stable IDs), an overlong ID header (> 64 chars), an invalid or
+        out-of-bounds body (exceeding a field maxLength/maxItems/maximum or carrying
+        unknown keys), an oversized body (> 1 MiB — may surface as 413 instead), or
+        a request the gateway could not safely interpret. Body-size and structural
+        checks run BEFORE inspection (fail-safe). Per fail-safe policy, ambiguous
+        requests are rejected, not passed through.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: missing_required_header
+            message: "A required header is missing or malformed."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    Unauthorized:
+      description: Missing, malformed, revoked, or unknown virtual API key.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: invalid_api_key
+            message: "Virtual API key is missing, revoked, or invalid."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    Forbidden:
+      description: |
+        Authenticated but not permitted. Returned when a policy DENIES the request
+        (model not on allow-list, action blocked, budget exceeded), when an
+        inspection finding (e.g. detected secret leak or injection) blocks it, or
+        when a supplied ID header does not match the scope the virtual API key is
+        authorized for (`id_context_mismatch` — the key, not the header, is the
+        source of truth for tenant/team/project). This is the fail-safe outcome for
+        policy/inspection denials and context-mismatch attempts.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            policyDenied:
+              value:
+                error_code: policy_blocked
+                message: "Request blocked by policy for this tenant/team/project/agent context."
+                request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+            contextMismatch:
+              value:
+                error_code: id_context_mismatch
+                message: "Supplied routing context does not match the API key's authorized scope."
+                request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    PayloadTooLarge:
+      description: |
+        Request body exceeds the global maximum size (1 MiB / 1048576 bytes). The
+        cap is enforced at the edge BEFORE any body parsing or content inspection
+        (fail-safe sizing). Oversized bodies may surface here as 413, or as 400 via
+        BadRequest; both outcomes reject before inspection.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: request_too_large
+            message: "The request body exceeds the maximum allowed size."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    TooManyRequests:
+      description: |
+        Rate limit exceeded for this virtual key / request context. Limits are
+        ENFORCED server-side (the X-RateLimit-* headers merely report state; they
+        are not the control). Phase 0 defaults, overridable per-key/per-tenant by
+        Delta policy (contracts/policy.schema.json):
+          - 600 requests per 60-second sliding window,
+          - scoped BOTH per virtual key AND per server-resolved tenant_id
+            (the stricter of the two applies),
+          - a maximum of 20 concurrent open streaming (SSE) connections per
+            resolved tenant.
+        Exhausting the request window OR the concurrent-stream cap returns 429 with
+        a Retry-After header indicating when to retry.
+      headers:
+        X-RateLimit-Limit:    { $ref: "#/components/headers/XRateLimitLimit" }
+        X-RateLimit-Remaining: { $ref: "#/components/headers/XRateLimitRemaining" }
+        X-RateLimit-Reset:    { $ref: "#/components/headers/XRateLimitReset" }
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema: { type: integer, minimum: 0 }
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: rate_limit_exceeded
+            message: "Rate limit exceeded. Retry after the window resets."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    InternalError:
+      description: |
+        Unexpected server-side error. Per fail-safe policy, when inspection or
+        policy evaluation cannot complete, the request is BLOCKED and a 5xx is
+        returned — traffic is never passed through on internal failure. The body
+        never contains request content or PII; correlate via request_id.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: internal_error
+            message: "An internal error occurred. The request was not processed."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+
+  schemas:
+
+    Error:
+      type: object
+      description: |
+        Standard error envelope for all non-2xx responses. Deliberately minimal:
+        it carries no request body, no headers, and no PII. `message` is a FIXED
+        template string selected SOLELY by `error_code` — there is NO
+        request-derived interpolation (no header names, field names, values, or
+        body content are ever inserted), so each code maps 1:1 to one stable,
+        constant string. Use request_id to correlate with server-side audit logs.
+        NOTE: the specific code→message pairing is NOT schema-enforced (error_code
+        and message are independent enums), so it MUST be guaranteed by the gateway
+        implementation and covered by a unit test.
+      required: [error_code, message, request_id]
+      additionalProperties: false
+      properties:
+        error_code:
+          type: string
+          description: |
+            Stable, machine-readable error category. Enumerated so messages map 1:1
+            to codes.
+          enum:
+            - missing_required_header
+            - invalid_request
+            - request_too_large
+            - invalid_api_key
+            - id_context_mismatch
+            - policy_blocked
+            - rate_limit_exceeded
+            - internal_error
+        message:
+          type: string
+          description: |
+            Fixed, human-readable explanation chosen ONLY by error_code. Constant
+            per code; never echoes request content, header names, field names, or
+            PII. Enumerated to guarantee no request-derived interpolation.
+          maxLength: 200
+          enum:
+            - "A required header is missing or malformed."
+            - "The request body is invalid or violates a field constraint."
+            - "The request body exceeds the maximum allowed size."
+            - "Virtual API key is missing, revoked, or invalid."
+            - "Supplied routing context does not match the API key's authorized scope."
+            - "Request blocked by policy for this tenant/team/project/agent context."
+            - "Rate limit exceeded. Retry after the window resets."
+            - "An internal error occurred. The request was not processed."
+        request_id:
+          type: string
+          description: Correlation id; matches the X-Request-Id response header.
+          maxLength: 64
+
+    SSEErrorEvent:
+      type: object
+      description: |
+        Terminal streaming error frame. On any mid-stream inspection or policy
+        finding, the gateway STOPS emitting content chunks and emits exactly one
+        SSE frame with `event: error` whose `data:` line is this object (the
+        standard Error envelope), then closes the stream WITHOUT a `data: [DONE]`
+        sentinel. A client MUST treat a stream that ends without `[DONE]` as
+        BLOCKED / incomplete, never as a successful completion. This is the
+        streaming fail-safe: no further model output is flushed after this frame.
+      allOf:
+        - $ref: "#/components/schemas/Error"
+
+    ChatMessage:
+      type: object
+      required: [role, content]
+      additionalProperties: false
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          type: string
+          maxLength: 131072
+          description: |
+            Message text. Bounded (131072 chars) in addition to the global 1 MiB
+            request-body cap; oversized content is rejected before inspection.
+        name:
+          type: string
+          maxLength: 256
+
+    CreateChatCompletionRequest:
+      type: object
+      description: |
+        Closed schema (additionalProperties: false): only the fields enumerated
+        below are accepted. Unknown keys are REJECTED with 400 and never forwarded
+        to the upstream model. All requests are additionally bound by the global
+        1 MiB request-body cap.
+      required: [model, messages]
+      additionalProperties: false
+      properties:
+        model:
+          type: string
+          maxLength: 256
+          description: Upstream model identifier (the end-user AI model name).
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 256
+          items: { $ref: "#/components/schemas/ChatMessage" }
+        stream:
+          type: boolean
+          default: false
+          description: When true, responses are streamed as text/event-stream (SSE).
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 1
+        n:
+          type: integer
+          minimum: 1
+          maximum: 8
+          default: 1
+          description: Number of completions to generate. Bounded to limit fan-out.
+        max_tokens:
+          type: integer
+          minimum: 1
+          maximum: 131072
+        stop:
+          oneOf:
+            - type: string
+              maxLength: 256
+            - type: array
+              maxItems: 4
+              items:
+                type: string
+                maxLength: 256
+        user:
+          type: string
+          maxLength: 256
+          description: Optional opaque end-user handle. Do not put PII here.
+
+    ChatCompletionChoice:
+      type: object
+      required: [index, message, finish_reason]
+      properties:
+        index: { type: integer }
+        message: { $ref: "#/components/schemas/ChatMessage" }
+        finish_reason:
+          type: string
+          enum: [stop, length, content_filter, tool_calls]
+
+    ChatCompletionResponse:
+      type: object
+      required: [id, object, created, model, choices]
+      properties:
+        id: { type: string }
+        object:
+          type: string
+          const: chat.completion
+        created:
+          type: integer
+          description: Unix epoch seconds.
+        model: { type: string }
+        choices:
+          type: array
+          items: { $ref: "#/components/schemas/ChatCompletionChoice" }
+        usage: { $ref: "#/components/schemas/Usage" }
+
+    ChatCompletionChunkChoice:
+      type: object
+      required: [index, delta]
+      properties:
+        index: { type: integer }
+        delta:
+          type: object
+          properties:
+            role: { type: string }
+            content: { type: string }
+        finish_reason:
+          type: [string, "null"]
+          enum: [stop, length, content_filter, tool_calls, null]
+
+    ChatCompletionChunk:
+      type: object
+      description: One SSE event in a streamed chat completion (stream=true).
+      required: [id, object, created, model, choices]
+      properties:
+        id: { type: string }
+        object:
+          type: string
+          const: chat.completion.chunk
+        created: { type: integer }
+        model: { type: string }
+        choices:
+          type: array
+          items: { $ref: "#/components/schemas/ChatCompletionChunkChoice" }
+
+    CreateCompletionRequest:
+      type: object
+      description: |
+        Closed schema (additionalProperties: false): only the fields enumerated
+        below are accepted. Unknown keys are REJECTED with 400 and never forwarded
+        to the upstream model. All requests are additionally bound by the global
+        1 MiB request-body cap.
+      required: [model, prompt]
+      additionalProperties: false
+      properties:
+        model:
+          type: string
+          maxLength: 256
+        prompt:
+          oneOf:
+            - type: string
+              maxLength: 131072
+            - type: array
+              maxItems: 256
+              items:
+                type: string
+                maxLength: 131072
+        stream:
+          type: boolean
+          default: false
+          description: When true, responses are streamed as text/event-stream (SSE).
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 1
+        n:
+          type: integer
+          minimum: 1
+          maximum: 8
+          default: 1
+          description: Number of completions to generate. Bounded to limit fan-out.
+        max_tokens:
+          type: integer
+          minimum: 1
+          maximum: 131072
+        stop:
+          oneOf:
+            - type: string
+              maxLength: 256
+            - type: array
+              maxItems: 4
+              items:
+                type: string
+                maxLength: 256
+        user:
+          type: string
+          maxLength: 256
+          description: Optional opaque end-user handle. Do not put PII here.
+
+    CompletionChoice:
+      type: object
+      required: [index, text, finish_reason]
+      properties:
+        index: { type: integer }
+        text: { type: string }
+        finish_reason:
+          type: string
+          enum: [stop, length, content_filter]
+
+    CompletionResponse:
+      type: object
+      required: [id, object, created, model, choices]
+      properties:
+        id: { type: string }
+        object:
+          type: string
+          const: text_completion
+        created: { type: integer }
+        model: { type: string }
+        choices:
+          type: array
+          items: { $ref: "#/components/schemas/CompletionChoice" }
+        usage: { $ref: "#/components/schemas/Usage" }
+
+    CompletionChunk:
+      type: object
+      description: One SSE event in a streamed text completion (stream=true).
+      required: [id, object, created, model, choices]
+      properties:
+        id: { type: string }
+        object:
+          type: string
+          const: text_completion
+        created: { type: integer }
+        model: { type: string }
+        choices:
+          type: array
+          items:
+            type: object
+            required: [index, text]
+            properties:
+              index: { type: integer }
+              text: { type: string }
+              finish_reason:
+                type: [string, "null"]
+
+    Usage:
+      type: object
+      description: |
+        Token accounting. Any cost figure derived from this is a client-side cost
+        estimate, not a billed amount.
+      required: [prompt_tokens, completion_tokens, total_tokens]
+      properties:
+        prompt_tokens: { type: integer, minimum: 0 }
+        completion_tokens: { type: integer, minimum: 0 }
+        total_tokens: { type: integer, minimum: 0 }
+
+    Model:
+      type: object
+      required: [id, object, created, owned_by]
+      properties:
+        id: { type: string }
+        object:
+          type: string
+          const: model
+        created: { type: integer }
+        owned_by: { type: string }
+
+    ListModelsResponse:
+      type: object
+      required: [object, data]
+      properties:
+        object:
+          type: string
+          const: list
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Model" }

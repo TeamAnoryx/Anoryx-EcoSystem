@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sentinel:policy:v1",
+  "description": "Policies pushed into Sentinel by Anoryx-AI-Orchestrator or Delta. Stub.",
+  "type": "object",
+  "required": ["policy_id","tenant_id","version","rules"],
+  "properties": {
+    "policy_id":  { "type": "string" },
+    "tenant_id":  { "type": "string", "format": "uuid" },
+    "version":    { "type": "integer", "minimum": 1 },
+    "rules":      { "type": "array", "items": { "type": "object" } }
+  }
+}

@@ -34,3 +34,16 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# === Stage 1: Agent fleet runtime ===
+Anoryx-Sentinel/orchestrator/scorecard.jsonl
+Anoryx-Sentinel/orchestrator/ledger.jsonl
+worktrees/
+
+# Python (extras beyond existing rules)
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Next.js
+.next/
