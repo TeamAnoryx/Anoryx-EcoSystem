@@ -115,9 +115,7 @@ def _clean_all() -> None:
                 shutil.rmtree(child, ignore_errors=True)
             removed_worktrees.append(child.name)
 
-    subprocess.run(
-        ["git", "worktree", "prune"], cwd=str(root), capture_output=True, text=True
-    )
+    subprocess.run(["git", "worktree", "prune"], cwd=str(root), capture_output=True, text=True)
 
     # Delete the task/* branches.
     removed_branches: list[str] = []
@@ -142,11 +140,7 @@ def load_tasks(path: Path = _TASKS_PATH) -> list[Task]:
 
 def ready_tasks(tasks: list[Task], done_ids: set[str]) -> list[Task]:
     """Tasks whose dependencies are all satisfied and that are still pending."""
-    return [
-        t
-        for t in tasks
-        if t.status == TaskStatus.pending and set(t.depends_on) <= done_ids
-    ]
+    return [t for t in tasks if t.status == TaskStatus.pending and set(t.depends_on) <= done_ids]
 
 
 async def _run_one(task: Task) -> tuple[str, TaskStatus]:
@@ -154,9 +148,7 @@ async def _run_one(task: Task) -> tuple[str, TaskStatus]:
     return task.id, status
 
 
-async def run(
-    selected: str | None = None, dry_run: bool = False, clean: bool = False
-) -> None:
+async def run(selected: str | None = None, dry_run: bool = False, clean: bool = False) -> None:
     if clean:
         _clean_all()  # nuclear reset before anything else
     _load_root_dotenv()
@@ -176,8 +168,10 @@ async def run(
         print("DRY RUN — ready tasks (dependencies satisfied):")
         for t in batch:
             model, ceiling = conductor.quartermaster.allocate(t)
-            print(f"  {t.id}  [{t.klass.value}] -> {t.builder_agent}  "
-                  f"model={model} ceiling={ceiling}")
+            print(
+                f"  {t.id}  [{t.klass.value}] -> {t.builder_agent}  "
+                f"model={model} ceiling={ceiling}"
+            )
         remaining = [t for t in tasks if t not in batch]
         for t in remaining:
             print(f"  (blocked) {t.id} waits on {t.depends_on}")

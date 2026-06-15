@@ -299,9 +299,7 @@ async def run_task(task: Task) -> TaskStatus:
     model, ceiling = quartermaster.allocate(task)
 
     # 1. Context pack from the cartographer (read-only).
-    context_result = await query_agent(
-        "cartographer", task.description, cwd=cwd, task_id=task.id
-    )
+    context_result = await query_agent("cartographer", task.description, cwd=cwd, task_id=task.id)
 
     review: ResultMessage | None = None
     security: ResultMessage | None = None
