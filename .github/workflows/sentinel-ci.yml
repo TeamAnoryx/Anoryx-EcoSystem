@@ -26,4 +26,6 @@ jobs:
       - name: SAST (semgrep)
         run: semgrep scan --config=p/python --config=p/secrets --severity=ERROR --no-git-ignore src/
       - name: Test (pytest + coverage)
+        env:
+          SENTINEL_KEY_SECRET: ${{ secrets.SENTINEL_KEY_SECRET_CI }}
         run: pytest --tb=short -q --cov=src --cov-report=term-missing
