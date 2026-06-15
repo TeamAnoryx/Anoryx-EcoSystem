@@ -166,7 +166,7 @@
           "type": "string",
           "maxLength": 256,
           "pattern": "(\\[REDACTED\\]|\\*\\*\\*)",
-          "description": "OPTIONAL already-redacted excerpt for audit context. This field is ALREADY REDACTED by the data-protection engine before emission; it MUST NEVER contain raw PII or the matched value. Structurally enforced: the value MUST contain a redaction marker ('[REDACTED]' or '***'); an excerpt with no marker fails validation. Emitters that cannot guarantee redaction MUST omit this field."
+          "description": "OPTIONAL already-redacted excerpt for audit context. This field is intended to be ALREADY REDACTED by the data-protection engine before emission; it MUST NEVER contain raw PII or the matched value. The pattern is a MARKER-PRESENCE check ONLY: it requires a redaction marker ('[REDACTED]' or '***') somewhere in the value. It does NOT guarantee the ABSENCE of raw PII and provides NO structural prevention of raw PII riding alongside a marker. Full PII suppression is the emitter's runtime obligation, not a schema guarantee. Consumers MUST treat this field as potentially-unsafe display data requiring consumer-side validation before rendering or storage. Emitters that cannot guarantee redaction MUST omit this field."
         }
       }
     },

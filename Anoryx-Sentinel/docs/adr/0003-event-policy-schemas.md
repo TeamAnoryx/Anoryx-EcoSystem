@@ -123,6 +123,17 @@ log-injection guards are now STRUCTURAL, not just documented:
   forbids `?`, `#`, `@`, and whitespace — query strings, fragments, and userinfo
   (the parts of a URL most likely to carry tokens/PII) cannot ride along even if an
   emitter forgets to strip them.
+
+#### Security / Threat Model: `detected_endpoint` is untrusted (SSRF)
+Consumers of `shadow_ai_detected` events MUST NOT dereference, resolve, or initiate
+connections to `detected_endpoint` values. The field is for audit display and
+downstream pattern matching only. Dereferencing could enable SSRF attacks against
+the consumer or the host claimed by the endpoint, especially for values like
+`169.254.169.254`, `localhost`, internal RFC 1918 ranges, or path-traversal
+sequences. Sentinel emitters SHOULD redact or omit these patterns at source;
+consumers MUST treat the field as untrusted display data regardless. The structural
+`pattern` above reduces token/PII smuggling but is NOT an SSRF control — the no-deref
+obligation is the SSRF control.
 - `pii_blocked.sample_excerpt_redacted` REQUIRES a redaction marker via
   `pattern: (\[REDACTED\]|\*\*\*)`; an excerpt with no marker fails validation, so a
   raw-PII excerpt cannot pass as "redacted." The field stays optional — emitters
@@ -139,6 +150,14 @@ silently being a no-op. This converts a former prose "should set one of" into a
 schema-enforced "must set one of," and composes cleanly with
 `additionalProperties: false` because each `anyOf` branch asserts only `required`,
 not properties.
+
+`ModelAllowlistPolicy.allowed_model_ids` carries `minItems: 1`. An empty allowlist
+is ambiguous — it could be read as "permit nothing" or as "no constraint, permit
+everything" — so it is forbidden (fail-safe: a security contract must not depend on
+which reading a consumer picks). Total block is expressed EXPLICITLY rather than via
+an empty list: use `ModelDenylistPolicy` with the catch-all denial pattern, or set a
+`BudgetLimitPolicy` budget to zero. This keeps the allowlist a positive-permission
+statement that always names at least one permitted model.
 
 ### `policy_version` + `signature` required on every policy
 Policy intake is a privileged write into the security path, so it gets two
@@ -217,6 +236,21 @@ defenses beyond the closed/bounded baseline:
 - The code->message and code->variant 1:1 runtime guarantees (schema enums are
   independent; the implementation guarantees pairing, covered by unit tests — same
   pattern as ADR-0002's error envelope).
+
+### Deferred to F-008
+- **`ModelDenylistPolicy` empty `denied_model_ids`** — left as-is with the
+  documented semantic "no models denied." Unlike an empty allowlist, an empty
+  denylist is unambiguous (a denylist names exclusions; naming none excludes none),
+  so it is a natural default and needs NO schema change.
+- **`format: uuid` is annotation-only under Draft 2020-12** — the dialect treats
+  `format` as an annotation, not an assertion, so UUID fields are not enforced by a
+  bare validator. F-008's policy-intake handler MUST instantiate its validator with
+  a `FormatChecker` (format-assertion enabled) so the UUID fields are enforced at
+  runtime; the schema text is otherwise correct and needs no change.
+- **Redundant `maxLength` + `pattern` on `request_id` / `violation_type` /
+  `control_id`** — these fields carry both a `maxLength` and a `pattern` whose
+  charset class already bounds length (`{1,N}`), so the `maxLength` is cosmetic. It
+  may be cleaned in a future polish PR; it is harmless and NOT blocking.
 
 ## References
 - `contracts/ids.md` — the four stable IDs (LOCKED/IMMUTABLE) and their formats.

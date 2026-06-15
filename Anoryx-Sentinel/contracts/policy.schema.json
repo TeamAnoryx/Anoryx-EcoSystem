@@ -148,12 +148,13 @@
         "signature": { "$ref": "#/$defs/signature" },
         "allowed_model_ids": {
           "type": "array",
+          "minItems": 1,
           "maxItems": 512,
           "items": {
             "type": "string",
             "maxLength": 256
           },
-          "description": "Model IDs explicitly permitted. Bounded to 512 entries to cap intake cost."
+          "description": "Model IDs explicitly permitted. Bounded to 512 entries to cap intake cost. An allowlist policy MUST specify at least one allowed model. To block all models, use ModelDenylistPolicy with the catch-all denial pattern, or set budget_limit to zero."
         },
         "effective_until": {
           "type": "string",
