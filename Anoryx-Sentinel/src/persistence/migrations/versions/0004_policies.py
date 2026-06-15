@@ -120,7 +120,9 @@ def upgrade() -> None:
     # Defense-in-depth on top of the repository-layer check.
     # ------------------------------------------------------------------
     conn = op.get_bind()
-    conn.execute(sa.text("""
+    conn.execute(
+        sa.text(
+            """
             CREATE OR REPLACE FUNCTION enforce_policy_version_monotonicity()
             RETURNS TRIGGER AS $$
             DECLARE
@@ -140,12 +142,18 @@ def upgrade() -> None:
                 RETURN NEW;
             END;
             $$ LANGUAGE plpgsql;
-            """))
-    conn.execute(sa.text("""
+            """
+        )
+    )
+    conn.execute(
+        sa.text(
+            """
             CREATE TRIGGER trg_policy_versions_monotonicity
             BEFORE INSERT ON policy_versions
             FOR EACH ROW EXECUTE FUNCTION enforce_policy_version_monotonicity();
-            """))
+            """
+        )
+    )
 
 
 def downgrade() -> None:

@@ -193,7 +193,9 @@ def upgrade() -> None:
     # BEFORE UPDATE: always raises.
     # BEFORE DELETE: always raises.
     # ------------------------------------------------------------------
-    conn.execute(sa.text("""
+    conn.execute(
+        sa.text(
+            """
             CREATE OR REPLACE FUNCTION deny_audit_log_modification()
             RETURNS TRIGGER AS $$
             BEGIN
@@ -204,17 +206,27 @@ def upgrade() -> None:
                 RETURN NULL;
             END;
             $$ LANGUAGE plpgsql;
-            """))
-    conn.execute(sa.text("""
+            """
+        )
+    )
+    conn.execute(
+        sa.text(
+            """
             CREATE TRIGGER trg_eal_deny_update
             BEFORE UPDATE ON events_audit_log
             FOR EACH ROW EXECUTE FUNCTION deny_audit_log_modification();
-            """))
-    conn.execute(sa.text("""
+            """
+        )
+    )
+    conn.execute(
+        sa.text(
+            """
             CREATE TRIGGER trg_eal_deny_delete
             BEFORE DELETE ON events_audit_log
             FOR EACH ROW EXECUTE FUNCTION deny_audit_log_modification();
-            """))
+            """
+        )
+    )
 
     # ------------------------------------------------------------------
     # RLS: ENABLE and FORCE on events_audit_log.
@@ -226,32 +238,48 @@ def upgrade() -> None:
     # SELECT policy: allow reads for rows matching tenant context.
     # The OR ... IS NULL branch is intentionally retained for F-003; the strict
     # no-bypass policy is deferred to F-003b (app-role + RLS hardening).
-    conn.execute(sa.text("""
+    conn.execute(
+        sa.text(
+            """
             CREATE POLICY eal_select ON events_audit_log
             FOR SELECT
             USING (
                 tenant_id = current_setting('app.current_tenant_id', true)
                 OR current_setting('app.current_tenant_id', true) IS NULL
             )
-            """))
+            """
+        )
+    )
     # INSERT policy: allow inserts (the trigger + application handle validation).
-    conn.execute(sa.text("""
+    conn.execute(
+        sa.text(
+            """
             CREATE POLICY eal_insert ON events_audit_log
             FOR INSERT
             WITH CHECK (true)
-            """))
+            """
+        )
+    )
     # UPDATE policy: no rows are eligible (USING false = nothing visible to update).
-    conn.execute(sa.text("""
+    conn.execute(
+        sa.text(
+            """
             CREATE POLICY eal_deny_update ON events_audit_log
             FOR UPDATE
             USING (false)
-            """))
+            """
+        )
+    )
     # DELETE policy: no rows are eligible.
-    conn.execute(sa.text("""
+    conn.execute(
+        sa.text(
+            """
             CREATE POLICY eal_deny_delete ON events_audit_log
             FOR DELETE
             USING (false)
-            """))
+            """
+        )
+    )
 
 
 def downgrade() -> None:

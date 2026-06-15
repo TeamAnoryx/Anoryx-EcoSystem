@@ -57,11 +57,15 @@ async def test_events_audit_log_check_constraints(session: AsyncSession) -> None
       ck_eal_status       — ComplianceCheckedEvent.status (matches events.schema.json)
       ck_eal_action_taken — union of valid action_taken values across all event variants
     """
-    result = await session.execute(text("""
+    result = await session.execute(
+        text(
+            """
             SELECT conname FROM pg_constraint
             WHERE conrelid = 'events_audit_log'::regclass
             AND contype = 'c'
-            """))
+            """
+        )
+    )
     constraints = {row[0] for row in result}
     expected_constraints = {
         "ck_eal_event_type",
@@ -89,11 +93,15 @@ async def test_events_audit_log_check_constraints(session: AsyncSession) -> None
 @pytest.mark.asyncio
 async def test_policies_check_constraints(session: AsyncSession) -> None:
     """Verify CHECK constraints exist on policies."""
-    result = await session.execute(text("""
+    result = await session.execute(
+        text(
+            """
             SELECT conname FROM pg_constraint
             WHERE conrelid = 'policies'::regclass
             AND contype = 'c'
-            """))
+            """
+        )
+    )
     constraints = {row[0] for row in result}
     assert "ck_policies_policy_type" in constraints
     assert "ck_policies_version_positive" in constraints
@@ -103,11 +111,15 @@ async def test_policies_check_constraints(session: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_virtual_api_keys_fingerprint_constraint(session: AsyncSession) -> None:
     """Verify the key_fingerprint length CHECK constraint exists."""
-    result = await session.execute(text("""
+    result = await session.execute(
+        text(
+            """
             SELECT conname FROM pg_constraint
             WHERE conrelid = 'virtual_api_keys'::regclass
             AND contype = 'c'
-            """))
+            """
+        )
+    )
     constraints = {row[0] for row in result}
     assert "ck_vak_fingerprint_len" in constraints
 
@@ -132,11 +144,15 @@ async def test_rls_enabled_on_tenant_scoped_tables(session: AsyncSession) -> Non
 @pytest.mark.asyncio
 async def test_append_only_triggers_exist(session: AsyncSession) -> None:
     """Verify BEFORE UPDATE and BEFORE DELETE triggers on events_audit_log."""
-    result = await session.execute(text("""
+    result = await session.execute(
+        text(
+            """
             SELECT tgname FROM pg_trigger
             WHERE tgrelid = 'events_audit_log'::regclass
             AND tgtype & 2 > 0  -- BEFORE triggers
-            """))
+            """
+        )
+    )
     triggers = {row[0] for row in result}
     assert "trg_eal_deny_update" in triggers, "Missing deny_update trigger"
     assert "trg_eal_deny_delete" in triggers, "Missing deny_delete trigger"
@@ -145,9 +161,13 @@ async def test_append_only_triggers_exist(session: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_policy_monotonicity_trigger_exists(session: AsyncSession) -> None:
     """Verify the monotonicity trigger exists on policy_versions."""
-    result = await session.execute(text("""
+    result = await session.execute(
+        text(
+            """
             SELECT tgname FROM pg_trigger
             WHERE tgrelid = 'policy_versions'::regclass
-            """))
+            """
+        )
+    )
     triggers = {row[0] for row in result}
     assert "trg_policy_versions_monotonicity" in triggers

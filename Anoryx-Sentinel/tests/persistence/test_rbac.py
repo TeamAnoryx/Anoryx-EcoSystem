@@ -34,12 +34,16 @@ async def test_rls_policy_is_configured_correctly(session: AsyncSession) -> None
     app.current_tenant_id on non-BYPASSRLS application user connections.
     """
     # Verify the policy is defined.
-    result = await session.execute(text("""
+    result = await session.execute(
+        text(
+            """
             SELECT polname, polcmd, polpermissive
             FROM pg_policy
             WHERE polrelid = 'teams'::regclass
             AND polname = 'tenant_isolation'
-            """))
+            """
+        )
+    )
     pol = result.fetchone()
     assert pol is not None, "tenant_isolation policy not found on teams table"
     assert pol[0] == "tenant_isolation"
@@ -49,11 +53,15 @@ async def test_rls_policy_is_configured_correctly(session: AsyncSession) -> None
     assert polcmd == "*", f"Policy command should be ALL (*), got {polcmd!r}"
 
     # Verify RLS is enabled and forced via pg_class (pg_tables lacks forcerolesecurity).
-    result2 = await session.execute(text("""
+    result2 = await session.execute(
+        text(
+            """
             SELECT c.relrowsecurity, c.relforcerowsecurity
             FROM pg_class c
             WHERE c.relname = 'teams' AND c.relkind = 'r'
-            """))
+            """
+        )
+    )
     row2 = result2.fetchone()
     assert row2 is not None
     assert row2[0] is True, "RLS not enabled on teams (relrowsecurity=False)"
@@ -62,7 +70,9 @@ async def test_rls_policy_is_configured_correctly(session: AsyncSession) -> None
     # but the policy is active for non-BYPASSRLS application connections.
 
     # Additionally verify tenant isolation works at the policy definition level.
-    result3 = await session.execute(text("""
+    result3 = await session.execute(
+        text(
+            """
             SELECT count(*) FROM pg_policy
             WHERE polrelid IN (
                 'teams'::regclass,
@@ -72,7 +82,9 @@ async def test_rls_policy_is_configured_correctly(session: AsyncSession) -> None
                 'events_audit_log'::regclass
             )
             AND polname = 'tenant_isolation'
-            """))
+            """
+        )
+    )
     count = result3.scalar()
     assert count >= 4, f"Expected at least 4 tenant_isolation policies, got {count}"
 
@@ -105,12 +117,16 @@ async def test_rls_cross_tenant_blocked_for_app_user(session: AsyncSession) -> N
     # Verify the RLS policy is correctly defined to filter by tenant_id.
     # A non-BYPASSRLS app user running with SET app.current_tenant_id=tenant_a
     # would only see team_a. We assert the policy definition makes this so.
-    result2 = await session.execute(text("""
+    result2 = await session.execute(
+        text(
+            """
             SELECT pg_get_expr(polqual, polrelid)
             FROM pg_policy
             WHERE polrelid = 'teams'::regclass
             AND polname = 'tenant_isolation'
-            """))
+            """
+        )
+    )
     qual_expr = result2.scalar()
     assert qual_expr is not None, "tenant_isolation policy has no USING expression"
     # The USING expression must reference tenant_id.
