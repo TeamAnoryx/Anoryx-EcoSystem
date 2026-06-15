@@ -47,3 +47,12 @@ worktrees/
 
 # Next.js
 .next/
+
+# Fleet runtime artifacts
+Anoryx-Sentinel/.claude-fleet/.claude.json
+Anoryx-Sentinel/.claude-fleet/.last-cleanup
+Anoryx-Sentinel/.claude-fleet/backups/
+Anoryx-Sentinel/.claude-fleet/policy-limits.json
+Anoryx-Sentinel/.claude-fleet/projects/
+Anoryx-Sentinel/.claude-fleet/remote-settings.json
+Anoryx-Sentinel/orchestrator/scorecard.jsonl.preisolation
