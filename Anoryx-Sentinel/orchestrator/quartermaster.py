@@ -10,7 +10,6 @@ dataclass with `.usage` (a dict), `.total_cost_usd` (float | None), and
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from claude_agent_sdk import ResultMessage

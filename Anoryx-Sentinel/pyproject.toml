@@ -24,7 +24,19 @@ dev = [
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-select = ["E", "F", "S", "B", "I"]
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "I", "S"]
+# S603/S607: subprocess calls with literal command lists are not a
+# security risk in our orchestrator (we control all inputs; git/gh/
+# pytest are trusted, pinned dev dependencies).
+# S110: best-effort cleanup paths intentionally swallow exceptions —
+# logging would mask the original SDK exception we want to propagate.
+ignore = ["S603", "S607", "S110"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use assert as their core assertion mechanism; S101 doesn't apply.
+"tests/**/*.py" = ["S101"]
 
 [tool.black]
 target-version = ["py312"]
