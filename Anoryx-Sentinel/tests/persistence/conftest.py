@@ -30,6 +30,7 @@ are rolled back on teardown.  This means tests that depend on committed data
 connections outside this fixture.  This is a known trade-off; a future
 improvement would use explicit transaction-per-test commit + cleanup.
 """
+
 from __future__ import annotations
 
 import os
@@ -92,9 +93,7 @@ def ensure_schema_at_head() -> None:
         timeout=60,
     )
     if result.returncode != 0:
-        pytest.fail(
-            f"ensure_schema_at_head: alembic upgrade head failed:\n{result.stderr}"
-        )
+        pytest.fail(f"ensure_schema_at_head: alembic upgrade head failed:\n{result.stderr}")
 
 
 @pytest.fixture(scope="function")

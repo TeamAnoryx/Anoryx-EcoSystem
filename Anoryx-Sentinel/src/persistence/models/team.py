@@ -3,6 +3,7 @@
 A team belongs to a tenant. Projects and virtual API keys are scoped to teams.
 team_id is UUID v4 as VARCHAR(64) per contracts/ids.md.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -44,9 +45,7 @@ class Team(Base):
 
     # Relationships
     tenant: Mapped["Tenant"] = relationship("Tenant", back_populates="teams")  # noqa: F821
-    projects: Mapped[list["Project"]] = relationship(  # noqa: F821
-        "Project", back_populates="team"
-    )
+    projects: Mapped[list["Project"]] = relationship("Project", back_populates="team")  # noqa: F821
 
     __table_args__ = (
         Index("ix_teams_tenant_id", "tenant_id"),

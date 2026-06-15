@@ -20,6 +20,7 @@ Key lifecycle:
 - At auth: caller passes the plaintext key. Repository computes HMAC, does
   constant-time compare against all active keys (via index lookup by fingerprint).
 """
+
 from __future__ import annotations
 
 import hashlib

@@ -5,6 +5,7 @@ Row-level security (RLS) is enabled on the tenants, teams, projects, users,
 virtual_api_keys, policies, and policy_versions tables in migration 0002_rbac,
 forcing isolation between tenants. This table defines the role each user holds.
 """
+
 from __future__ import annotations
 
 from datetime import datetime

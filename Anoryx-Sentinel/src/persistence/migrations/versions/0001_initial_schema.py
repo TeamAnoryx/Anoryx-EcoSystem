@@ -8,6 +8,7 @@ Passwords are stored as Argon2id PHC strings (argon2-cffi). The password_hash
 column is VARCHAR(512) to accommodate the full PHC string including parameters,
 salt, and digest. Plaintext passwords are NEVER stored.
 """
+
 from __future__ import annotations
 
 from typing import Sequence, Union
@@ -74,9 +75,7 @@ def upgrade() -> None:
         ),
     )
     op.create_index("ix_teams_tenant_id", "teams", ["tenant_id"])
-    op.create_index(
-        "ix_teams_tenant_name", "teams", ["tenant_id", "name"], unique=True
-    )
+    op.create_index("ix_teams_tenant_name", "teams", ["tenant_id", "name"], unique=True)
 
     # ------------------------------------------------------------------
     # projects
@@ -114,9 +113,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_projects_team_id", "projects", ["team_id"])
     op.create_index("ix_projects_tenant_id", "projects", ["tenant_id"])
-    op.create_index(
-        "ix_projects_team_name", "projects", ["team_id", "name"], unique=True
-    )
+    op.create_index("ix_projects_team_name", "projects", ["team_id", "name"], unique=True)
 
     # ------------------------------------------------------------------
     # agents (registry of internal Sentinel component slugs)
@@ -165,9 +162,7 @@ def upgrade() -> None:
         ),
     )
     op.create_index("ix_users_tenant_id", "users", ["tenant_id"])
-    op.create_index(
-        "ix_users_tenant_email", "users", ["tenant_id", "email"], unique=True
-    )
+    op.create_index("ix_users_tenant_email", "users", ["tenant_id", "email"], unique=True)
 
 
 def downgrade() -> None:

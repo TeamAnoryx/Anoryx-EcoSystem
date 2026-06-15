@@ -4,6 +4,7 @@ A tenant is the top-level organizational unit in Sentinel. All other entities
 (teams, projects, agents, users, keys, policies, events) belong to a tenant.
 tenant_id is a UUID v4 stored as VARCHAR(64) per contracts/ids.md.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

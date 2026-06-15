@@ -4,6 +4,7 @@ Passwords are stored as Argon2id hashes via argon2-cffi. Plaintext passwords
 are NEVER stored, logged, or returned. The password_hash column holds the full
 Argon2 PHC string (prefix + parameters + salt + digest — all opaque to the DB).
 """
+
 from __future__ import annotations
 
 from datetime import datetime

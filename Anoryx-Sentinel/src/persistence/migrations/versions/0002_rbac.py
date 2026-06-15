@@ -16,6 +16,7 @@ migration user (BYPASSRLS) can see all rows for admin operations.
 The sentinel DB user used by migrations has BYPASSRLS (set in DB setup).
 Application connections set 'app.current_tenant_id' before queries.
 """
+
 from __future__ import annotations
 
 from typing import Sequence, Union
@@ -101,9 +102,7 @@ def upgrade() -> None:
         # Permissive SELECT/INSERT/UPDATE/DELETE policy: row tenant_id must match
         # the session-local 'app.current_tenant_id' setting.
         # Superusers (BYPASSRLS) see all rows.
-        conn.execute(
-            sa.text(
-                f"""
+        conn.execute(sa.text(f"""
                 CREATE POLICY tenant_isolation ON {table}
                 USING (
                     tenant_id = current_setting('app.current_tenant_id', true)
@@ -113,17 +112,13 @@ def upgrade() -> None:
                     tenant_id = current_setting('app.current_tenant_id', true)
                     OR current_setting('app.current_tenant_id', true) IS NULL
                 )
-                """
-            )
-        )
+                """))
 
     # role_assignments also gets RLS (tenant_id present).
     for table in ["role_assignments"]:
         conn.execute(sa.text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
         conn.execute(sa.text(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY"))
-        conn.execute(
-            sa.text(
-                f"""
+        conn.execute(sa.text(f"""
                 CREATE POLICY tenant_isolation ON {table}
                 USING (
                     tenant_id = current_setting('app.current_tenant_id', true)
@@ -133,9 +128,7 @@ def upgrade() -> None:
                     tenant_id = current_setting('app.current_tenant_id', true)
                     OR current_setting('app.current_tenant_id', true) IS NULL
                 )
-                """
-            )
-        )
+                """))
 
 
 def downgrade() -> None:

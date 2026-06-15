@@ -3,6 +3,7 @@
 A project belongs to a team (and transitively to a tenant). Virtual API keys
 and events are scoped to projects. project_id is UUID v4 as VARCHAR(64).
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

@@ -14,6 +14,7 @@ Tenant isolation enforcement (caller_tenant_id scoping on get_by_id, RLS role
 switching) is deferred to F-003b. F-003 ships the schema and repository layer
 only; see ADR-0004 for the full scope statement.
 """
+
 from __future__ import annotations
 
 import json
@@ -43,9 +44,7 @@ class PolicyMonotonicityError(Exception):
 def _validate_signature(signature: str) -> None:
     """Raise ValueError if the signature does not match compact-JWS format."""
     if not (16 <= len(signature) <= 4096):
-        raise ValueError(
-            f"signature length {len(signature)} out of range [16, 4096]"
-        )
+        raise ValueError(f"signature length {len(signature)} out of range [16, 4096]")
     if not _JWS_PATTERN.match(signature):
         raise ValueError("signature must be compact-JWS (three base64url segments)")
 

@@ -17,6 +17,7 @@ Because these are real committed rows (not savepoint-isolated), we use a
 separate cleanup step. Test isolation note: this test leaves rows in the DB.
 Future runs accumulate rows but the chain always validates from the beginning.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -105,9 +106,9 @@ async def test_concurrent_inserts_do_not_corrupt_chain() -> None:
 
     assert len(sequence_numbers) == n_concurrent
     # All sequence numbers must be distinct (bigserial auto-increment).
-    assert len(set(sequence_numbers)) == n_concurrent, (
-        f"Duplicate sequence numbers: {sequence_numbers}"
-    )
+    assert (
+        len(set(sequence_numbers)) == n_concurrent
+    ), f"Duplicate sequence numbers: {sequence_numbers}"
 
     # Validate the full chain from a fresh read session.
     engine = create_async_engine(url, pool_pre_ping=True, echo=False)
@@ -126,7 +127,5 @@ async def test_concurrent_inserts_do_not_corrupt_chain() -> None:
     finally:
         await engine.dispose()
 
-    assert result.is_valid is True, (
-        f"Chain invalid after concurrent inserts: {result.error_detail}"
-    )
+    assert result.is_valid is True, f"Chain invalid after concurrent inserts: {result.error_detail}"
     assert result.rows_checked >= n_concurrent

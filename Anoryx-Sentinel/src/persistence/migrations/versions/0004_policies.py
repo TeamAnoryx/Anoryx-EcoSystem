@@ -11,6 +11,7 @@ policy_id. This is defense-in-depth on top of the repository-layer check.
 SIGNATURE: Stored as compact-JWS string (three dot-separated base64url segments).
 Format is enforced by CHECK constraint. Crypto-verification deferred to F-008.
 """
+
 from __future__ import annotations
 
 from typing import Sequence, Union
@@ -111,9 +112,7 @@ def upgrade() -> None:
         ),
     )
     op.create_index("ix_pv_policy_id", "policy_versions", ["policy_id"])
-    op.create_index(
-        "ix_pv_policy_id_version", "policy_versions", ["policy_id", "policy_version"]
-    )
+    op.create_index("ix_pv_policy_id_version", "policy_versions", ["policy_id", "policy_version"])
     op.create_index("ix_pv_tenant_id", "policy_versions", ["tenant_id"])
 
     # ------------------------------------------------------------------
@@ -121,9 +120,7 @@ def upgrade() -> None:
     # Defense-in-depth on top of the repository-layer check.
     # ------------------------------------------------------------------
     conn = op.get_bind()
-    conn.execute(
-        sa.text(
-            """
+    conn.execute(sa.text("""
             CREATE OR REPLACE FUNCTION enforce_policy_version_monotonicity()
             RETURNS TRIGGER AS $$
             DECLARE
@@ -143,31 +140,19 @@ def upgrade() -> None:
                 RETURN NEW;
             END;
             $$ LANGUAGE plpgsql;
-            """
-        )
-    )
-    conn.execute(
-        sa.text(
-            """
+            """))
+    conn.execute(sa.text("""
             CREATE TRIGGER trg_policy_versions_monotonicity
             BEFORE INSERT ON policy_versions
             FOR EACH ROW EXECUTE FUNCTION enforce_policy_version_monotonicity();
-            """
-        )
-    )
+            """))
 
 
 def downgrade() -> None:
     conn = op.get_bind()
     conn.execute(
-        sa.text(
-            "DROP TRIGGER IF EXISTS trg_policy_versions_monotonicity ON policy_versions"
-        )
+        sa.text("DROP TRIGGER IF EXISTS trg_policy_versions_monotonicity ON policy_versions")
     )
-    conn.execute(
-        sa.text(
-            "DROP FUNCTION IF EXISTS enforce_policy_version_monotonicity()"
-        )
-    )
+    conn.execute(sa.text("DROP FUNCTION IF EXISTS enforce_policy_version_monotonicity()"))
     op.drop_table("policy_versions")
     op.drop_table("policies")

@@ -4,6 +4,7 @@ Tenant isolation enforcement (caller_tenant_id scoping on get_by_id, RLS role
 switching) is deferred to F-003b. F-003 ships the schema and repository layer
 only; see ADR-0004 for the full scope statement.
 """
+
 from __future__ import annotations
 
 import uuid

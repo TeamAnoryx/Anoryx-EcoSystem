@@ -34,6 +34,7 @@ action_taken CHECK constraint covers the union of all valid values:
   secret_leaked:      masked | tokenized | blocked
   policy_violated:    blocked | throttled | warned
 """
+
 from __future__ import annotations
 
 from typing import Sequence, Union
@@ -128,19 +129,16 @@ def upgrade() -> None:
             name="ck_eal_latency_ms",
         ),
         sa.CheckConstraint(
-            "classifier_score IS NULL OR "
-            "(classifier_score >= 0 AND classifier_score <= 1)",
+            "classifier_score IS NULL OR " "(classifier_score >= 0 AND classifier_score <= 1)",
             name="ck_eal_classifier_score",
         ),
         sa.CheckConstraint(
-            "traffic_volume IS NULL OR "
-            "(traffic_volume >= 0 AND traffic_volume <= 1000000000)",
+            "traffic_volume IS NULL OR " "(traffic_volume >= 0 AND traffic_volume <= 1000000000)",
             name="ck_eal_traffic_volume",
         ),
         # severity — PiiBlockedEvent.severity (matches events.schema.json)
         sa.CheckConstraint(
-            "severity IS NULL OR "
-            "severity IN ('low','medium','high','critical')",
+            "severity IS NULL OR " "severity IN ('low','medium','high','critical')",
             name="ck_eal_severity",
         ),
         sa.CheckConstraint(
@@ -153,14 +151,12 @@ def upgrade() -> None:
             name="ck_eal_direction",
         ),
         sa.CheckConstraint(
-            "framework IS NULL OR "
-            "framework IN ('SOC2','GDPR','HIPAA','EU_AI_ACT')",
+            "framework IS NULL OR " "framework IN ('SOC2','GDPR','HIPAA','EU_AI_ACT')",
             name="ck_eal_framework",
         ),
         # status — ComplianceCheckedEvent.status (matches events.schema.json)
         sa.CheckConstraint(
-            "status IS NULL OR "
-            "status IN ('passed','failed','not_applicable')",
+            "status IS NULL OR " "status IN ('passed','failed','not_applicable')",
             name="ck_eal_status",
         ),
         # action_taken: union of valid values across all event variants that use it.
@@ -180,9 +176,7 @@ def upgrade() -> None:
     # Indexes
     op.create_index("ix_eal_tenant_id", "events_audit_log", ["tenant_id"])
     op.create_index("ix_eal_event_type", "events_audit_log", ["event_type"])
-    op.create_index(
-        "ix_eal_tenant_event_type", "events_audit_log", ["tenant_id", "event_type"]
-    )
+    op.create_index("ix_eal_tenant_event_type", "events_audit_log", ["tenant_id", "event_type"])
     op.create_index("ix_eal_sequence_number", "events_audit_log", ["sequence_number"])
     # BRIN index for range scans on large, mostly-append tables.
     op.create_index(
@@ -199,9 +193,7 @@ def upgrade() -> None:
     # BEFORE UPDATE: always raises.
     # BEFORE DELETE: always raises.
     # ------------------------------------------------------------------
-    conn.execute(
-        sa.text(
-            """
+    conn.execute(sa.text("""
             CREATE OR REPLACE FUNCTION deny_audit_log_modification()
             RETURNS TRIGGER AS $$
             BEGIN
@@ -212,113 +204,65 @@ def upgrade() -> None:
                 RETURN NULL;
             END;
             $$ LANGUAGE plpgsql;
-            """
-        )
-    )
-    conn.execute(
-        sa.text(
-            """
+            """))
+    conn.execute(sa.text("""
             CREATE TRIGGER trg_eal_deny_update
             BEFORE UPDATE ON events_audit_log
             FOR EACH ROW EXECUTE FUNCTION deny_audit_log_modification();
-            """
-        )
-    )
-    conn.execute(
-        sa.text(
-            """
+            """))
+    conn.execute(sa.text("""
             CREATE TRIGGER trg_eal_deny_delete
             BEFORE DELETE ON events_audit_log
             FOR EACH ROW EXECUTE FUNCTION deny_audit_log_modification();
-            """
-        )
-    )
+            """))
 
     # ------------------------------------------------------------------
     # RLS: ENABLE and FORCE on events_audit_log.
     # USING (false) for UPDATE/DELETE policies means no rows are eligible.
     # INSERT and SELECT are permissive (app sets tenant context).
     # ------------------------------------------------------------------
-    conn.execute(
-        sa.text("ALTER TABLE events_audit_log ENABLE ROW LEVEL SECURITY")
-    )
-    conn.execute(
-        sa.text("ALTER TABLE events_audit_log FORCE ROW LEVEL SECURITY")
-    )
+    conn.execute(sa.text("ALTER TABLE events_audit_log ENABLE ROW LEVEL SECURITY"))
+    conn.execute(sa.text("ALTER TABLE events_audit_log FORCE ROW LEVEL SECURITY"))
     # SELECT policy: allow reads for rows matching tenant context.
     # The OR ... IS NULL branch is intentionally retained for F-003; the strict
     # no-bypass policy is deferred to F-003b (app-role + RLS hardening).
-    conn.execute(
-        sa.text(
-            """
+    conn.execute(sa.text("""
             CREATE POLICY eal_select ON events_audit_log
             FOR SELECT
             USING (
                 tenant_id = current_setting('app.current_tenant_id', true)
                 OR current_setting('app.current_tenant_id', true) IS NULL
             )
-            """
-        )
-    )
+            """))
     # INSERT policy: allow inserts (the trigger + application handle validation).
-    conn.execute(
-        sa.text(
-            """
+    conn.execute(sa.text("""
             CREATE POLICY eal_insert ON events_audit_log
             FOR INSERT
             WITH CHECK (true)
-            """
-        )
-    )
+            """))
     # UPDATE policy: no rows are eligible (USING false = nothing visible to update).
-    conn.execute(
-        sa.text(
-            """
+    conn.execute(sa.text("""
             CREATE POLICY eal_deny_update ON events_audit_log
             FOR UPDATE
             USING (false)
-            """
-        )
-    )
+            """))
     # DELETE policy: no rows are eligible.
-    conn.execute(
-        sa.text(
-            """
+    conn.execute(sa.text("""
             CREATE POLICY eal_deny_delete ON events_audit_log
             FOR DELETE
             USING (false)
-            """
-        )
-    )
+            """))
 
 
 def downgrade() -> None:
     conn = op.get_bind()
 
-    conn.execute(
-        sa.text("DROP POLICY IF EXISTS eal_deny_delete ON events_audit_log")
-    )
-    conn.execute(
-        sa.text("DROP POLICY IF EXISTS eal_deny_update ON events_audit_log")
-    )
-    conn.execute(
-        sa.text("DROP POLICY IF EXISTS eal_insert ON events_audit_log")
-    )
-    conn.execute(
-        sa.text("DROP POLICY IF EXISTS eal_select ON events_audit_log")
-    )
-    conn.execute(
-        sa.text(
-            "DROP TRIGGER IF EXISTS trg_eal_deny_update ON events_audit_log"
-        )
-    )
-    conn.execute(
-        sa.text(
-            "DROP TRIGGER IF EXISTS trg_eal_deny_delete ON events_audit_log"
-        )
-    )
-    conn.execute(
-        sa.text("DROP FUNCTION IF EXISTS deny_audit_log_modification()")
-    )
+    conn.execute(sa.text("DROP POLICY IF EXISTS eal_deny_delete ON events_audit_log"))
+    conn.execute(sa.text("DROP POLICY IF EXISTS eal_deny_update ON events_audit_log"))
+    conn.execute(sa.text("DROP POLICY IF EXISTS eal_insert ON events_audit_log"))
+    conn.execute(sa.text("DROP POLICY IF EXISTS eal_select ON events_audit_log"))
+    conn.execute(sa.text("DROP TRIGGER IF EXISTS trg_eal_deny_update ON events_audit_log"))
+    conn.execute(sa.text("DROP TRIGGER IF EXISTS trg_eal_deny_delete ON events_audit_log"))
+    conn.execute(sa.text("DROP FUNCTION IF EXISTS deny_audit_log_modification()"))
 
     op.drop_table("events_audit_log")

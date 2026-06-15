@@ -12,6 +12,7 @@ by a Postgres trigger in migration 0004.
 SIGNATURE: The compact-JWS signature column is stored as-is for format evidence.
 Cryptographic verification of the signature is deferred to F-008.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -64,9 +65,7 @@ class Policy(Base):
     # Monotonic version counter (per policy_id). Updated as new versions arrive.
     current_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
-    effective_from: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     # Compact-JWS signature — presence+format enforced; crypto-verify in F-008.
     signature: Mapped[str] = mapped_column(String(_SIGNATURE_MAX), nullable=False)
@@ -139,9 +138,7 @@ class PolicyVersion(Base):
     project_id: Mapped[str] = mapped_column(String(64), nullable=False)
     agent_id: Mapped[str] = mapped_column(String(64), nullable=False)
 
-    effective_from: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     signature: Mapped[str] = mapped_column(String(_SIGNATURE_MAX), nullable=False)
     policy_payload: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -168,7 +165,4 @@ class PolicyVersion(Base):
     )
 
     def __repr__(self) -> str:
-        return (
-            f"<PolicyVersion policy_id={self.policy_id!r} "
-            f"v={self.policy_version}>"
-        )
+        return f"<PolicyVersion policy_id={self.policy_id!r} " f"v={self.policy_version}>"

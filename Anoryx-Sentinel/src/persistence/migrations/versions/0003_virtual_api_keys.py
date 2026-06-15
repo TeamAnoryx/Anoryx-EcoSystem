@@ -8,6 +8,7 @@ SECURITY: No plaintext keys are stored. key_fingerprint = HMAC-SHA256(key, secre
 Auth compares HMACs (constant-time) — never raw key strings.
 The row is the authoritative source of tenant/team/project/agent IDs.
 """
+
 from __future__ import annotations
 
 from typing import Sequence, Union

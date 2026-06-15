@@ -4,6 +4,7 @@ Uses the SYNC psycopg driver for migrations (psycopg, not asyncpg).
 DATABASE_URL is loaded from .env via python-dotenv; the asyncpg URL prefix
 is converted to postgresql+psycopg:// here. No URL is ever logged or printed.
 """
+
 from __future__ import annotations
 
 import os

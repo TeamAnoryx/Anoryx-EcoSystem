@@ -8,6 +8,7 @@ The row is the authoritative source of tenant/team/project/agent IDs.
 Auth resolves IDs from this row, NEVER trusts client-supplied headers.
 This mirrors the F-001 lesson: server-side ID resolution is non-negotiable.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -66,12 +67,8 @@ class VirtualApiKey(Base):
         nullable=False,
         server_default=func.now(),
     )
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    last_used_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("ix_vak_key_fingerprint", "key_fingerprint", unique=True),

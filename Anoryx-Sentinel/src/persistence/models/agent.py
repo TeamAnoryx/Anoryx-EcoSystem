@@ -4,6 +4,7 @@ Agents are internal Sentinel component names (lowercase slugs) per contracts/ids
 agent_id is VARCHAR(64) with slug pattern enforcement at the application layer.
 An agent row is the canonical registry of known Sentinel agent component names.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
