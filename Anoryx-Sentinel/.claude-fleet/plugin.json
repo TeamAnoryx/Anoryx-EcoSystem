@@ -1,0 +1,14 @@
+{
+  "name": "anoryx-ecosystem-fleet",
+  "version": "0.1.0",
+  "description": "Agent build fleet for the Anoryx EcoSystem monorepo. Focused on Anoryx-Sentinel MVP.",
+  "ecosystem": {
+    "monorepo": "TeamAnoryx/Anoryx-EcoSystem",
+    "active_subproject": "Anoryx-Sentinel",
+    "planned_subprojects": ["Anoryx-AI-Orchestrator", "Delta", "Rendly"]
+  },
+  "agents": ".claude/agents/",
+  "skills": ".claude/skills/",
+  "commands": ".claude/commands/",
+  "hooks": ".claude/settings.json"
+}

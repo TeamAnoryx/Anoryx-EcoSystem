@@ -27,6 +27,18 @@ _SENTINEL_ROOT = Path(__file__).resolve().parents[1]
 _MONOREPO_ROOT = _SENTINEL_ROOT.parent
 _TASKS_PATH = _SENTINEL_ROOT / "orchestrator" / "tasks.yaml"
 
+# Isolate the fleet's harness config from Claude Code's interactive config.
+# The SDK spawns the `claude` CLI, which loads hooks + settings from
+# CLAUDE_CONFIG_DIR. Pointing it at .claude-fleet gives the fleet its full
+# five-hook chain (the root .claude/ keeps only interactive guardrails).
+# Set at import time so it is in os.environ before any query() subprocess.
+_FLEET_CONFIG_DIR = (_SENTINEL_ROOT / ".claude-fleet").resolve()
+os.environ["CLAUDE_CONFIG_DIR"] = str(_FLEET_CONFIG_DIR)
+print(
+    f"[orchestrator] CLAUDE_CONFIG_DIR = {os.environ.get('CLAUDE_CONFIG_DIR')}",
+    flush=True,
+)
+
 # Auth: the fleet runs on a long-lived Claude Code OAuth token (Max
 # subscription), minted with `claude setup-token` and read by the CLI the SDK
 # spawns. The conductor already forwards os.environ to each subprocess, so the
