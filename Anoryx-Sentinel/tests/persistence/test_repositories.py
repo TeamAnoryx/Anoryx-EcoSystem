@@ -4,8 +4,8 @@ Tests: TenantRepository, TeamRepository, ProjectRepository, PolicyRepository.
 VirtualApiKeyRepository has its own dedicated test file (test_virtual_api_key.py).
 AuditLogRepository has its own dedicated test file (test_audit_chain.py).
 
-NOTE: get_by_id on all repositories is a PK-only lookup in F-003.
-Tenant-scoped isolation on get_by_id is deferred to F-003b.
+NOTE: caller_tenant_id is now a required parameter on all repository get_by_id
+methods (LOW-1, ADR-0005 round-2). Tests pass the correct tenant_id explicitly.
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ async def test_team_create_and_get(session: AsyncSession) -> None:
     assert team.tenant_id == tenant.tenant_id
     assert team.name == "Engineering"
 
-    fetched = await team_repo.get_by_id(team.team_id)
+    fetched = await team_repo.get_by_id(team.team_id, caller_tenant_id=tenant.tenant_id)
     assert fetched.team_id == team.team_id
 
 
@@ -102,7 +102,7 @@ async def test_team_create_and_get(session: AsyncSession) -> None:
 async def test_team_not_found_raises(session: AsyncSession) -> None:
     repo = TeamRepository(session)
     with pytest.raises(TeamNotFoundError):
-        await repo.get_by_id(_uid())
+        await repo.get_by_id(_uid(), caller_tenant_id=_uid())
 
 
 @pytest.mark.asyncio
@@ -155,7 +155,7 @@ async def test_project_create_and_get(session: AsyncSession) -> None:
         name="My Project",
     )
     assert project.project_id
-    fetched = await proj_repo.get_by_id(project.project_id)
+    fetched = await proj_repo.get_by_id(project.project_id, caller_tenant_id=tenant.tenant_id)
     assert fetched.project_id == project.project_id
 
 
@@ -163,7 +163,7 @@ async def test_project_create_and_get(session: AsyncSession) -> None:
 async def test_project_not_found_raises(session: AsyncSession) -> None:
     repo = ProjectRepository(session)
     with pytest.raises(ProjectNotFoundError):
-        await repo.get_by_id(_uid())
+        await repo.get_by_id(_uid(), caller_tenant_id=_uid())
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +205,7 @@ async def test_policy_upsert_and_get(session: AsyncSession) -> None:
     assert policy.current_version == 1
     assert version.policy_version == 1
 
-    fetched = await p_repo.get_by_id(policy_id)
+    fetched = await p_repo.get_by_id(policy_id, caller_tenant_id=tenant.tenant_id)
     assert fetched.policy_id == policy_id
 
 
@@ -275,7 +275,7 @@ async def test_policy_version_history(session: AsyncSession) -> None:
 async def test_policy_not_found_raises(session: AsyncSession) -> None:
     p_repo = PolicyRepository(session)
     with pytest.raises(PolicyNotFoundError):
-        await p_repo.get_by_id(_uid())
+        await p_repo.get_by_id(_uid(), caller_tenant_id=_uid())
 
 
 @pytest.mark.asyncio

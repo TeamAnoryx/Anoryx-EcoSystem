@@ -10,8 +10,8 @@ Verifies:
 - Never-expiring keys (expires_at=None) are accepted.
 - Not-yet-expired keys are accepted.
 
-NOTE: get_by_id is a PK-only lookup in F-003. Tenant scoping on get_by_id
-is deferred to F-003b.
+NOTE: caller_tenant_id is now a required parameter on get_by_id (LOW-1,
+ADR-0005 round-2). Tests pass the correct tenant_id explicitly.
 """
 
 from __future__ import annotations
@@ -142,7 +142,7 @@ async def test_deactivated_key_cannot_be_looked_up(session: AsyncSession) -> Non
         agent_id="gateway-core",
     )
 
-    await repo.deactivate(key_row.key_id)
+    await repo.deactivate(key_row.key_id, caller_tenant_id=tenant_id)
 
     with pytest.raises(VirtualApiKeyAuthError):
         await repo.lookup_by_plaintext(plaintext)
@@ -290,7 +290,7 @@ async def test_get_by_id_returns_key(session: AsyncSession) -> None:
         agent_id="gateway-core",
     )
 
-    fetched = await repo.get_by_id(key_row.key_id)
+    fetched = await repo.get_by_id(key_row.key_id, caller_tenant_id=tenant_id)
     assert fetched.key_id == key_row.key_id
 
 
@@ -299,4 +299,4 @@ async def test_get_by_id_nonexistent_raises(session: AsyncSession) -> None:
     """get_by_id with a nonexistent key_id raises VirtualApiKeyNotFoundError."""
     repo = VirtualApiKeyRepository(session)
     with pytest.raises(VirtualApiKeyNotFoundError):
-        await repo.get_by_id(_uid())
+        await repo.get_by_id(_uid(), caller_tenant_id=_uid())

@@ -65,7 +65,14 @@ def _get_async_url() -> str:
 
 async def _insert_one(url: str, event_data: dict) -> int:
     """Open a separate DB session, insert one event, commit, return sequence_number."""
-    engine = create_async_engine(url, pool_pre_ping=True, echo=False)
+    # server_settings sets app.session_kind='privileged' at connect time —
+    # required for _assert_privileged_session's secondary defense-in-depth check.
+    engine = create_async_engine(
+        url,
+        pool_pre_ping=True,
+        echo=False,
+        connect_args={"server_settings": {"app.session_kind": "privileged"}},
+    )
     factory = async_sessionmaker(
         bind=engine,
         class_=AsyncSession,
@@ -111,7 +118,12 @@ async def test_concurrent_inserts_do_not_corrupt_chain() -> None:
     ), f"Duplicate sequence numbers: {sequence_numbers}"
 
     # Validate the full chain from a fresh read session.
-    engine = create_async_engine(url, pool_pre_ping=True, echo=False)
+    engine = create_async_engine(
+        url,
+        pool_pre_ping=True,
+        echo=False,
+        connect_args={"server_settings": {"app.session_kind": "privileged"}},
+    )
     factory = async_sessionmaker(
         bind=engine,
         class_=AsyncSession,

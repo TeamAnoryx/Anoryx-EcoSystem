@@ -1,4 +1,4 @@
-"""AuditLogRepository — append-only tamper-evident events_audit_log (F-003).
+"""AuditLogRepository — append-only tamper-evident events_audit_log (F-003b).
 
 APPEND-ONLY: No update or delete methods exist. The DB also enforces this via
 BEFORE UPDATE/DELETE triggers and RLS (migration 0005).
@@ -11,12 +11,30 @@ advisory lock (pg_advisory_xact_lock).  The lock id is _CHAIN_ADVISORY_LOCK_ID.
 This serializes the critical section (tip fetch → insert) globally within the DB.
 The lock is released automatically at transaction end.
 
-SESSION NOTE:
-  _get_tip_hash() and validate_chain() read ALL rows across all tenants to
-  maintain the single global chain.  The session passed in must be able to see
-  all rows in events_audit_log (e.g., a session connecting as a BYPASSRLS role,
-  or a session where the RLS `OR ... IS NULL` branch applies).  F-003 does not
-  enforce which session type is used here — that enforcement is deferred to F-003b.
+SESSION REQUIREMENT (F-003b, ADR-0005):
+  append(), _get_tip_hash(), and validate_chain() MUST run on the PRIVILEGED
+  session (get_privileged_session() / DATABASE_URL / BYPASSRLS role).
+
+  Reason: the chain is a single global ordered sequence across ALL tenants.
+  On a tenant-scoped session (sentinel_app + RLS), events_audit_log is filtered
+  to rows for the current tenant only. A tip-read on a tenant session would
+  return that tenant's last row, not the global tip — so a subsequent append()
+  would compute prev_hash against the wrong predecessor and FORK THE CHAIN.
+  validate_chain() on a tenant session would walk only one tenant's subset and
+  report either a spurious break (gaps in sequence_number) or validate a
+  non-global fragment. Both are silent corruption signals.
+
+  _assert_privileged_session() is called at the start of each chain operation.
+  PRIMARY CHECK: it queries `SELECT current_user` and rejects the session if
+  current_user equals SENTINEL_APP_ROLE ("sentinel_app").  This is the
+  LOAD-BEARING guard — a sentinel_app connection cannot change its Postgres
+  role identity regardless of any GUC SET statements it issues.
+  SECONDARY CHECK (defense-in-depth): it also verifies that app.session_kind
+  equals 'privileged', a GUC set at connect time by the privileged engine's
+  event hook.  This marker ALONE is insufficient because Postgres allows any
+  role to SET a custom GUC; it serves as corroboration, not the primary gate.
+  BOTH checks must pass; if either fails the operation is refused.
+  Fail-closed: if the method cannot confirm it is privileged, it refuses.
 
 validate_chain() walks all rows in sequence_number order using async streaming
 (stream_scalars) to avoid materializing the entire table in memory.
@@ -30,6 +48,7 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from persistence.database import SENTINEL_APP_ROLE, PrivilegedSessionRequiredError
 from persistence.hash_chain import GENESIS_HASH, compute_row_hash
 from persistence.models.events_audit_log import (
     ACTION_TAKEN_BY_EVENT_TYPE,
@@ -107,15 +126,69 @@ def _row_to_hash_data(row: EventsAuditLog) -> dict[str, Any]:
 class AuditLogRepository:
     """Append-only repository for the tamper-evident events_audit_log.
 
-    The session passed to __init__ is used for all operations.  Chain-tip
-    reads in _get_tip_hash() and the full-table walk in validate_chain()
-    require a session that can see all rows in events_audit_log across all
-    tenants.  Callers are responsible for supplying an appropriate session;
-    enforcement of which session type to use is deferred to F-003b.
+    The session passed to __init__ is used for all operations.
+
+    PRIVILEGED SESSION REQUIRED for chain ops (F-003b / ADR-0005):
+    append(), _get_tip_hash(), and validate_chain() assert they are running on
+    the privileged session (DATABASE_URL / BYPASSRLS) before executing. Calling
+    any of these methods on a tenant-scoped session raises
+    PrivilegedSessionRequiredError immediately — the chain is never read or
+    written on a filtered (tenant-scoped) view.
+
+    list_for_tenant() is the only method safe to call on a tenant session; it
+    does an explicit WHERE tenant_id = ... and the RLS predicate also filters
+    the visible rows to the caller's tenant.
     """
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def _assert_privileged_session(self) -> None:
+        """Assert this session is the privileged (non-tenant-scoped) session.
+
+        PRIMARY CHECK (load-bearing): queries the Postgres current_user.
+        If current_user is SENTINEL_APP_ROLE ("sentinel_app") the session is
+        the non-privileged app role and MUST be rejected.  A sentinel_app
+        connection cannot change its Postgres role identity via any SET
+        statement — the role is fixed at login time for the pool lifetime.
+
+        SECONDARY CHECK (defense-in-depth corroboration): reads
+        app.session_kind, which the privileged engine sets to 'privileged' via
+        a connect-time event hook (database.py).  This marker alone is
+        insufficient — Postgres allows any role to SET a custom GUC in its own
+        session — but if BOTH the role check and the marker check pass the
+        caller has high confidence they are on the correct engine.
+
+        BOTH checks must pass.  Fail-closed: if either check cannot confirm
+        privilege, the operation is refused with PrivilegedSessionRequiredError.
+        """
+        # PRIMARY: role check — the only forgery-resistant assertion.
+        role_result = await self._session.execute(text("SELECT current_user"))
+        current_role: str | None = role_result.scalar_one_or_none()
+        if current_role == SENTINEL_APP_ROLE:
+            raise PrivilegedSessionRequiredError(
+                f"Chain operation (append / _get_tip_hash / validate_chain) must "
+                f"run on the privileged session (get_privileged_session()). "
+                f"The current Postgres role is {current_role!r} (the non-privileged "
+                f"sentinel_app role). Running chain ops on a tenant session would "
+                f"truncate the visible rows to one tenant's subset and fork or "
+                f"corrupt the global hash chain. "
+                f"HINT: the GUC app.current_tenant_id is irrelevant to this check — "
+                f"clearing or unsetting the GUC does NOT grant chain-op access."
+            )
+        # SECONDARY: session-kind marker — corroboration, not load-bearing.
+        marker_result = await self._session.execute(
+            text("SELECT current_setting('app.session_kind', true)")
+        )
+        session_kind: str | None = marker_result.scalar_one_or_none()
+        if session_kind != "privileged":
+            raise PrivilegedSessionRequiredError(
+                "Chain operation requires a session opened via get_privileged_session(). "
+                "The app.session_kind marker is not 'privileged' on this connection "
+                f"(got {session_kind!r}). This is the secondary defense-in-depth check. "
+                "Ensure AuditLogRepository is constructed with a session from "
+                "get_privileged_session(), not get_tenant_session()."
+            )
 
     async def append(self, event_data: dict[str, Any]) -> EventsAuditLog:
         """Append a new event to the audit log.
@@ -131,7 +204,9 @@ class AuditLogRepository:
 
         Raises AuditLogAppendError for invalid event_type, missing required
         fields, or invalid action_taken for the given event_type.
+        Raises PrivilegedSessionRequiredError if called on a tenant session.
         """
+        await self._assert_privileged_session()
         self._validate_event_data(event_data)
 
         # Acquire a transaction-scoped advisory lock.
@@ -142,7 +217,8 @@ class AuditLogRepository:
         )
 
         # Fetch the current chain tip (last row by sequence_number).
-        prev_hash = await self._get_tip_hash()
+        # Use the unchecked form — we already asserted privileged above.
+        prev_hash = await self._get_tip_hash_unchecked()
 
         # Build the row data dict for hashing.
         row_data = dict(event_data)
@@ -188,18 +264,34 @@ class AuditLogRepository:
         await self._session.flush()
         return row
 
-    async def _get_tip_hash(self) -> str:
-        """Return the row_hash of the last row in the chain, or GENESIS_HASH.
+    async def _get_tip_hash_unchecked(self) -> str:
+        """Return the row_hash of the last chain row, or GENESIS_HASH.
 
-        This query reads the GLOBAL chain (all tenants).  The session must be
-        able to see all rows in events_audit_log to maintain the single chain.
+        Internal helper: does NOT assert the privileged session.  Callers
+        that need the session guard must use _get_tip_hash() instead.
+        Exists to avoid a redundant round-trip when append() — which already
+        called _assert_privileged_session() — needs the tip hash.
         """
         stmt = (
-            select(EventsAuditLog.row_hash).order_by(EventsAuditLog.sequence_number.desc()).limit(1)
+            select(EventsAuditLog.row_hash)
+            .order_by(EventsAuditLog.sequence_number.desc())
+            .limit(1)
         )
         result = await self._session.execute(stmt)
         tip_hash = result.scalar_one_or_none()
         return tip_hash if tip_hash is not None else GENESIS_HASH
+
+    async def _get_tip_hash(self) -> str:
+        """Return the row_hash of the last row in the chain, or GENESIS_HASH.
+
+        Reads the GLOBAL chain across all tenants. Must be called on the
+        privileged session. Raises PrivilegedSessionRequiredError otherwise.
+        Public / external callers (e.g. standalone tip inspection) should use
+        this form. append() uses _get_tip_hash_unchecked() to avoid a second
+        round-trip after the guard already ran.
+        """
+        await self._assert_privileged_session()
+        return await self._get_tip_hash_unchecked()
 
     async def validate_chain(self) -> ChainValidationResult:
         """Walk all rows in sequence_number order and verify the hash chain.
@@ -212,9 +304,11 @@ class AuditLogRepository:
         2. row.row_hash == recomputed hash.
 
         Returns a ChainValidationResult. Does NOT raise on mismatch — reports it.
-        This is a read-only operation.  The session must be able to see all rows
-        in events_audit_log to walk the GLOBAL single chain across all tenants.
+        Must be called on the privileged session (DATABASE_URL / BYPASSRLS) so it
+        walks the GLOBAL chain across all tenants, not a tenant-filtered subset.
+        Raises PrivilegedSessionRequiredError if called on a tenant session.
         """
+        await self._assert_privileged_session()
         stmt = select(EventsAuditLog).order_by(EventsAuditLog.sequence_number)
         stream = await self._session.stream_scalars(stmt)
 
@@ -250,6 +344,25 @@ class AuditLogRepository:
                 )
 
             expected_prev_hash = row.row_hash
+
+        # Belt-and-suspenders: after the role assert above, this case can only
+        # arise if the chain is genuinely empty.  But we explicitly refuse to
+        # return is_valid=True with rows_checked=0 from a non-privileged session
+        # (which would be a false-passing validation over an RLS-truncated empty
+        # view).  The role assert above already prevents a non-privileged caller
+        # from reaching here; this guard is a fail-closed backstop.
+        if checked == 0:
+            # Re-confirm we are on the privileged role before reporting a clean
+            # empty-chain result.  If somehow the assert above was bypassed and
+            # we are on the app role, raise rather than return is_valid=True.
+            recheck = await self._session.execute(text("SELECT current_user"))
+            recheck_role: str | None = recheck.scalar_one_or_none()
+            if recheck_role == SENTINEL_APP_ROLE:
+                raise PrivilegedSessionRequiredError(
+                    "validate_chain() reached zero-rows result on a non-privileged "
+                    "session. Refusing to report is_valid=True over an RLS-truncated "
+                    "view. Use get_privileged_session() for chain validation."
+                )
 
         return ChainValidationResult(
             is_valid=True,

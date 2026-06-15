@@ -1,9 +1,9 @@
-"""Migration tests: forward, rollback, re-apply (F-003).
+"""Migration tests: forward, rollback, re-apply (F-003 + F-003b).
 
 Tests run against the live sentinel-postgres container.
 Migrations are tested in a subprocess to avoid import-time side effects.
 
-Migration chain: 0001 -> 0002 -> 0003 -> 0004 -> 0005 (head)
+Migration chain: 0001 -> 0002 -> 0003 -> 0004 -> 0005 -> 0006 (head)
 """
 
 from __future__ import annotations
@@ -42,11 +42,11 @@ def _run_alembic(*args: str) -> subprocess.CompletedProcess:
 
 
 @pytest.mark.integration
-def test_current_head_is_0005() -> None:
-    """Alembic current should report head at revision 0005."""
+def test_current_head_is_0006() -> None:
+    """Alembic current should report head at revision 0006 (F-003b)."""
     result = _run_alembic("current")
     assert result.returncode == 0, f"alembic current failed:\n{result.stderr}"
-    assert "0005" in result.stdout or "0005" in result.stderr
+    assert "0006" in result.stdout or "0006" in result.stderr
 
 
 @pytest.mark.integration
@@ -60,7 +60,7 @@ def test_migration_downgrade_and_reapply() -> None:
     assert result_up.returncode == 0, f"upgrade head after downgrade failed:\n{result_up.stderr}"
     # Confirm head is back.
     result_current = _run_alembic("current")
-    assert "0005" in result_current.stdout or "0005" in result_current.stderr
+    assert "0006" in result_current.stdout or "0006" in result_current.stderr
 
 
 @pytest.mark.integration
@@ -69,7 +69,7 @@ def test_incremental_downgrade() -> None:
 
     Always re-applies to head at the end to leave the DB in a valid state.
     """
-    num_revisions = 5  # 0001 through 0005
+    num_revisions = 6  # 0001 through 0006
 
     try:
         for _step in range(num_revisions):

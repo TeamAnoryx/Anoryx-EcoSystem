@@ -1,8 +1,9 @@
-"""ProjectRepository — data access for the projects table (F-003).
+"""ProjectRepository — data access for the projects table (F-003b).
 
-Tenant isolation enforcement (caller_tenant_id scoping on get_by_id, RLS role
-switching) is deferred to F-003b. F-003 ships the schema and repository layer
-only; see ADR-0004 for the full scope statement.
+F-003b (ADR-0005): get_by_id now accepts caller_tenant_id as a defense-in-depth
+guard. RLS on the tenant session is the primary boundary; this check is the second
+lock that makes the security intent explicit in code and guards privileged-session
+misuse.
 """
 
 from __future__ import annotations
@@ -46,12 +47,17 @@ class ProjectRepository:
         await self._session.flush()
         return project
 
-    async def get_by_id(self, project_id: str) -> Project:
+    async def get_by_id(
+        self, project_id: str, caller_tenant_id: str
+    ) -> Project:
         """Return the project for project_id, or raise ProjectNotFoundError.
 
-        PK lookup only. Tenant scoping is deferred to F-003b.
+        caller_tenant_id is REQUIRED (LOW-1, ADR-0005 round-2).  The WHERE
+        clause always includes AND tenant_id = caller_tenant_id.  RLS on the
+        tenant session is the primary boundary; this check is the second lock.
         """
         stmt = select(Project).where(Project.project_id == project_id)
+        stmt = stmt.where(Project.tenant_id == caller_tenant_id)
         result = await self._session.execute(stmt)
         project = result.scalar_one_or_none()
         if project is None:
@@ -81,9 +87,11 @@ class ProjectRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
-    async def deactivate(self, project_id: str) -> Project:
+    async def deactivate(
+        self, project_id: str, caller_tenant_id: str
+    ) -> Project:
         """Soft-delete a project by marking it inactive."""
-        project = await self.get_by_id(project_id)
+        project = await self.get_by_id(project_id, caller_tenant_id=caller_tenant_id)
         project.is_active = False
         project.updated_at = datetime.now(timezone.utc)
         await self._session.flush()
