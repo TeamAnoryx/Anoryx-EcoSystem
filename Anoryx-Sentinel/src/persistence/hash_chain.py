@@ -18,6 +18,7 @@ Column names in CANONICAL_FIELDS match contracts/events.schema.json exactly:
   severity  — PiiBlockedEvent.severity (NOT pii_severity)
   status    — ComplianceCheckedEvent.status (NOT compliance_status)
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -48,7 +49,7 @@ CANONICAL_FIELDS = [
     "latency_ms",
     "cost_estimate_cents",
     "pattern_name",
-    "severity",          # pii_blocked — matches events.schema.json PiiBlockedEvent.severity
+    "severity",  # pii_blocked — matches events.schema.json PiiBlockedEvent.severity
     "action_taken",
     "classifier_score",
     "rule_matched",
@@ -58,7 +59,7 @@ CANONICAL_FIELDS = [
     "violation_type",
     "framework",
     "control_id",
-    "status",            # compliance_checked — matches events.schema.json ComplianceCheckedEvent.status
+    "status",  # ComplianceCheckedEvent.status (F-002)
     "detected_endpoint",
     "traffic_volume",
     "first_seen_at",

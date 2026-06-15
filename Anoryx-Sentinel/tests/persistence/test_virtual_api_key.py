@@ -13,6 +13,7 @@ Verifies:
 NOTE: get_by_id is a PK-only lookup in F-003. Tenant scoping on get_by_id
 is deferred to F-003b.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -20,11 +21,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from persistence.repositories.tenant_repository import TenantRepository
-from persistence.repositories.team_repository import TeamRepository
 from persistence.repositories.project_repository import ProjectRepository
+from persistence.repositories.team_repository import TeamRepository
+from persistence.repositories.tenant_repository import TenantRepository
 from persistence.repositories.virtual_api_key_repository import (
     VirtualApiKeyAuthError,
     VirtualApiKeyNotFoundError,
@@ -163,9 +165,7 @@ async def test_db_row_does_not_contain_plaintext(session: AsyncSession) -> None:
 
     # Raw DB query to check stored values.
     result = await session.execute(
-        text(
-            "SELECT key_fingerprint, label FROM virtual_api_keys WHERE key_id = :kid"
-        ),
+        text("SELECT key_fingerprint, label FROM virtual_api_keys WHERE key_id = :kid"),
         {"kid": key_row.key_id},
     )
     row = result.fetchone()
@@ -192,7 +192,7 @@ async def test_fingerprint_uniqueness_enforced(session: AsyncSession) -> None:
         agent_id="gateway-core",
     )
 
-    with pytest.raises(Exception):  # IntegrityError from DB unique constraint.
+    with pytest.raises(IntegrityError):  # DB unique constraint.
         await repo.create(
             plaintext_key=plaintext,
             tenant_id=tenant_id,

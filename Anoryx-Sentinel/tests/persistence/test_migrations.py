@@ -5,6 +5,7 @@ Migrations are tested in a subprocess to avoid import-time side effects.
 
 Migration chain: 0001 -> 0002 -> 0003 -> 0004 -> 0005 (head)
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -53,14 +54,10 @@ def test_migration_downgrade_and_reapply() -> None:
     """Downgrade to base, then re-apply head. All migrations must be reversible."""
     # Downgrade to base.
     result_down = _run_alembic("downgrade", "base")
-    assert result_down.returncode == 0, (
-        f"downgrade base failed:\n{result_down.stderr}"
-    )
+    assert result_down.returncode == 0, f"downgrade base failed:\n{result_down.stderr}"
     # Re-apply head.
     result_up = _run_alembic("upgrade", "head")
-    assert result_up.returncode == 0, (
-        f"upgrade head after downgrade failed:\n{result_up.stderr}"
-    )
+    assert result_up.returncode == 0, f"upgrade head after downgrade failed:\n{result_up.stderr}"
     # Confirm head is back.
     result_current = _run_alembic("current")
     assert "0005" in result_current.stdout or "0005" in result_current.stderr
@@ -75,7 +72,7 @@ def test_incremental_downgrade() -> None:
     num_revisions = 5  # 0001 through 0005
 
     try:
-        for step in range(num_revisions):
+        for _step in range(num_revisions):
             result = _run_alembic("downgrade", "-1")
             if result.returncode != 0:
                 # May already be at base; check and break.
@@ -87,6 +84,6 @@ def test_incremental_downgrade() -> None:
     finally:
         # Always re-apply head so subsequent tests have a complete schema.
         result_up = _run_alembic("upgrade", "head")
-        assert result_up.returncode == 0, (
-            f"Failed to re-apply head after incremental downgrade:\n{result_up.stderr}"
-        )
+        assert (
+            result_up.returncode == 0
+        ), f"Failed to re-apply head after incremental downgrade:\n{result_up.stderr}"

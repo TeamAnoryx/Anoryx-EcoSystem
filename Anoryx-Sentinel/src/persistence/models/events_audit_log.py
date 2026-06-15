@@ -21,6 +21,7 @@ Column naming — F-003 conforms to contracts/events.schema.json (F-002):
   severity        — PiiBlockedEvent.severity (NOT pii_severity)
   status          — ComplianceCheckedEvent.status (NOT compliance_status)
 """
+
 from __future__ import annotations
 
 from sqlalchemy import (
@@ -29,13 +30,11 @@ from sqlalchemy import (
     Index,
     Numeric,
     String,
-    Text,
-    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from persistence.models.base import Base
 from persistence.hash_chain import GENESIS_HASH  # noqa: F401 — re-exported for callers
+from persistence.models.base import Base
 
 # event_type enum values (matches contracts/events.schema.json).
 VALID_EVENT_TYPES = frozenset(
@@ -70,9 +69,7 @@ class EventsAuditLog(Base):
 
     # Monotonic sequence number — used to order the hash chain unambiguously.
     # bigserial: Postgres auto-increment, never reused.
-    sequence_number: Mapped[int] = mapped_column(
-        BigInteger, primary_key=True, autoincrement=True
-    )
+    sequence_number: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
 
     # -----------------------------------------------------------------------
     # Common fields (required on every event per contracts/events.schema.json)
@@ -171,13 +168,11 @@ class EventsAuditLog(Base):
             name="ck_eal_latency_ms",
         ),
         CheckConstraint(
-            "classifier_score IS NULL OR "
-            "(classifier_score >= 0 AND classifier_score <= 1)",
+            "classifier_score IS NULL OR " "(classifier_score >= 0 AND classifier_score <= 1)",
             name="ck_eal_classifier_score",
         ),
         CheckConstraint(
-            "traffic_volume IS NULL OR "
-            "(traffic_volume >= 0 AND traffic_volume <= 1000000000)",
+            "traffic_volume IS NULL OR " "(traffic_volume >= 0 AND traffic_volume <= 1000000000)",
             name="ck_eal_traffic_volume",
         ),
         CheckConstraint(
@@ -194,13 +189,11 @@ class EventsAuditLog(Base):
             name="ck_eal_direction",
         ),
         CheckConstraint(
-            "framework IS NULL OR "
-            "framework IN ('SOC2','GDPR','HIPAA','EU_AI_ACT')",
+            "framework IS NULL OR " "framework IN ('SOC2','GDPR','HIPAA','EU_AI_ACT')",
             name="ck_eal_framework",
         ),
         CheckConstraint(
-            "status IS NULL OR "
-            "status IN ('passed','failed','not_applicable')",
+            "status IS NULL OR " "status IN ('passed','failed','not_applicable')",
             name="ck_eal_status",
         ),
         # action_taken: union of valid values across all event variants.

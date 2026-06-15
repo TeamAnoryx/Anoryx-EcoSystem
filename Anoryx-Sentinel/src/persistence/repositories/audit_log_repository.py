@@ -21,6 +21,7 @@ SESSION NOTE:
 validate_chain() walks all rows in sequence_number order using async streaming
 (stream_scalars) to avoid materializing the entire table in memory.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -83,7 +84,7 @@ def _row_to_hash_data(row: EventsAuditLog) -> dict[str, Any]:
             float(row.cost_estimate_cents) if row.cost_estimate_cents is not None else None
         ),
         "pattern_name": row.pattern_name,
-        "severity": row.severity,       # contracts/events.schema.json: PiiBlockedEvent.severity
+        "severity": row.severity,  # contracts/events.schema.json: PiiBlockedEvent.severity
         "action_taken": row.action_taken,
         "classifier_score": (
             float(row.classifier_score) if row.classifier_score is not None else None
@@ -95,7 +96,7 @@ def _row_to_hash_data(row: EventsAuditLog) -> dict[str, Any]:
         "violation_type": row.violation_type,
         "framework": row.framework,
         "control_id": row.control_id,
-        "status": row.status,           # contracts/events.schema.json: ComplianceCheckedEvent.status
+        "status": row.status,  # ComplianceCheckedEvent.status (F-002)
         "detected_endpoint": row.detected_endpoint,
         "traffic_volume": row.traffic_volume,
         "first_seen_at": row.first_seen_at,
@@ -165,7 +166,7 @@ class AuditLogRepository:
             latency_ms=row_data.get("latency_ms"),
             cost_estimate_cents=row_data.get("cost_estimate_cents"),
             pattern_name=row_data.get("pattern_name"),
-            severity=row_data.get("severity"),      # events.schema.json: PiiBlockedEvent.severity
+            severity=row_data.get("severity"),  # events.schema.json: PiiBlockedEvent.severity
             action_taken=row_data.get("action_taken"),
             classifier_score=row_data.get("classifier_score"),
             rule_matched=row_data.get("rule_matched"),
@@ -175,7 +176,7 @@ class AuditLogRepository:
             violation_type=row_data.get("violation_type"),
             framework=row_data.get("framework"),
             control_id=row_data.get("control_id"),
-            status=row_data.get("status"),          # events.schema.json: ComplianceCheckedEvent.status
+            status=row_data.get("status"),  # ComplianceCheckedEvent.status (F-002)
             detected_endpoint=row_data.get("detected_endpoint"),
             traffic_volume=row_data.get("traffic_volume"),
             first_seen_at=row_data.get("first_seen_at"),
@@ -194,9 +195,7 @@ class AuditLogRepository:
         able to see all rows in events_audit_log to maintain the single chain.
         """
         stmt = (
-            select(EventsAuditLog.row_hash)
-            .order_by(EventsAuditLog.sequence_number.desc())
-            .limit(1)
+            select(EventsAuditLog.row_hash).order_by(EventsAuditLog.sequence_number.desc()).limit(1)
         )
         result = await self._session.execute(stmt)
         tip_hash = result.scalar_one_or_none()
@@ -297,15 +296,12 @@ class AuditLogRepository:
         }
         missing = required - event_data.keys()
         if missing:
-            raise AuditLogAppendError(
-                f"Missing required event fields: {sorted(missing)}"
-            )
+            raise AuditLogAppendError(f"Missing required event fields: {sorted(missing)}")
 
         event_type = event_data["event_type"]
         if event_type not in VALID_EVENT_TYPES:
             raise AuditLogAppendError(
-                f"Unknown event_type: {event_type!r}. "
-                f"Valid types: {sorted(VALID_EVENT_TYPES)}"
+                f"Unknown event_type: {event_type!r}. " f"Valid types: {sorted(VALID_EVENT_TYPES)}"
             )
 
         # Per-variant action_taken validation (item 10).
@@ -314,9 +310,7 @@ class AuditLogRepository:
             action_taken = event_data.get("action_taken")
             allowed = ACTION_TAKEN_BY_EVENT_TYPE[event_type]
             if action_taken is None:
-                raise AuditLogAppendError(
-                    f"action_taken is required for event_type={event_type!r}"
-                )
+                raise AuditLogAppendError(f"action_taken is required for event_type={event_type!r}")
             if action_taken not in allowed:
                 raise AuditLogAppendError(
                     f"Invalid action_taken={action_taken!r} for event_type={event_type!r}. "

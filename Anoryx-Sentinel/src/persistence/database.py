@@ -9,24 +9,23 @@ which MUST merge before F-004.  See ADR-0004 for the full scope statement.
 DATABASE_URL is loaded from the environment (via python-dotenv in fleet processes).
 The URL is NEVER logged or printed.
 """
+
 from __future__ import annotations
 
 import os
 import re
-from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
 )
-
 
 # ---------------------------------------------------------------------------
 # URL helpers
 # ---------------------------------------------------------------------------
+
 
 def _async_database_url() -> str:
     """Return an asyncpg-compatible async URL from DATABASE_URL.
@@ -82,6 +81,7 @@ def _get_session_factory() -> async_sessionmaker:
 # ---------------------------------------------------------------------------
 # Public session helper
 # ---------------------------------------------------------------------------
+
 
 @asynccontextmanager
 async def get_async_session() -> AsyncIterator[AsyncSession]:

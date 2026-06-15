@@ -7,6 +7,7 @@ AuditLogRepository has its own dedicated test file (test_audit_chain.py).
 NOTE: get_by_id on all repositories is a PK-only lookup in F-003.
 Tenant-scoped isolation on get_by_id is deferred to F-003b.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -15,14 +16,14 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from persistence.repositories.tenant_repository import TenantNotFoundError, TenantRepository
-from persistence.repositories.team_repository import TeamNotFoundError, TeamRepository
-from persistence.repositories.project_repository import ProjectNotFoundError, ProjectRepository
 from persistence.repositories.policy_repository import (
     PolicyMonotonicityError,
     PolicyNotFoundError,
     PolicyRepository,
 )
+from persistence.repositories.project_repository import ProjectNotFoundError, ProjectRepository
+from persistence.repositories.team_repository import TeamNotFoundError, TeamRepository
+from persistence.repositories.tenant_repository import TenantNotFoundError, TenantRepository
 
 
 def _uid() -> str:

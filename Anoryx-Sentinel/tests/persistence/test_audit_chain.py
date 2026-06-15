@@ -16,6 +16,7 @@ These tests use the session fixture (savepoint isolation) for most tests.
 The tamper tests need to commit data to the DB so the raw UPDATE/DELETE
 can actually see it — they manage their own cleanup.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -131,31 +132,73 @@ async def test_all_seven_event_types_append(session: AsyncSession) -> None:
         request_id="req-" + _uid()[:8],
     )
     events = [
-        dict(**base, event_id=_uid(), event_type="usage",
-             event_timestamp=datetime.now(timezone.utc).isoformat(),
-             model="gpt-4", tokens_in=10, tokens_out=20, latency_ms=100,
-             cost_estimate_cents=0.01),
+        dict(
+            **base,
+            event_id=_uid(),
+            event_type="usage",
+            event_timestamp=datetime.now(timezone.utc).isoformat(),
+            model="gpt-4",
+            tokens_in=10,
+            tokens_out=20,
+            latency_ms=100,
+            cost_estimate_cents=0.01,
+        ),
         # severity is the correct column name (not pii_severity) per events.schema.json.
-        dict(**base, event_id=_uid(), event_type="pii_blocked",
-             event_timestamp=datetime.now(timezone.utc).isoformat(),
-             pattern_name="us_ssn", severity="high", action_taken="masked"),
-        dict(**base, event_id=_uid(), event_type="injection_detected",
-             event_timestamp=datetime.now(timezone.utc).isoformat(),
-             classifier_score=0.95, rule_matched="rule-001", action_taken="blocked"),
-        dict(**base, event_id=_uid(), event_type="secret_leaked",
-             event_timestamp=datetime.now(timezone.utc).isoformat(),
-             secret_type="api_key", direction="inbound", action_taken="blocked"),
-        dict(**base, event_id=_uid(), event_type="policy_violated",
-             event_timestamp=datetime.now(timezone.utc).isoformat(),
-             policy_id=_uid(), violation_type="budget_exceeded", action_taken="blocked"),
+        dict(
+            **base,
+            event_id=_uid(),
+            event_type="pii_blocked",
+            event_timestamp=datetime.now(timezone.utc).isoformat(),
+            pattern_name="us_ssn",
+            severity="high",
+            action_taken="masked",
+        ),
+        dict(
+            **base,
+            event_id=_uid(),
+            event_type="injection_detected",
+            event_timestamp=datetime.now(timezone.utc).isoformat(),
+            classifier_score=0.95,
+            rule_matched="rule-001",
+            action_taken="blocked",
+        ),
+        dict(
+            **base,
+            event_id=_uid(),
+            event_type="secret_leaked",
+            event_timestamp=datetime.now(timezone.utc).isoformat(),
+            secret_type="api_key",  # noqa: S106
+            direction="inbound",
+            action_taken="blocked",
+        ),
+        dict(
+            **base,
+            event_id=_uid(),
+            event_type="policy_violated",
+            event_timestamp=datetime.now(timezone.utc).isoformat(),
+            policy_id=_uid(),
+            violation_type="budget_exceeded",
+            action_taken="blocked",
+        ),
         # status is the correct column name (not compliance_status) per events.schema.json.
-        dict(**base, event_id=_uid(), event_type="compliance_checked",
-             event_timestamp=datetime.now(timezone.utc).isoformat(),
-             framework="SOC2", control_id="CC6.1", status="passed"),
-        dict(**base, event_id=_uid(), event_type="shadow_ai_detected",
-             event_timestamp=datetime.now(timezone.utc).isoformat(),
-             detected_endpoint="https://evil-ai.example.com/v1",
-             traffic_volume=42, first_seen_at=datetime.now(timezone.utc).isoformat()),
+        dict(
+            **base,
+            event_id=_uid(),
+            event_type="compliance_checked",
+            event_timestamp=datetime.now(timezone.utc).isoformat(),
+            framework="SOC2",
+            control_id="CC6.1",
+            status="passed",
+        ),
+        dict(
+            **base,
+            event_id=_uid(),
+            event_type="shadow_ai_detected",
+            event_timestamp=datetime.now(timezone.utc).isoformat(),
+            detected_endpoint="https://evil-ai.example.com/v1",
+            traffic_volume=42,
+            first_seen_at=datetime.now(timezone.utc).isoformat(),
+        ),
     ]
     for ev in events:
         row = await repo.append(ev)
@@ -220,10 +263,7 @@ async def test_update_rejected_by_trigger(session: AsyncSession) -> None:
 
     with pytest.raises((ProgrammingError, Exception), match="append-only"):
         await session.execute(
-            text(
-                "UPDATE events_audit_log SET model = 'tampered' "
-                "WHERE sequence_number = :seq"
-            ),
+            text("UPDATE events_audit_log SET model = 'tampered' " "WHERE sequence_number = :seq"),
             {"seq": seq},
         )
         await session.flush()
@@ -238,9 +278,7 @@ async def test_delete_rejected_by_trigger(session: AsyncSession) -> None:
 
     with pytest.raises((ProgrammingError, Exception), match="append-only"):
         await session.execute(
-            text(
-                "DELETE FROM events_audit_log WHERE sequence_number = :seq"
-            ),
+            text("DELETE FROM events_audit_log WHERE sequence_number = :seq"),
             {"seq": seq},
         )
         await session.flush()
@@ -282,7 +320,7 @@ async def test_row_hash_matches_recomputed(session: AsyncSession) -> None:
             float(row.cost_estimate_cents) if row.cost_estimate_cents is not None else None
         ),
         "pattern_name": row.pattern_name,
-        "severity": row.severity,     # contracts/events.schema.json: PiiBlockedEvent.severity
+        "severity": row.severity,  # contracts/events.schema.json: PiiBlockedEvent.severity
         "action_taken": row.action_taken,
         "classifier_score": (
             float(row.classifier_score) if row.classifier_score is not None else None
@@ -294,7 +332,7 @@ async def test_row_hash_matches_recomputed(session: AsyncSession) -> None:
         "violation_type": row.violation_type,
         "framework": row.framework,
         "control_id": row.control_id,
-        "status": row.status,         # contracts/events.schema.json: ComplianceCheckedEvent.status
+        "status": row.status,  # contracts/events.schema.json: ComplianceCheckedEvent.status
         "detected_endpoint": row.detected_endpoint,
         "traffic_volume": row.traffic_volume,
         "first_seen_at": row.first_seen_at,
@@ -314,11 +352,16 @@ async def test_action_taken_valid_pii_blocked(session: AsyncSession) -> None:
     """pii_blocked accepts masked, tokenized, blocked."""
     repo = AuditLogRepository(session)
     base = dict(
-        event_id=_uid(), event_type="pii_blocked",
+        event_id=_uid(),
+        event_type="pii_blocked",
         event_timestamp=datetime.now(timezone.utc).isoformat(),
-        request_id="req-" + _uid()[:8], tenant_id=_uid(),
-        team_id=_uid(), project_id=_uid(), agent_id="gateway-core",
-        pattern_name="email", severity="low",
+        request_id="req-" + _uid()[:8],
+        tenant_id=_uid(),
+        team_id=_uid(),
+        project_id=_uid(),
+        agent_id="gateway-core",
+        pattern_name="email",
+        severity="low",
     )
     for action in ("masked", "tokenized", "blocked"):
         ev = {**base, "event_id": _uid(), "action_taken": action}
@@ -331,11 +374,17 @@ async def test_action_taken_invalid_pii_blocked_raises(session: AsyncSession) ->
     """pii_blocked rejects action_taken='logged' (not in its allowed set)."""
     repo = AuditLogRepository(session)
     ev = dict(
-        event_id=_uid(), event_type="pii_blocked",
+        event_id=_uid(),
+        event_type="pii_blocked",
         event_timestamp=datetime.now(timezone.utc).isoformat(),
-        request_id="req-" + _uid()[:8], tenant_id=_uid(),
-        team_id=_uid(), project_id=_uid(), agent_id="gateway-core",
-        pattern_name="email", severity="low", action_taken="logged",
+        request_id="req-" + _uid()[:8],
+        tenant_id=_uid(),
+        team_id=_uid(),
+        project_id=_uid(),
+        agent_id="gateway-core",
+        pattern_name="email",
+        severity="low",
+        action_taken="logged",
     )
     with pytest.raises(AuditLogAppendError, match="Invalid action_taken"):
         await repo.append(ev)
@@ -346,11 +395,17 @@ async def test_action_taken_invalid_injection_detected_raises(session: AsyncSess
     """injection_detected rejects action_taken='throttled' (not in its allowed set)."""
     repo = AuditLogRepository(session)
     ev = dict(
-        event_id=_uid(), event_type="injection_detected",
+        event_id=_uid(),
+        event_type="injection_detected",
         event_timestamp=datetime.now(timezone.utc).isoformat(),
-        request_id="req-" + _uid()[:8], tenant_id=_uid(),
-        team_id=_uid(), project_id=_uid(), agent_id="gateway-core",
-        classifier_score=0.9, rule_matched="rule-x", action_taken="throttled",
+        request_id="req-" + _uid()[:8],
+        tenant_id=_uid(),
+        team_id=_uid(),
+        project_id=_uid(),
+        agent_id="gateway-core",
+        classifier_score=0.9,
+        rule_matched="rule-x",
+        action_taken="throttled",
     )
     with pytest.raises(AuditLogAppendError, match="Invalid action_taken"):
         await repo.append(ev)
@@ -361,11 +416,17 @@ async def test_action_taken_invalid_policy_violated_raises(session: AsyncSession
     """policy_violated rejects action_taken='masked' (not in its allowed set)."""
     repo = AuditLogRepository(session)
     ev = dict(
-        event_id=_uid(), event_type="policy_violated",
+        event_id=_uid(),
+        event_type="policy_violated",
         event_timestamp=datetime.now(timezone.utc).isoformat(),
-        request_id="req-" + _uid()[:8], tenant_id=_uid(),
-        team_id=_uid(), project_id=_uid(), agent_id="gateway-core",
-        policy_id=_uid(), violation_type="budget_exceeded", action_taken="masked",
+        request_id="req-" + _uid()[:8],
+        tenant_id=_uid(),
+        team_id=_uid(),
+        project_id=_uid(),
+        agent_id="gateway-core",
+        policy_id=_uid(),
+        violation_type="budget_exceeded",
+        action_taken="masked",
     )
     with pytest.raises(AuditLogAppendError, match="Invalid action_taken"):
         await repo.append(ev)
@@ -376,11 +437,16 @@ async def test_action_taken_missing_for_pii_blocked_raises(session: AsyncSession
     """pii_blocked requires action_taken; missing it raises AuditLogAppendError."""
     repo = AuditLogRepository(session)
     ev = dict(
-        event_id=_uid(), event_type="pii_blocked",
+        event_id=_uid(),
+        event_type="pii_blocked",
         event_timestamp=datetime.now(timezone.utc).isoformat(),
-        request_id="req-" + _uid()[:8], tenant_id=_uid(),
-        team_id=_uid(), project_id=_uid(), agent_id="gateway-core",
-        pattern_name="email", severity="low",
+        request_id="req-" + _uid()[:8],
+        tenant_id=_uid(),
+        team_id=_uid(),
+        project_id=_uid(),
+        agent_id="gateway-core",
+        pattern_name="email",
+        severity="low",
         # action_taken intentionally absent
     )
     with pytest.raises(AuditLogAppendError, match="action_taken is required"):
@@ -394,9 +460,13 @@ async def test_policy_violated_allowed_actions(session: AsyncSession) -> None:
     base = dict(
         event_type="policy_violated",
         event_timestamp=datetime.now(timezone.utc).isoformat(),
-        request_id="req-" + _uid()[:8], tenant_id=_uid(),
-        team_id=_uid(), project_id=_uid(), agent_id="gateway-core",
-        policy_id=_uid(), violation_type="budget_exceeded",
+        request_id="req-" + _uid()[:8],
+        tenant_id=_uid(),
+        team_id=_uid(),
+        project_id=_uid(),
+        agent_id="gateway-core",
+        policy_id=_uid(),
+        violation_type="budget_exceeded",
     )
     for action in ("blocked", "throttled", "warned"):
         ev = dict(**base, event_id=_uid(), action_taken=action)
@@ -414,11 +484,17 @@ async def test_pii_blocked_uses_severity_column(session: AsyncSession) -> None:
     """pii_blocked event stores severity in the 'severity' column (not pii_severity)."""
     repo = AuditLogRepository(session)
     ev = dict(
-        event_id=_uid(), event_type="pii_blocked",
+        event_id=_uid(),
+        event_type="pii_blocked",
         event_timestamp=datetime.now(timezone.utc).isoformat(),
-        request_id="req-" + _uid()[:8], tenant_id=_uid(),
-        team_id=_uid(), project_id=_uid(), agent_id="gateway-core",
-        pattern_name="credit_card", severity="critical", action_taken="blocked",
+        request_id="req-" + _uid()[:8],
+        tenant_id=_uid(),
+        team_id=_uid(),
+        project_id=_uid(),
+        agent_id="gateway-core",
+        pattern_name="credit_card",
+        severity="critical",
+        action_taken="blocked",
     )
     row = await repo.append(ev)
     assert row.severity == "critical"
@@ -431,11 +507,17 @@ async def test_compliance_checked_uses_status_column(session: AsyncSession) -> N
     """compliance_checked event stores result in the 'status' column (not compliance_status)."""
     repo = AuditLogRepository(session)
     ev = dict(
-        event_id=_uid(), event_type="compliance_checked",
+        event_id=_uid(),
+        event_type="compliance_checked",
         event_timestamp=datetime.now(timezone.utc).isoformat(),
-        request_id="req-" + _uid()[:8], tenant_id=_uid(),
-        team_id=_uid(), project_id=_uid(), agent_id="gateway-core",
-        framework="GDPR", control_id="Art-30", status="passed",
+        request_id="req-" + _uid()[:8],
+        tenant_id=_uid(),
+        team_id=_uid(),
+        project_id=_uid(),
+        agent_id="gateway-core",
+        framework="GDPR",
+        control_id="Art-30",
+        status="passed",
     )
     row = await repo.append(ev)
     assert row.status == "passed"

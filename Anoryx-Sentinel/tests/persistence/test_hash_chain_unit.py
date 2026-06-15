@@ -12,6 +12,7 @@ alphabetical (sort_keys=True), not CANONICAL_FIELDS insertion order.
 Item 9: CANONICAL_FIELDS uses 'severity' (not 'pii_severity') and 'status'
 (not 'compliance_status') to match contracts/events.schema.json exactly.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -27,7 +28,6 @@ from persistence.hash_chain import (
     verify_row_hash,
 )
 
-
 # ---------------------------------------------------------------------------
 # GENESIS_HASH regression (item 4)
 # ---------------------------------------------------------------------------
@@ -42,9 +42,9 @@ def test_genesis_hash_is_sha256_of_domain_string() -> None:
 def test_genesis_hash_is_exactly_64_hex_chars() -> None:
     """GENESIS_HASH must be exactly 64 lowercase hex characters."""
     assert len(GENESIS_HASH) == 64
-    assert all(c in "0123456789abcdef" for c in GENESIS_HASH), (
-        f"GENESIS_HASH contains non-hex chars: {GENESIS_HASH!r}"
-    )
+    assert all(
+        c in "0123456789abcdef" for c in GENESIS_HASH
+    ), f"GENESIS_HASH contains non-hex chars: {GENESIS_HASH!r}"
 
 
 def test_genesis_hash_matches_computed_value() -> None:
@@ -55,9 +55,9 @@ def test_genesis_hash_matches_computed_value() -> None:
     domain-separation string, never hardcoded.
     """
     computed = hashlib.sha256(b"anoryx-sentinel:events:genesis:v1").hexdigest()
-    assert GENESIS_HASH == computed, (
-        f"GENESIS_HASH mismatch: got {GENESIS_HASH!r}, expected {computed!r}"
-    )
+    assert (
+        GENESIS_HASH == computed
+    ), f"GENESIS_HASH mismatch: got {GENESIS_HASH!r}, expected {computed!r}"
 
 
 def test_genesis_hash_is_not_trivially_guessable() -> None:
@@ -130,9 +130,7 @@ def test_canonical_json_keys_are_sorted_alphabetically() -> None:
     result = canonical_json(data)
     parsed = json.loads(result)
     keys = list(parsed.keys())
-    assert keys == sorted(keys), (
-        f"Keys are not alphabetically sorted. Got: {keys}"
-    )
+    assert keys == sorted(keys), f"Keys are not alphabetically sorted. Got: {keys}"
 
 
 def test_canonical_json_includes_all_canonical_fields() -> None:
@@ -153,8 +151,8 @@ def test_canonical_json_missing_fields_produce_none() -> None:
     assert parsed.get("model") is None
     assert parsed.get("tokens_in") is None
     # Contract-conformant field names.
-    assert "severity" in parsed   # not "pii_severity"
-    assert "status" in parsed     # not "compliance_status"
+    assert "severity" in parsed  # not "pii_severity"
+    assert "status" in parsed  # not "compliance_status"
     assert parsed.get("severity") is None
     assert parsed.get("status") is None
 
@@ -268,14 +266,13 @@ def test_get_async_session_is_asynccontextmanager() -> None:
     Without @asynccontextmanager, 'async with get_async_session()' would raise
     AttributeError at runtime because the bare async generator has no __aenter__.
     """
-    from contextlib import _AsyncGeneratorContextManager
-
-    from persistence.database import get_async_session
 
     # The function object itself should be wrapped (it has __wrapped__ or is callable).
     # Calling it without arguments should produce an _AsyncGeneratorContextManager.
     # We use DATABASE_URL guard to avoid needing a real DB in this unit test.
     import os
+
+    from persistence.database import get_async_session
 
     original = os.environ.get("DATABASE_URL")
     try:
@@ -302,16 +299,13 @@ def test_database_module_exposes_only_get_async_session() -> None:
     get_tenant_session and get_privileged_session are deferred to F-003b.
     Importing them from database must raise ImportError in F-003.
     """
-    import importlib
 
     import persistence.database as db_mod
 
-    assert hasattr(db_mod, "get_async_session"), (
-        "get_async_session must exist in database.py"
-    )
-    assert not hasattr(db_mod, "get_tenant_session"), (
-        "get_tenant_session must NOT be in database.py for F-003; it is deferred to F-003b"
-    )
-    assert not hasattr(db_mod, "get_privileged_session"), (
-        "get_privileged_session must NOT be in database.py for F-003; it is deferred to F-003b"
-    )
+    assert hasattr(db_mod, "get_async_session"), "get_async_session must exist in database.py"
+    assert not hasattr(
+        db_mod, "get_tenant_session"
+    ), "get_tenant_session must NOT be in database.py for F-003; it is deferred to F-003b"
+    assert not hasattr(
+        db_mod, "get_privileged_session"
+    ), "get_privileged_session must NOT be in database.py for F-003; it is deferred to F-003b"
