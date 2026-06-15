@@ -321,7 +321,7 @@ async def test_action_taken_valid_pii_blocked(session: AsyncSession) -> None:
         pattern_name="email", severity="low",
     )
     for action in ("masked", "tokenized", "blocked"):
-        ev = dict(**base, event_id=_uid(), action_taken=action)
+        ev = {**base, "event_id": _uid(), "action_taken": action}
         row = await repo.append(ev)
         assert row.action_taken == action
 
