@@ -5,13 +5,13 @@
       {
         "matcher": "Bash",
         "hooks": [{ "type": "command",
-                    "command": "bash .claude/hooks/block-dangerous-bash.sh",
+                    "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/block-dangerous-bash.sh",
                     "timeout": 10 }]
       },
       {
         "matcher": "Write|Edit",
         "hooks": [{ "type": "command",
-                    "command": "bash .claude/hooks/protect-paths-and-secrets.sh",
+                    "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/protect-paths-and-secrets.sh",
                     "timeout": 10 }]
       }
     ]
