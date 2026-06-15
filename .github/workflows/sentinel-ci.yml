@@ -12,6 +12,20 @@ jobs:
   sentinel:
     name: Lint · Test · SAST
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sentinel
+          POSTGRES_PASSWORD: sentinel_ci_only
+          POSTGRES_DB: sentinel_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     defaults:
       run:
         working-directory: Anoryx-Sentinel
@@ -28,4 +42,5 @@ jobs:
       - name: Test (pytest + coverage)
         env:
           SENTINEL_KEY_SECRET: ${{ secrets.SENTINEL_KEY_SECRET_CI }}
+          DATABASE_URL: postgresql://sentinel:sentinel_ci_only@localhost:5432/sentinel_ci
         run: pytest --tb=short -q --cov=src --cov-report=term-missing
