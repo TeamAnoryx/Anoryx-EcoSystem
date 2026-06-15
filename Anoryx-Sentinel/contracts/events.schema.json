@@ -1,16 +1,401 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "sentinel:events:v1",
-  "description": "Events Sentinel emits to Anoryx-AI-Orchestrator via Redis Streams. Stub.",
-  "type": "object",
-  "required": ["event_type","tenant_id","team_id","project_id","agent_id","ts"],
-  "properties": {
-    "event_type": { "type": "string", "enum": [] },
-    "tenant_id":  { "type": "string", "format": "uuid" },
-    "team_id":    { "type": "string", "format": "uuid" },
-    "project_id": { "type": "string", "format": "uuid" },
-    "agent_id":   { "type": "string" },
-    "ts":         { "type": "string", "format": "date-time" },
-    "payload":    { "type": "object" }
+  "title": "Sentinel Outbound Event",
+  "description": "Events Sentinel emits to Anoryx-AI-Orchestrator (and onward to Delta) over the Redis Streams bus. Every variant carries the four stable IDs from contracts/ids.md (LOCKED, IMMUTABLE) plus event_id, event_timestamp, and request_id. These IDs are the join key between Sentinel events and Delta records. NORMATIVE DISPATCH: variant selection is determined SOLELY by oneOf plus the event_type const on each variant; the const values are unique and the variants are mutually exclusive, so exactly one matches a valid record. VALIDATOR DIALECT: Sentinel, Anoryx-AI-Orchestrator, and Delta MUST all validate these records with a JSON Schema Draft 2020-12 validator so no parser-differential exists. All objects are closed (additionalProperties:false) and all fields are bounded (maxLength/maximum/maxItems) per the F-001 audit findings: closed schemas remove a silent smuggling channel and bounded fields remove a DoS-via-inspection vector. Attribution carried on events is always the server-resolved value (see contracts/openapi.yaml virtual-API-key key-to-ID binding and id_context_mismatch), never a raw client-supplied header.",
+
+  "oneOf": [
+    { "$ref": "#/$defs/UsageEvent" },
+    { "$ref": "#/$defs/PiiBlockedEvent" },
+    { "$ref": "#/$defs/InjectionDetectedEvent" },
+    { "$ref": "#/$defs/SecretLeakedEvent" },
+    { "$ref": "#/$defs/PolicyViolatedEvent" },
+    { "$ref": "#/$defs/ComplianceCheckedEvent" },
+    { "$ref": "#/$defs/ShadowAiDetectedEvent" }
+  ],
+
+  "$comment": "Dispatch is normative via oneOf + the event_type const on each variant under JSON Schema Draft 2020-12. The 'discriminator' keyword below is a NON-NORMATIVE hint for OpenAPI tooling ONLY; it is not a 2020-12 keyword and has NO validation effect under this dialect. Do not rely on it for correctness.",
+  "discriminator": { "propertyName": "event_type" },
+
+  "$defs": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "maxLength": 64,
+      "description": "Stable tenant identifier (UUID v4). LOCKED/IMMUTABLE per contracts/ids.md. Server-resolved value, not a raw client header."
+    },
+    "team_id": {
+      "type": "string",
+      "format": "uuid",
+      "maxLength": 64,
+      "description": "Stable team identifier (UUID v4). LOCKED/IMMUTABLE per contracts/ids.md."
+    },
+    "project_id": {
+      "type": "string",
+      "format": "uuid",
+      "maxLength": 64,
+      "description": "Stable project identifier (UUID v4). LOCKED/IMMUTABLE per contracts/ids.md."
+    },
+    "agent_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "maxLength": 64,
+      "description": "Internal Sentinel component name (lowercase slug). LOCKED/IMMUTABLE per contracts/ids.md. NOT the end-user AI model name."
+    },
+    "event_id": {
+      "type": "string",
+      "format": "uuid",
+      "maxLength": 64,
+      "description": "Unique identifier for this event (UUID v4). Deduplication key on the bus."
+    },
+    "event_timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 64,
+      "description": "Event emission time (RFC 3339 / ISO 8601 date-time, UTC)."
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]{1,64}$",
+      "maxLength": 64,
+      "description": "Correlation ID matching the originating gateway request (X-Request-Id in contracts/openapi.yaml). Links the event back to the request that produced it. Charset is restricted to [A-Za-z0-9._-] to forbid control characters and whitespace (log-injection defense)."
+    },
+
+    "UsageEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-request token/cost/latency usage record. Drives the Delta client-side cost estimate; cost_estimate_cents is an estimate, not an authoritative bill.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "model",
+        "tokens_in",
+        "tokens_out",
+        "latency_ms",
+        "cost_estimate_cents"
+      ],
+      "properties": {
+        "event_type": { "const": "usage" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "model": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "End-user AI model name reported by the gateway (e.g. the value sent in the request body)."
+        },
+        "tokens_in": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000000,
+          "description": "Prompt/input token count."
+        },
+        "tokens_out": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000000,
+          "description": "Completion/output token count."
+        },
+        "latency_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600000,
+          "description": "End-to-end gateway latency in milliseconds."
+        },
+        "cost_estimate_cents": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100000000,
+          "description": "Client-side cost estimate in cents. Estimate only; not an authoritative bill."
+        }
+      }
+    },
+
+    "PiiBlockedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted when the data-protection engine detects and acts on PII.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "pattern_name",
+        "severity",
+        "action_taken"
+      ],
+      "properties": {
+        "event_type": { "const": "pii_blocked" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "pattern_name": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Name of the PII detection pattern that matched (e.g. 'us_ssn', 'email'). Never the matched value."
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "critical"],
+          "description": "Severity of the detected PII exposure."
+        },
+        "action_taken": {
+          "type": "string",
+          "enum": ["masked", "tokenized", "blocked"],
+          "description": "Mitigation the gateway applied."
+        },
+        "sample_excerpt_redacted": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "(\\[REDACTED\\]|\\*\\*\\*)",
+          "description": "OPTIONAL already-redacted excerpt for audit context. This field is intended to be ALREADY REDACTED by the data-protection engine before emission; it MUST NEVER contain raw PII or the matched value. The pattern is a MARKER-PRESENCE check ONLY: it requires a redaction marker ('[REDACTED]' or '***') somewhere in the value. It does NOT guarantee the ABSENCE of raw PII and provides NO structural prevention of raw PII riding alongside a marker. Full PII suppression is the emitter's runtime obligation, not a schema guarantee. Consumers MUST treat this field as potentially-unsafe display data requiring consumer-side validation before rendering or storage. Emitters that cannot guarantee redaction MUST omit this field."
+        }
+      }
+    },
+
+    "InjectionDetectedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted when the defense engine flags a prompt-injection attempt.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "classifier_score",
+        "rule_matched",
+        "action_taken"
+      ],
+      "properties": {
+        "event_type": { "const": "injection_detected" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "classifier_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Normalized injection-likelihood score in [0,1]."
+        },
+        "rule_matched": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Identifier of the detection rule that matched. Never the offending input text."
+        },
+        "action_taken": {
+          "type": "string",
+          "enum": ["blocked", "logged"],
+          "description": "Mitigation the gateway applied."
+        }
+      }
+    },
+
+    "SecretLeakedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted when the defense engine detects a secret in traffic.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "secret_type",
+        "direction",
+        "action_taken"
+      ],
+      "properties": {
+        "event_type": { "const": "secret_leaked" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "secret_type": {
+          "type": "string",
+          "enum": ["api_key", "token", "private_key", "credential"],
+          "description": "Classification of the detected secret. The secret value itself is NEVER emitted."
+        },
+        "direction": {
+          "type": "string",
+          "enum": ["inbound", "outbound"],
+          "description": "Traffic direction in which the secret was detected (inbound to model vs outbound to client)."
+        },
+        "action_taken": {
+          "type": "string",
+          "enum": ["masked", "tokenized", "blocked"],
+          "description": "Mitigation the gateway applied."
+        }
+      }
+    },
+
+    "PolicyViolatedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted when a Delta-sourced policy (contracts/policy.schema.json) is violated at the gateway.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "policy_id",
+        "violation_type",
+        "action_taken"
+      ],
+      "properties": {
+        "event_type": { "const": "policy_violated" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "policy_id": {
+          "type": "string",
+          "format": "uuid",
+          "maxLength": 64,
+          "description": "Identifier of the violated policy (UUID v4); joins to contracts/policy.schema.json policy_id."
+        },
+        "violation_type": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{1,128}$",
+          "maxLength": 128,
+          "description": "Classification of the violation (e.g. 'budget_exceeded', 'model_denied'). Charset is restricted to [A-Za-z0-9._-] to forbid control characters and whitespace (log-injection defense)."
+        },
+        "action_taken": {
+          "type": "string",
+          "enum": ["blocked", "throttled", "warned"],
+          "description": "Enforcement the gateway applied."
+        }
+      }
+    },
+
+    "ComplianceCheckedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted when a compliance control is evaluated for audit-ready evidence. 'status' reports the result of an individual control check; it does NOT assert certification or overall compliance.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "framework",
+        "control_id",
+        "status"
+      ],
+      "properties": {
+        "event_type": { "const": "compliance_checked" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "framework": {
+          "type": "string",
+          "enum": ["SOC2", "GDPR", "HIPAA", "EU_AI_ACT"],
+          "description": "Audit framework the control belongs to."
+        },
+        "control_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{1,64}$",
+          "maxLength": 64,
+          "description": "Framework-specific control identifier. Charset is restricted to [A-Za-z0-9._-] to forbid control characters and whitespace (log-injection defense)."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["passed", "failed", "not_applicable"],
+          "description": "Result of this individual control check. Audit-ready evidence, not a certification claim."
+        }
+      }
+    },
+
+    "ShadowAiDetectedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted when traffic to an unsanctioned (shadow) AI endpoint is observed.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "detected_endpoint",
+        "traffic_volume",
+        "first_seen_at"
+      ],
+      "properties": {
+        "event_type": { "const": "shadow_ai_detected" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "detected_endpoint": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^[^?#@\\s]+$",
+          "description": "PII-SAFETY: host (and optionally path) of the detected shadow AI endpoint ONLY. Emitters MUST NOT log full URLs: query strings and fragments may carry API keys, tokens, or PII. Strip query params, fragments, and userinfo before emission. Structurally enforced: the value MUST NOT contain '?', '#', '@', or whitespace, so query strings, fragments, and userinfo cannot ride along. Bounded to 256 chars to cap inspection cost."
+        },
+        "traffic_volume": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000,
+          "description": "Observed request count to the shadow endpoint over the detection window."
+        },
+        "first_seen_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64,
+          "description": "When traffic to this endpoint was first observed (RFC 3339 / ISO 8601 date-time, UTC)."
+        }
+      }
+    }
   }
 }
