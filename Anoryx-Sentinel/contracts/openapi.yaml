@@ -146,6 +146,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -203,6 +204,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -400,6 +402,21 @@ components:
                 error_code: id_context_mismatch
                 message: "Supplied routing context does not match the API key's authorized scope."
                 request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    PayloadTooLarge:
+      description: |
+        Request body exceeds the global maximum size (1 MiB / 1048576 bytes). The
+        cap is enforced at the edge BEFORE any body parsing or content inspection
+        (fail-safe sizing). Oversized bodies may surface here as 413, or as 400 via
+        BadRequest; both outcomes reject before inspection.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: request_too_large
+            message: "The request body exceeds the maximum allowed size."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
     TooManyRequests:
       description: |
         Rate limit exceeded for this virtual key / request context. Limits are
@@ -455,6 +472,9 @@ components:
         request-derived interpolation (no header names, field names, values, or
         body content are ever inserted), so each code maps 1:1 to one stable,
         constant string. Use request_id to correlate with server-side audit logs.
+        NOTE: the specific code→message pairing is NOT schema-enforced (error_code
+        and message are independent enums), so it MUST be guaranteed by the gateway
+        implementation and covered by a unit test.
       required: [error_code, message, request_id]
       additionalProperties: false
       properties:

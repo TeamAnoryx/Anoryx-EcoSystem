@@ -82,6 +82,7 @@ To eliminate message-leakage, both fields are now CONSTRAINED:
   inserted, so each code maps 1:1 to one stable string. (The prior `BadRequest`
   example interpolated a header NAME; it is now a constant.)
 - `request_id` is bounded `maxLength: 64`.
+- The code→message 1:1 pairing is NOT schema-enforced (the two enums are independent); the gateway implementation MUST guarantee it, covered by a unit test.
 
 The `request_id` (mirrored in the `X-Request-Id` response header) is the only
 correlation handle. Status mapping: `400` malformed/missing/overlong IDs or
