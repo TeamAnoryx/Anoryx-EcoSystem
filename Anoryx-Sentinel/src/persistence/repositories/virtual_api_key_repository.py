@@ -1,4 +1,4 @@
-"""VirtualApiKeyRepository — data access for virtual_api_keys table (F-003).
+"""VirtualApiKeyRepository — data access for virtual_api_keys table (F-003b).
 
 SECURITY INVARIANTS:
 1. Plaintext API keys are NEVER persisted. Only HMAC-SHA256 (hex) is stored.
@@ -9,9 +9,9 @@ SECURITY INVARIANTS:
 5. lookup_by_plaintext() rejects expired keys (expires_at <= now()) and
    never-expiring keys (expires_at IS NULL) are accepted.
 
-Tenant isolation enforcement (caller_tenant_id scoping on get_by_id, RLS role
-switching) is deferred to F-003b. F-003 ships the schema and repository layer
-only; see ADR-0004 for the full scope statement.
+F-003b (ADR-0005): get_by_id now accepts caller_tenant_id as a defense-in-depth
+guard. RLS on the tenant session is the primary boundary; the app-layer check is
+the second lock and makes the security intent explicit in code review.
 
 Key lifecycle:
 - At creation: caller generates a random key, passes it as plaintext once.
@@ -132,21 +132,24 @@ class VirtualApiKeyRepository:
 
         return key_row
 
-    async def get_by_id(self, key_id: str) -> VirtualApiKey:
+    async def get_by_id(self, key_id: str, caller_tenant_id: str) -> VirtualApiKey:
         """Return the key row for key_id, or raise VirtualApiKeyNotFoundError.
 
-        PK lookup only. Tenant scoping is deferred to F-003b.
+        caller_tenant_id is REQUIRED (LOW-1, ADR-0005 round-2).  The WHERE
+        clause always includes AND tenant_id = caller_tenant_id.  RLS on the
+        tenant session is the primary boundary; this check is the second lock.
         """
         stmt = select(VirtualApiKey).where(VirtualApiKey.key_id == key_id)
+        stmt = stmt.where(VirtualApiKey.tenant_id == caller_tenant_id)
         result = await self._session.execute(stmt)
         key_row = result.scalar_one_or_none()
         if key_row is None:
             raise VirtualApiKeyNotFoundError(f"Key not found: {key_id!r}")
         return key_row
 
-    async def deactivate(self, key_id: str) -> VirtualApiKey:
+    async def deactivate(self, key_id: str, caller_tenant_id: str) -> VirtualApiKey:
         """Revoke a virtual API key by marking it inactive."""
-        key_row = await self.get_by_id(key_id)
+        key_row = await self.get_by_id(key_id, caller_tenant_id=caller_tenant_id)
         key_row.is_active = False
         await self._session.flush()
         return key_row

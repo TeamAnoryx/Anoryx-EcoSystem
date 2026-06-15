@@ -293,19 +293,28 @@ def test_get_async_session_is_asynccontextmanager() -> None:
             os.environ["DATABASE_URL"] = original
 
 
-def test_database_module_exposes_only_get_async_session() -> None:
-    """database.py must expose get_async_session and NOT the F-003b session helpers.
+def test_database_module_exposes_session_helpers() -> None:
+    """database.py must expose all three session helpers (F-003b / ADR-0005).
 
-    get_tenant_session and get_privileged_session are deferred to F-003b.
-    Importing them from database must raise ImportError in F-003.
+    F-003b implements Option α: two engines, two session factories.
+      get_async_session()         — deprecated alias for get_privileged_session().
+                                    Kept for back-compat with F-003 tests.
+      get_privileged_session()    — DATABASE_URL / owner / BYPASSRLS.
+                                    Used for chain ops, migrations, admin.
+      get_tenant_session(tid)     — APP_DATABASE_URL / sentinel_app / NOBYPASSRLS.
+                                    Used for all tenant-scoped request traffic.
+
+    F-003 guard (get_tenant_session must NOT exist) is superseded by this test.
     """
 
     import persistence.database as db_mod
 
-    assert hasattr(db_mod, "get_async_session"), "get_async_session must exist in database.py"
-    assert not hasattr(
-        db_mod, "get_tenant_session"
-    ), "get_tenant_session must NOT be in database.py for F-003; it is deferred to F-003b"
-    assert not hasattr(
+    assert hasattr(
+        db_mod, "get_async_session"
+    ), "get_async_session must exist in database.py (deprecated back-compat alias)"
+    assert hasattr(
         db_mod, "get_privileged_session"
-    ), "get_privileged_session must NOT be in database.py for F-003; it is deferred to F-003b"
+    ), "get_privileged_session must exist in database.py (F-003b / ADR-0005)"
+    assert hasattr(
+        db_mod, "get_tenant_session"
+    ), "get_tenant_session must exist in database.py (F-003b / ADR-0005)"

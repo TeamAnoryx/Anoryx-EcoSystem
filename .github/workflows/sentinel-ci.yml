@@ -43,4 +43,6 @@ jobs:
         env:
           SENTINEL_KEY_SECRET: ${{ secrets.SENTINEL_KEY_SECRET_CI }}
           DATABASE_URL: postgresql://sentinel:sentinel_ci_only@localhost:5432/sentinel_ci
+          APP_DATABASE_URL: ${{ secrets.APP_DATABASE_URL_CI }}
+          SENTINEL_PROVISION_APP_ROLE: "1"
         run: pytest --tb=short -q --cov=src --cov-report=term-missing

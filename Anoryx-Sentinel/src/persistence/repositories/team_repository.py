@@ -1,8 +1,10 @@
-"""TeamRepository — data access for the teams table (F-003).
+"""TeamRepository — data access for the teams table (F-003b).
 
-Tenant isolation enforcement (caller_tenant_id scoping on get_by_id, RLS role
-switching) is deferred to F-003b. F-003 ships the schema and repository layer
-only; see ADR-0004 for the full scope statement.
+F-003b (ADR-0005): get_by_id now accepts caller_tenant_id as a defense-in-depth
+guard. Under correct Option α operation the tenant session's RLS predicate already
+prevents cross-tenant row visibility; the application-layer check is the second
+lock on a door RLS has already locked. It also guards against future callers
+accidentally using the privileged session for a scoped lookup.
 """
 
 from __future__ import annotations
@@ -44,12 +46,20 @@ class TeamRepository:
         await self._session.flush()
         return team
 
-    async def get_by_id(self, team_id: str) -> Team:
+    async def get_by_id(self, team_id: str, caller_tenant_id: str) -> Team:
         """Return the team for team_id, or raise TeamNotFoundError.
 
-        PK lookup only. Tenant scoping is deferred to F-003b.
+        caller_tenant_id is REQUIRED (LOW-1, ADR-0005 round-2).  The WHERE
+        clause always includes AND tenant_id = caller_tenant_id.  Under correct
+        Option α operation, RLS already makes cross-tenant rows invisible; this
+        check produces an explicit, intentional not-found signal at the
+        application boundary and guards against accidental privileged-session use.
+        Callers that legitimately want an unconstrained PK lookup (admin tooling)
+        must use the privileged session and pass the correct tenant_id or query
+        the ORM directly — there is no opt-out of the tenant check here.
         """
         stmt = select(Team).where(Team.team_id == team_id)
+        stmt = stmt.where(Team.tenant_id == caller_tenant_id)
         result = await self._session.execute(stmt)
         team = result.scalar_one_or_none()
         if team is None:
@@ -79,9 +89,9 @@ class TeamRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
-    async def deactivate(self, team_id: str) -> Team:
+    async def deactivate(self, team_id: str, caller_tenant_id: str) -> Team:
         """Soft-delete a team by marking it inactive."""
-        team = await self.get_by_id(team_id)
+        team = await self.get_by_id(team_id, caller_tenant_id=caller_tenant_id)
         team.is_active = False
         team.updated_at = datetime.now(timezone.utc)
         await self._session.flush()

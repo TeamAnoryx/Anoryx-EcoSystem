@@ -1,4 +1,4 @@
-"""PolicyRepository — data access for policies and policy_versions tables (F-003).
+"""PolicyRepository — data access for policies and policy_versions tables (F-003b).
 
 MONOTONICITY ENFORCEMENT: Any attempt to upsert a policy version where the
 incoming policy_version is <= the current max version for the same policy_id
@@ -10,9 +10,9 @@ Enforcement is dual-layer:
 2. Database layer: a BEFORE INSERT trigger on policy_versions raises an exception
    if the new version is not strictly greater than the current max (migration 0004).
 
-Tenant isolation enforcement (caller_tenant_id scoping on get_by_id, RLS role
-switching) is deferred to F-003b. F-003 ships the schema and repository layer
-only; see ADR-0004 for the full scope statement.
+F-003b (ADR-0005): get_by_id now accepts caller_tenant_id as a defense-in-depth
+guard. RLS on the tenant session is the primary boundary; the app-layer check is
+the second lock and makes the security intent explicit in code review.
 """
 
 from __future__ import annotations
@@ -145,12 +145,15 @@ class PolicyRepository:
         await self._session.flush()
         return policy_row, version_row
 
-    async def get_by_id(self, policy_id: str) -> Policy:
+    async def get_by_id(self, policy_id: str, caller_tenant_id: str) -> Policy:
         """Return the current policy row for policy_id, or raise PolicyNotFoundError.
 
-        PK lookup only. Tenant scoping is deferred to F-003b.
+        caller_tenant_id is REQUIRED (LOW-1, ADR-0005 round-2).  The WHERE
+        clause always includes AND tenant_id = caller_tenant_id.  RLS on the
+        tenant session is the primary boundary; this check is the second lock.
         """
         stmt = select(Policy).where(Policy.policy_id == policy_id)
+        stmt = stmt.where(Policy.tenant_id == caller_tenant_id)
         result = await self._session.execute(stmt)
         policy = result.scalar_one_or_none()
         if policy is None:

@@ -8,7 +8,8 @@ is no silent fallback.
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql+asyncpg://sentinel:secret@localhost:5432/sentinel_dev` |
+| `DATABASE_URL` | PostgreSQL connection string (privileged / owner role) | `postgresql+asyncpg://sentinel:secret@localhost:5432/sentinel_dev` |
+| `APP_DATABASE_URL` | PostgreSQL connection string (sentinel_app role, NOBYPASSRLS) | `postgresql+asyncpg://sentinel_app:devlocalpw@localhost:5432/sentinel_dev` |
 | `SENTINEL_KEY_SECRET` | HMAC secret for virtual API key fingerprinting | `my-dev-hmac-secret-at-least-32-chars` |
 
 ### Setting variables
@@ -17,10 +18,36 @@ Copy the root `.env.example` to `.env` and fill in real values:
 
 ```
 DATABASE_URL=postgresql+asyncpg://sentinel:secret@localhost:5432/sentinel_dev
+APP_DATABASE_URL=postgresql+asyncpg://sentinel_app:devlocalpw@localhost:5432/sentinel_dev
 SENTINEL_KEY_SECRET=<random-string-at-least-32-chars>
 ```
 
 The `.env` file is gitignored and hook-protected. **Never commit secrets to the repo.**
+
+### SENTINEL_PROVISION_APP_ROLE — opt-in password provisioning (MED-2)
+
+The `ensure_schema_at_head` session fixture can provision the `sentinel_app` role
+password from `APP_DATABASE_URL` using a pre-computed SCRAM-SHA-256 verifier (the
+plaintext password is never logged or written to SQL as a literal). This step is
+**opt-in** and only runs when `SENTINEL_PROVISION_APP_ROLE` is truthy.
+
+**Local dev — run once after initial DB setup:**
+
+```bash
+SENTINEL_PROVISION_APP_ROLE=1 python -m pytest tests/persistence/ -q
+```
+
+Subsequent test runs do not need the flag — the password persists across sessions.
+If the role password is reset (e.g. by `alembic downgrade` / re-creating the role),
+re-run with `SENTINEL_PROVISION_APP_ROLE=1` once.
+
+**CI (ephemeral DB):** set `SENTINEL_PROVISION_APP_ROLE=1` in the CI workflow
+environment so each fresh DB gets the password provisioned before tests run.
+
+If provisioning fails (e.g. the role does not exist yet, or the privileged role
+lacks ALTER ROLE privilege), a warning is emitted but tests continue. The warning
+is traceable: check `alembic upgrade head` output to ensure migration 0006 ran.
+The password value is **never** included in the warning message.
 
 ### Variable name consistency
 
