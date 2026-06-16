@@ -53,6 +53,7 @@ def _build_app_with_key_row(key_row):
         yield session
 
     import gateway.upstream.openai_proxy as proxy_mod
+
     proxy_mod._http_client = None
 
     patches = [
@@ -92,6 +93,7 @@ async def test_missing_tenant_id(settings_env):
     patches = _build_app_with_key_row(key_row)
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
 
     headers = _headers()
@@ -110,6 +112,7 @@ async def test_missing_team_id(settings_env):
     patches = _build_app_with_key_row(key_row)
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
     headers = _headers()
     del headers["X-Anoryx-Team-Id"]
@@ -126,6 +129,7 @@ async def test_missing_agent_id(settings_env):
     patches = _build_app_with_key_row(key_row)
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
     headers = _headers()
     del headers["X-Anoryx-Agent-Id"]
@@ -143,6 +147,7 @@ async def test_malformed_uuid_header(settings_env):
     patches = _build_app_with_key_row(key_row)
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
@@ -162,6 +167,7 @@ async def test_overlong_tenant_header(settings_env):
     patches = _build_app_with_key_row(key_row)
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
@@ -181,6 +187,7 @@ async def test_malformed_agent_slug(settings_env):
     patches = _build_app_with_key_row(key_row)
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
@@ -210,6 +217,7 @@ async def test_tenant_id_mismatch_returns_403(settings_env):
 
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
@@ -221,7 +229,9 @@ async def test_tenant_id_mismatch_returns_403(settings_env):
     assert resp.status_code == 403
     body = resp.json()
     assert body["error_code"] == "id_context_mismatch"
-    assert body["message"] == "Supplied routing context does not match the API key's authorized scope."
+    assert body["message"] == (
+        "Supplied routing context does not match the API key's authorized scope."
+    )
 
 
 @pytest.mark.asyncio
@@ -233,6 +243,7 @@ async def test_team_id_mismatch_returns_403(settings_env):
 
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
@@ -253,6 +264,7 @@ async def test_agent_id_mismatch_returns_403(settings_env):
 
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
@@ -274,6 +286,7 @@ async def test_forged_header_does_not_become_context(settings_env):
 
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:

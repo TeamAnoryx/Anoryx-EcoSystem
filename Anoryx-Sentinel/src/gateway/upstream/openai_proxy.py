@@ -32,7 +32,6 @@ been removed. The route uses _proxy_stream_generator directly. One clean path.
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from typing import AsyncIterator
 
@@ -157,13 +156,13 @@ async def proxy_non_stream(
         )
     except httpx.ConnectError:
         log.error("upstream_connect_error", request_id=request_id)
-        raise GatewayError("internal_error")
+        raise GatewayError("internal_error") from None
     except httpx.TimeoutException:
         log.error("upstream_timeout", request_id=request_id)
-        raise GatewayError("internal_error")
+        raise GatewayError("internal_error") from None
     except Exception:
         log.exception("upstream_unexpected_error", request_id=request_id)
-        raise GatewayError("internal_error")
+        raise GatewayError("internal_error") from None
 
     if resp.status_code >= 500:
         log.error(
@@ -189,7 +188,7 @@ async def proxy_non_stream(
         completion = ChatCompletionResponse(**data)
     except Exception:
         log.exception("upstream_response_parse_error", request_id=request_id)
-        raise GatewayError("internal_error")
+        raise GatewayError("internal_error") from None
 
     tokens_in = 0
     tokens_out = 0
@@ -227,7 +226,8 @@ async def _proxy_stream_generator(
     def _make_error_frame(error_code: str, rid: str) -> str:
         from gateway.exceptions import ERROR_TABLE
 
-        message, _ = ERROR_TABLE.get(error_code, ("An internal error occurred. The request was not processed.", 500))
+        _default = ("An internal error occurred. The request was not processed.", 500)
+        message, _ = ERROR_TABLE.get(error_code, _default)
         err = ErrorResponse(error_code=error_code, message=message, request_id=rid)  # type: ignore[arg-type]
         return f"event: error\ndata: {err.model_dump_json()}\n\n"
 

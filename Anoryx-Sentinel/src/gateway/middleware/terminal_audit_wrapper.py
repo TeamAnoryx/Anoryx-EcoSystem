@@ -69,8 +69,8 @@ from typing import Any, Awaitable, Callable, MutableMapping
 
 import structlog
 
-from gateway.middleware.audit import build_usage_event, emit_terminal_record
 from gateway.exceptions import GatewayError
+from gateway.middleware.audit import emit_terminal_record
 
 log = structlog.get_logger(__name__)
 

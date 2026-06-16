@@ -49,6 +49,7 @@ def _build_patches():
         yield session
 
     import gateway.upstream.openai_proxy as proxy_mod
+
     proxy_mod._http_client = None
 
     return [
@@ -81,13 +82,16 @@ async def test_body_over_limit_returns_413(settings_env, monkeypatch):
     _reset_settings()
 
     patches = _build_patches()
-    oversized_body = json.dumps({
-        "model": "gpt-3.5-turbo",
-        "messages": [{"role": "user", "content": "x" * 200}],
-    }).encode()
+    oversized_body = json.dumps(
+        {
+            "model": "gpt-3.5-turbo",
+            "messages": [{"role": "user", "content": "x" * 200}],
+        }
+    ).encode()
 
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
             resp = await ac.post(
@@ -108,15 +112,18 @@ async def test_body_exact_limit_passes(settings_env, monkeypatch):
     patches = _build_patches()
 
     # Small enough to pass the 1000-byte limit.
-    small_body = json.dumps({
-        "model": "gpt-3.5-turbo",
-        "messages": [{"role": "user", "content": "hi"}],
-    }).encode()
+    small_body = json.dumps(
+        {
+            "model": "gpt-3.5-turbo",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+    ).encode()
 
     from gateway.exceptions import GatewayError
 
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
         with patch(
             "gateway.routes.chat_completions.proxy_non_stream",
@@ -140,6 +147,7 @@ async def test_transfer_encoding_and_content_length_conflict_returns_400(setting
 
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
             resp = await ac.post(
@@ -166,6 +174,7 @@ async def test_unknown_field_in_body_returns_400(settings_env):
     patches = _build_patches()
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
             resp = await ac.post(
@@ -187,6 +196,7 @@ async def test_missing_required_body_field_returns_400(settings_env):
     patches = _build_patches()
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
             resp = await ac.post(
@@ -204,6 +214,7 @@ async def test_empty_messages_array_returns_400(settings_env):
     patches = _build_patches()
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
             resp = await ac.post(
@@ -223,6 +234,7 @@ async def test_valid_body_passes_to_upstream(settings_env):
     patches = _build_patches()
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
         with patch(
             "gateway.routes.chat_completions.proxy_non_stream",
@@ -232,7 +244,10 @@ async def test_valid_body_passes_to_upstream(settings_env):
                 resp = await ac.post(
                     "/v1/chat/completions",
                     headers=_valid_headers(),
-                    json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hi"}]},
+                    json={
+                        "model": "gpt-3.5-turbo",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
                 )
     # 500 from upstream mock — the body itself was valid (no 400 from validation)
     assert resp.status_code == 500

@@ -14,7 +14,6 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 # ---------------------------------------------------------------------------
 # Shared closed-schema base
 # ---------------------------------------------------------------------------

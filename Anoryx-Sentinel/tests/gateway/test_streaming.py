@@ -13,7 +13,6 @@ Covers:
 from __future__ import annotations
 
 import json
-from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -46,6 +45,19 @@ def _make_request() -> CreateChatCompletionRequest:
     )
 
 
+_SSE_CHUNK_GPT = (
+    'data: {"id":"c1","object":"chat.completion.chunk","created":1,'
+    '"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"content":"Hi"},'
+    '"finish_reason":null}]}'
+)
+_SSE_CHUNK_M1 = (
+    'data: {"id":"c1","object":"chat.completion.chunk","created":1,' '"model":"m","choices":[]}'
+)
+_SSE_CHUNK_M2 = (
+    'data: {"id":"c2","object":"chat.completion.chunk","created":1,' '"model":"m","choices":[]}'
+)
+
+
 # ---------------------------------------------------------------------------
 # proxy_stream generator tests (unit level, no HTTP server needed)
 # ---------------------------------------------------------------------------
@@ -54,13 +66,12 @@ def _make_request() -> CreateChatCompletionRequest:
 @pytest.mark.asyncio
 async def test_stream_generator_yields_done_on_success():
     """A successful upstream stream ends with data: [DONE]."""
-    import httpx
 
     mock_response = MagicMock()
     mock_response.status_code = 200
 
     async def _fake_lines():
-        yield 'data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}'
+        yield _SSE_CHUNK_GPT
         yield "data: [DONE]"
 
     mock_response.aiter_lines = _fake_lines
@@ -151,10 +162,10 @@ async def test_stream_generator_overall_timeout_emits_error_frame():
     mock_response.status_code = 200
 
     async def _slow_lines():
-        yield 'data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[]}'
+        yield _SSE_CHUNK_M1
         # Simulate many chunks but overall timeout is very short.
         for _ in range(10):
-            yield 'data: {"id":"c2","object":"chat.completion.chunk","created":1,"model":"m","choices":[]}'
+            yield _SSE_CHUNK_M2
 
     mock_response.aiter_lines = _slow_lines
 

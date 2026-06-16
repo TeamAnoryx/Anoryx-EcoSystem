@@ -32,9 +32,7 @@ def _get_tenant_context(request: Request) -> TenantContext:
     """
     ctx: TenantContext | None = getattr(request.state, "tenant_context", None)
     if ctx is None:
-        raise RuntimeError(
-            "tenant_context not set on request.state — middleware may not be wired"
-        )
+        raise RuntimeError("tenant_context not set on request.state — middleware may not be wired")
     return ctx
 
 

@@ -184,4 +184,4 @@ async def emit_terminal_record(
             request_id=request_id,
             # Never log event_data — may contain tenant IDs bound to the request.
         )
-        raise GatewayError("internal_error")
+        raise GatewayError("internal_error") from None

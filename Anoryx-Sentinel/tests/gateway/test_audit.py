@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import time
-import uuid
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -205,6 +204,7 @@ async def test_emit_terminal_record_calls_append(settings_env):
 @pytest.mark.asyncio
 async def test_emit_terminal_record_raises_gateway_error_on_append_failure(settings_env):
     """Audit append failure → GatewayError(internal_error) — un-auditable = failure."""
+
     @asynccontextmanager
     async def _privileged_cm():
         mock_session = MagicMock()
@@ -239,12 +239,11 @@ async def test_emit_terminal_record_raises_gateway_error_on_append_failure(setti
 
 def test_usage_event_conforms_to_events_schema():
     """Contract test: a sample usage event validates against events.schema.json."""
-    import jsonschema  # pip install jsonschema[format]
     import pathlib
 
-    schema_path = (
-        pathlib.Path(__file__).parent.parent.parent / "contracts" / "events.schema.json"
-    )
+    import jsonschema  # pip install jsonschema[format]
+
+    schema_path = pathlib.Path(__file__).parent.parent.parent / "contracts" / "events.schema.json"
     with open(schema_path) as f:
         schema = json.load(f)
 

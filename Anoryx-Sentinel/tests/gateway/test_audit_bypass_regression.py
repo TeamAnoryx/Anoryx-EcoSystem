@@ -30,7 +30,6 @@ MED-3 REGRESSION:
 from __future__ import annotations
 
 import asyncio
-import json
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -38,7 +37,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from gateway.config import _reset_settings
-from gateway.middleware.rate_limit import reset_state_for_testing, _stream_counters
+from gateway.middleware.rate_limit import _stream_counters
 from persistence.repositories.virtual_api_key_repository import VirtualApiKeyAuthError
 from tests.gateway.conftest import (
     TEST_AGENT_ID,
@@ -123,6 +122,7 @@ def _make_auth_context(key_row=None, lookup_side_effect=None):
         yield session
 
     import gateway.upstream.openai_proxy as proxy_mod
+
     proxy_mod._http_client = None
 
     return [
@@ -135,6 +135,7 @@ def _create_app():
     """Create the gateway app with settings reset."""
     _reset_settings()
     from gateway.main import create_app
+
     return create_app()
 
 
@@ -444,9 +445,9 @@ async def test_audit_fires_for_500_db_error_during_auth(settings_env):
     assert event["tokens_in"] == 0
     assert event["tokens_out"] == 0
     # Canonical request_id must match the response body.
-    assert event["request_id"] == body["request_id"], (
-        "Audit event request_id must match the 500 response request_id"
-    )
+    assert (
+        event["request_id"] == body["request_id"]
+    ), "Audit event request_id must match the 500 response request_id"
 
 
 # ---------------------------------------------------------------------------
@@ -486,9 +487,9 @@ async def test_cors_preflight_resolves_without_400(settings_env, monkeypatch):
             )
 
     # Must NOT be 400 (which would indicate TenantContext ran before CORS).
-    assert resp.status_code != 400, (
-        f"OPTIONS preflight returned {resp.status_code} — CORS middleware is still innermost"
-    )
+    assert (
+        resp.status_code != 400
+    ), f"OPTIONS preflight returned {resp.status_code} — CORS middleware is still innermost"
     # CORS response should be 200 or 204.
     assert resp.status_code in (200, 204), f"Unexpected status: {resp.status_code}"
     # CORS headers must be present.
@@ -522,8 +523,8 @@ async def test_atomic_stream_cap_rejects_over_cap(settings_env, monkeypatch):
     monkeypatch.setenv("RATE_LIMIT_BURST", "600")
     _reset_settings()
 
-    from gateway.middleware.rate_limit import check_rate_limit, _stream_counters
     from gateway.exceptions import GatewayError
+    from gateway.middleware.rate_limit import check_rate_limit
 
     key_id = "atomic-cap-test-key"
     tenant_id = "atomic-cap-test-tenant"
@@ -533,9 +534,9 @@ async def test_atomic_stream_cap_rejects_over_cap(settings_env, monkeypatch):
     await check_rate_limit(key_id + "-2", tenant_id, is_stream=True)
 
     # Counter must be 2 now (atomically incremented).
-    assert _stream_counters.get(tenant_id, 0) == 2, (
-        f"Expected stream counter=2, got {_stream_counters.get(tenant_id, 0)}"
-    )
+    assert (
+        _stream_counters.get(tenant_id, 0) == 2
+    ), f"Expected stream counter=2, got {_stream_counters.get(tenant_id, 0)}"
 
     # Third request must be rejected with 429.
     with pytest.raises(GatewayError) as exc_info:
@@ -555,7 +556,7 @@ async def test_stream_slot_only_decrements(settings_env):
     After MED-1: stream_slot() assumes check_rate_limit() already incremented.
     Entering stream_slot() must not increase the counter.
     """
-    from gateway.middleware.rate_limit import stream_slot, _stream_counters
+    from gateway.middleware.rate_limit import stream_slot
 
     tenant = "slot-decrement-only-test"
     _stream_counters.pop(tenant, None)
@@ -565,9 +566,9 @@ async def test_stream_slot_only_decrements(settings_env):
 
     async with stream_slot(tenant):
         # Counter should still be 1 (not incremented to 2 by stream_slot entry).
-        assert _stream_counters.get(tenant, 0) == 1, (
-            "stream_slot() must not increment counter (MED-1: check_rate_limit already did)"
-        )
+        assert (
+            _stream_counters.get(tenant, 0) == 1
+        ), "stream_slot() must not increment counter (MED-1: check_rate_limit already did)"
 
     # After exit, counter decremented to 0 and pruned (LOW-1).
     assert _stream_counters.get(tenant, 0) == 0
@@ -581,7 +582,7 @@ async def test_stream_slot_only_decrements(settings_env):
 @pytest.mark.asyncio
 async def test_stream_counter_pruned_on_zero(settings_env):
     """LOW-1: stream counter dict entry is removed when count reaches 0."""
-    from gateway.middleware.rate_limit import stream_slot, _stream_counters
+    from gateway.middleware.rate_limit import stream_slot
 
     tenant = "prune-test-tenant"
     _stream_counters.pop(tenant, None)
@@ -593,9 +594,7 @@ async def test_stream_counter_pruned_on_zero(settings_env):
         pass  # exits normally
 
     # Entry should be gone, not left as {tenant: 0}.
-    assert tenant not in _stream_counters, (
-        "Zero stream counter entry was not pruned (LOW-1)"
-    )
+    assert tenant not in _stream_counters, "Zero stream counter entry was not pruned (LOW-1)"
 
 
 # ---------------------------------------------------------------------------
@@ -640,15 +639,15 @@ async def test_stream_idle_timeout_emits_error_frame(settings_env):
         async for chunk in _proxy_stream_generator(
             validated_body=_make_request(),
             request_id="req-idle-timeout-01",
-            idle_timeout=0.01,   # 10 ms idle timeout — very short
+            idle_timeout=0.01,  # 10 ms idle timeout — very short
             overall_timeout=10.0,
         ):
             chunks.append(chunk)
 
     all_content = "".join(chunks)
-    assert "event: error" in all_content, (
-        f"Expected error frame on idle timeout; got: {all_content!r}"
-    )
+    assert (
+        "event: error" in all_content
+    ), f"Expected error frame on idle timeout; got: {all_content!r}"
     assert "data: [DONE]" not in all_content, "Stream must not emit [DONE] on idle timeout"
 
 
@@ -675,7 +674,11 @@ async def test_stream_overall_timeout_emits_error_frame(settings_env):
         """Drip chunks slowly, each within idle_timeout, but total > overall_timeout."""
         for i in range(100):
             await asyncio.sleep(0.02)  # 20 ms between chunks (under idle_timeout=1s)
-            yield f'data: {{"id":"c{i}","object":"chat.completion.chunk","created":1,"model":"m","choices":[]}}'
+            chunk = (
+                f'{{"id":"c{i}","object":"chat.completion.chunk",'
+                '"created":1,"model":"m","choices":[]}}'
+            )
+            yield f"data: {chunk}"
 
     mock_response.aiter_lines = _drip_lines
 
@@ -689,15 +692,15 @@ async def test_stream_overall_timeout_emits_error_frame(settings_env):
         async for chunk in _proxy_stream_generator(
             validated_body=_make_request(),
             request_id="req-overall-timeout-01",
-            idle_timeout=1.0,      # 1s idle timeout — chunks are fast enough
+            idle_timeout=1.0,  # 1s idle timeout — chunks are fast enough
             overall_timeout=0.05,  # 50 ms overall — will expire before all 100 chunks
         ):
             chunks.append(chunk)
 
     all_content = "".join(chunks)
-    assert "event: error" in all_content, (
-        f"Expected error frame on overall timeout; got: {all_content!r}"
-    )
+    assert (
+        "event: error" in all_content
+    ), f"Expected error frame on overall timeout; got: {all_content!r}"
     assert "data: [DONE]" not in all_content, "Stream must not emit [DONE] on overall timeout"
 
 
@@ -739,6 +742,6 @@ async def test_audit_event_request_id_matches_413_response(settings_env, monkeyp
 
     audit_repo.append.assert_awaited_once()
     event = audit_repo.append.call_args[0][0]
-    assert event["request_id"] == rid_header, (
-        "Audit event request_id must equal the X-Request-Id header"
-    )
+    assert (
+        event["request_id"] == rid_header
+    ), "Audit event request_id must equal the X-Request-Id header"

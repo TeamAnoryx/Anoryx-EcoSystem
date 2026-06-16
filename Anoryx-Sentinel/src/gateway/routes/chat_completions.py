@@ -46,7 +46,6 @@ from gateway.middleware.audit import emit_terminal_record
 from gateway.middleware.rate_limit import check_rate_limit, stream_slot
 from gateway.middleware.tenant_context import resolve_tenant_context
 from gateway.models import (
-    ChatCompletionResponse,
     CreateChatCompletionRequest,
     ErrorResponse,
 )
@@ -162,19 +161,22 @@ async def create_chat_completion(request: Request) -> JSONResponse | StreamingRe
         try:
             body_dict = json.loads(raw_body)
         except (json.JSONDecodeError, ValueError):
-            raise GatewayError("invalid_request")
+            raise GatewayError("invalid_request") from None
 
         try:
             validated = CreateChatCompletionRequest(**body_dict)
         except (ValidationError, TypeError):
-            raise GatewayError("invalid_request")
+            raise GatewayError("invalid_request") from None
 
         model = validated.model
         # Store on state so TerminalAuditMiddleware can include it if needed.
         request.state.audit_model = model
 
         # Enforce MAX_TOKENS_PER_REQUEST cap (threat #4, ADR-0006 step 7).
-        if validated.max_tokens is not None and validated.max_tokens > settings.max_tokens_per_request:
+        if (
+            validated.max_tokens is not None
+            and validated.max_tokens > settings.max_tokens_per_request
+        ):
             raise GatewayError("invalid_request")
 
         # --- Step 8: Upstream proxy ---
@@ -223,8 +225,10 @@ async def create_chat_completion(request: Request) -> JSONResponse | StreamingRe
                 headers=headers,
             )
 
-    except GatewayError as exc:
+    except GatewayError as _orig_exc:
         # Audit on every non-stream rejection (ADR-0006 audit coverage).
+        # Keep a mutable reference so inner handlers can upgrade to internal_error.
+        active_exc: GatewayError = _orig_exc
         try:
             await emit_terminal_record(
                 request_id=request_id,
@@ -239,13 +243,15 @@ async def create_chat_completion(request: Request) -> JSONResponse | StreamingRe
         except GatewayError:
             # Audit-emit itself failed → already GatewayError("internal_error").
             # Surface the audit-failure 500 (overrides the original error code).
-            exc = GatewayError("internal_error")
+            active_exc = GatewayError("internal_error")
             request.state.audit_emitted = True
         except Exception:
-            exc = GatewayError("internal_error")
+            active_exc = GatewayError("internal_error")
             request.state.audit_emitted = True
 
-        resp = _error_response(exc.error_code, request_id, retry_after=exc.retry_after)
+        resp = _error_response(
+            active_exc.error_code, request_id, retry_after=active_exc.retry_after
+        )
         resp.headers["X-RateLimit-Limit"] = str(rl_limit)
         resp.headers["X-RateLimit-Remaining"] = str(rl_remaining)
         resp.headers["X-RateLimit-Reset"] = str(rl_reset)
@@ -317,9 +323,7 @@ async def _handle_stream(
                 # signal. Operators must monitor this log event.
                 try:
                     # Estimate tokens_in from messages (word count approximation).
-                    prompt_words = sum(
-                        len(m.content.split()) for m in validated.messages
-                    )
+                    prompt_words = sum(len(m.content.split()) for m in validated.messages)
                     token_state["tokens_in"] = prompt_words
                     await emit_terminal_record(
                         request_id=request_id,

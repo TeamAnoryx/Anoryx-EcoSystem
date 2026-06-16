@@ -16,7 +16,6 @@ Full pipeline tests:
 
 from __future__ import annotations
 
-import json
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -27,7 +26,6 @@ from gateway.config import _reset_settings
 from gateway.exceptions import ERROR_TABLE
 from tests.gateway.conftest import (
     TEST_AGENT_ID,
-    TEST_KEY_ID,
     TEST_PLAINTEXT_KEY,
     TEST_PROJECT_ID,
     TEST_TEAM_ID,
@@ -61,7 +59,11 @@ def _make_upstream_resp(status_code=200, body=None):
             "created": 1700000000,
             "model": "gpt-3.5-turbo",
             "choices": [
-                {"index": 0, "message": {"role": "assistant", "content": "Hi!"}, "finish_reason": "stop"}
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "Hi!"},
+                    "finish_reason": "stop",
+                }
             ],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
         }
@@ -94,6 +96,7 @@ def _build_patches(key_row=None, audit_mock=None):
         yield session
 
     import gateway.upstream.openai_proxy as proxy_mod
+
     proxy_mod._http_client = None
 
     patches = [
@@ -120,10 +123,13 @@ async def test_e2e_happy_path_non_stream(settings_env):
 
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
         with patch("gateway.upstream.openai_proxy._http_client", mock_client):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
-                resp = await ac.post("/v1/chat/completions", headers=_valid_headers(), json=_valid_body())
+                resp = await ac.post(
+                    "/v1/chat/completions", headers=_valid_headers(), json=_valid_body()
+                )
 
     assert resp.status_code == 200
     body = resp.json()
@@ -152,6 +158,7 @@ async def test_e2e_audit_emitted_on_success(settings_env):
 
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
         with patch("gateway.upstream.openai_proxy._http_client", mock_client):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
@@ -172,6 +179,7 @@ async def test_e2e_audit_emitted_on_invalid_request(settings_env):
 
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
             resp = await ac.post(
@@ -196,10 +204,13 @@ async def test_e2e_upstream_failure_returns_500_not_502(settings_env):
 
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
         with patch("gateway.upstream.openai_proxy._http_client", mock_client):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
-                resp = await ac.post("/v1/chat/completions", headers=_valid_headers(), json=_valid_body())
+                resp = await ac.post(
+                    "/v1/chat/completions", headers=_valid_headers(), json=_valid_body()
+                )
 
     assert resp.status_code == 500
     body = resp.json()
@@ -218,11 +229,16 @@ async def test_e2e_request_id_echoed_in_header_and_body(settings_env):
     # Send bad credentials.
     bad_auth_repo = MagicMock()
     from persistence.repositories.virtual_api_key_repository import VirtualApiKeyAuthError
+
     bad_auth_repo.lookup_by_plaintext = AsyncMock(side_effect=VirtualApiKeyAuthError("bad"))
 
-    with patch("gateway.middleware.auth.VirtualApiKeyRepository", return_value=bad_auth_repo), \
-         patches[0], patches[2]:
+    with (
+        patch("gateway.middleware.auth.VirtualApiKeyRepository", return_value=bad_auth_repo),
+        patches[0],
+        patches[2],
+    ):
         from gateway.main import create_app
+
         app = create_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
             resp = await ac.post(
@@ -254,11 +270,16 @@ async def test_e2e_rate_limit_returns_429_with_retry_after(settings_env, monkeyp
 
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
         with patch("gateway.upstream.openai_proxy._http_client", mock_client):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
-                r1 = await ac.post("/v1/chat/completions", headers=_valid_headers(), json=_valid_body())
-                r2 = await ac.post("/v1/chat/completions", headers=_valid_headers(), json=_valid_body())
+                r1 = await ac.post(
+                    "/v1/chat/completions", headers=_valid_headers(), json=_valid_body()
+                )
+                r2 = await ac.post(
+                    "/v1/chat/completions", headers=_valid_headers(), json=_valid_body()
+                )
 
     assert r1.status_code == 200
     assert r2.status_code == 429
@@ -275,6 +296,7 @@ async def test_e2e_413_on_oversized_body(settings_env, monkeypatch):
 
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
             resp = await ac.post(
@@ -298,7 +320,7 @@ def test_error_table_code_message_pairing():
         "invalid_request": "The request body is invalid or violates a field constraint.",
         "request_too_large": "The request body exceeds the maximum allowed size.",
         "invalid_api_key": "Virtual API key is missing, revoked, or invalid.",
-        "id_context_mismatch": "Supplied routing context does not match the API key's authorized scope.",
+        "id_context_mismatch": "Supplied routing context does not match the API key's authorized scope.",  # noqa: E501
         "policy_blocked": "Request blocked by policy for this tenant/team/project/agent context.",
         "rate_limit_exceeded": "Rate limit exceeded. Retry after the window resets.",
         "internal_error": "An internal error occurred. The request was not processed.",
@@ -310,9 +332,9 @@ def test_error_table_code_message_pairing():
             f"  Expected: {expected_message!r}\n"
             f"  Actual:   {actual_message!r}"
         )
-    assert set(ERROR_TABLE.keys()) == set(verbatim_mapping.keys()), (
-        "ERROR_TABLE keys differ from contract error_code enum"
-    )
+    assert set(ERROR_TABLE.keys()) == set(
+        verbatim_mapping.keys()
+    ), "ERROR_TABLE keys differ from contract error_code enum"
 
 
 # ---------------------------------------------------------------------------

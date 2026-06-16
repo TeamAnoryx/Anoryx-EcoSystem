@@ -122,7 +122,8 @@ def create_app() -> FastAPI:
     @app.exception_handler(GatewayError)
     async def gateway_error_handler(request: Request, exc: GatewayError) -> JSONResponse:
         """Handle GatewayError raised outside the route handler (e.g. in middleware)."""
-        request_id = getattr(request.state, "request_id", None) or ("req-" + __import__("uuid").uuid4().hex[:32])
+        _fallback = "req-" + __import__("uuid").uuid4().hex[:32]
+        request_id = getattr(request.state, "request_id", None) or _fallback
         message, status = ERROR_TABLE[exc.error_code]
         body = ErrorResponse(
             error_code=exc.error_code,  # type: ignore[arg-type]
@@ -144,7 +145,8 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def generic_error_handler(request: Request, exc: Exception) -> JSONResponse:
         """Catch-all for unhandled exceptions — fail-safe BLOCK (never silently pass)."""
-        request_id = getattr(request.state, "request_id", None) or ("req-" + __import__("uuid").uuid4().hex[:32])
+        _fallback = "req-" + __import__("uuid").uuid4().hex[:32]
+        request_id = getattr(request.state, "request_id", None) or _fallback
         # LOW-2: log.exception uses the reconfigured UTF-8 stdout.
         log.exception(
             "unhandled_exception",
@@ -185,7 +187,8 @@ def create_app() -> FastAPI:
         allow_origins=allowed_origins,
         allow_credentials=False,
         allow_methods=["POST", "GET", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"] + [
+        allow_headers=["Authorization", "Content-Type"]
+        + [
             "X-Anoryx-Tenant-Id",
             "X-Anoryx-Team-Id",
             "X-Anoryx-Project-Id",
@@ -199,7 +202,7 @@ def create_app() -> FastAPI:
     app.add_middleware(TerminalAuditMiddleware)
 
     # --- Routers ---
-    app.include_router(health_router)          # /health, /ready (no /v1 prefix)
-    app.include_router(chat_router)            # /v1/chat/completions
+    app.include_router(health_router)  # /health, /ready (no /v1 prefix)
+    app.include_router(chat_router)  # /v1/chat/completions
 
     return app

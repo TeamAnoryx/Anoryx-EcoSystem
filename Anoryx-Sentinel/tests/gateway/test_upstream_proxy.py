@@ -13,7 +13,6 @@ Covers:
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -200,8 +199,17 @@ async def test_upstream_request_is_typed_reserialization(settings_env):
         )
 
     # Verify only contract-allowlisted fields are in the upstream payload.
-    allowed_fields = {"model", "messages", "stream", "n", "temperature", "top_p",
-                      "max_tokens", "stop", "user"}
+    allowed_fields = {
+        "model",
+        "messages",
+        "stream",
+        "n",
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "stop",
+        "user",
+    }
     for key in captured_payload:
         assert key in allowed_fields, f"Unexpected field forwarded to upstream: {key!r}"
     assert "unknown_extra_field" not in captured_payload

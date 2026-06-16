@@ -73,7 +73,9 @@ def _get_request_id(request: Request) -> str:
     return rid
 
 
-def _error_json(error_code: str, request_id: str, *, retry_after: int | None = None) -> JSONResponse:
+def _error_json(
+    error_code: str, request_id: str, *, retry_after: int | None = None
+) -> JSONResponse:
     message, status = ERROR_TABLE[error_code]
     headers: dict[str, str] = {"X-Request-Id": request_id}
     if retry_after is not None:
@@ -107,7 +109,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             log.info("auth_missing_bearer", path=request.url.path)
             return _error_json("invalid_api_key", request_id)
 
-        plaintext_key = auth_header[len("Bearer "):]
+        plaintext_key = auth_header[len("Bearer ") :]
         if not plaintext_key:
             log.info("auth_empty_key", path=request.url.path)
             return _error_json("invalid_api_key", request_id)

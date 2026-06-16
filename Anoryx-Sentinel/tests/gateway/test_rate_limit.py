@@ -15,8 +15,6 @@ Covers:
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
-
 import pytest
 
 from gateway.exceptions import GatewayError
@@ -25,10 +23,8 @@ from gateway.middleware.rate_limit import (
     _stream_counters,
     _tenant_windows,
     check_rate_limit,
-    reset_state_for_testing,
     stream_slot,
 )
-
 
 # ---------------------------------------------------------------------------
 # Unit tests for check_rate_limit (no HTTP layer needed)
@@ -47,10 +43,10 @@ async def test_within_limit_admits_request(settings_env):
 @pytest.mark.asyncio
 async def test_per_key_limit_exceeded_raises(settings_env, monkeypatch):
     """Exhaust the per-key window → GatewayError(rate_limit_exceeded)."""
-    import time
     monkeypatch.setenv("RATE_LIMIT_RPM", "3")
     monkeypatch.setenv("RATE_LIMIT_BURST", "10")
     from gateway.config import _reset_settings
+
     _reset_settings()
 
     for _ in range(3):
@@ -68,6 +64,7 @@ async def test_per_tenant_limit_exceeded_raises(settings_env, monkeypatch):
     monkeypatch.setenv("RATE_LIMIT_RPM", "3")
     monkeypatch.setenv("RATE_LIMIT_BURST", "10")
     from gateway.config import _reset_settings
+
     _reset_settings()
 
     # Three requests with different keys but same tenant.
@@ -87,6 +84,7 @@ async def test_independent_buckets_different_keys(settings_env, monkeypatch):
     monkeypatch.setenv("RATE_LIMIT_RPM", "2")
     monkeypatch.setenv("RATE_LIMIT_BURST", "10")
     from gateway.config import _reset_settings
+
     _reset_settings()
 
     await check_rate_limit("key-x", "tenant-x")
@@ -114,6 +112,7 @@ async def test_retry_after_header_set_on_429(settings_env, monkeypatch):
     monkeypatch.setenv("RATE_LIMIT_RPM", "1")
     monkeypatch.setenv("RATE_LIMIT_BURST", "10")
     from gateway.config import _reset_settings
+
     _reset_settings()
 
     await check_rate_limit("key-ra", "tenant-ra")
@@ -128,6 +127,7 @@ async def test_concurrent_stream_cap_enforced(settings_env, monkeypatch):
     """Concurrent-stream cap (MAX_CONCURRENT_STREAMS_PER_TENANT=2) → 429 on third."""
     monkeypatch.setenv("MAX_CONCURRENT_STREAMS_PER_TENANT", "2")
     from gateway.config import _reset_settings
+
     _reset_settings()
 
     # Manually set the counter to the limit.
@@ -207,6 +207,7 @@ async def test_stale_key_window_pruned_after_next_request(settings_env, monkeypa
     """
     import time
     from collections import deque
+
     from gateway.middleware.rate_limit import _key_windows, _tenant_windows
 
     stale_key = "stale-key-low1-prune"
@@ -227,9 +228,9 @@ async def test_stale_key_window_pruned_after_next_request(settings_env, monkeypa
     await check_rate_limit(active_key, active_tenant)
 
     # Stale entries (now-empty after eviction) must have been pruned.
-    assert stale_key not in _key_windows, (
-        "Stale key window entry was not pruned (LOW-1) — unbounded memory growth risk"
-    )
-    assert stale_tenant not in _tenant_windows, (
-        "Stale tenant window entry was not pruned (LOW-1) — unbounded memory growth risk"
-    )
+    assert (
+        stale_key not in _key_windows
+    ), "Stale key window entry was not pruned (LOW-1) — unbounded memory growth risk"
+    assert (
+        stale_tenant not in _tenant_windows
+    ), "Stale tenant window entry was not pruned (LOW-1) — unbounded memory growth risk"

@@ -11,10 +11,8 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 
-from gateway.config import GatewaySettings, _reset_settings
+from gateway.config import _reset_settings
 from gateway.middleware.rate_limit import reset_state_for_testing
 
 # ---------------------------------------------------------------------------
@@ -107,7 +105,10 @@ def make_privileged_session_cm_for_both(auth_repo_mock, audit_repo_mock):
         session.begin = _begin
         call_count[0] += 1
         if call_count[0] == 1:
-            with patch("gateway.middleware.auth.VirtualApiKeyRepository", return_value=auth_repo_mock):
+            with patch(
+                "gateway.middleware.auth.VirtualApiKeyRepository",
+                return_value=auth_repo_mock,
+            ):
                 yield session
         else:
             with patch("gateway.middleware.audit.AuditLogRepository", return_value=audit_repo_mock):
@@ -202,6 +203,7 @@ def build_app_with_auth(key_row=None, audit_append=None):
         yield session
 
     import gateway.upstream.openai_proxy as proxy_mod
+
     proxy_mod._http_client = None
 
     with (
@@ -212,6 +214,7 @@ def build_app_with_auth(key_row=None, audit_append=None):
         patch("gateway.routes.chat_completions.emit_terminal_record", new=AsyncMock()),
     ):
         from gateway.main import create_app
+
         app = create_app()
 
     return app
@@ -254,6 +257,7 @@ def build_app_with_real_audit(key_row=None, audit_repo_mock=None):
         yield session
 
     import gateway.upstream.openai_proxy as proxy_mod
+
     proxy_mod._http_client = None
 
     with (
@@ -266,6 +270,7 @@ def build_app_with_real_audit(key_row=None, audit_repo_mock=None):
         # go through to the mocked AuditLogRepository.
     ):
         from gateway.main import create_app
+
         app = create_app()
 
     return app, audit_repo_mock

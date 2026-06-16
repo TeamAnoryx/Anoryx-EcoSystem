@@ -19,9 +19,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from gateway.config import _reset_settings
-from gateway.middleware.rate_limit import reset_state_for_testing
 from persistence.repositories.virtual_api_key_repository import VirtualApiKeyAuthError
-
 from tests.gateway.conftest import (
     TEST_AGENT_ID,
     TEST_PLAINTEXT_KEY,
@@ -75,6 +73,7 @@ def _build_app_patches(lookup_return=None, lookup_side_effect=None):
         yield session
 
     import gateway.upstream.openai_proxy as proxy_mod
+
     proxy_mod._http_client = None
 
     return [
@@ -89,6 +88,7 @@ def _build_app(lookup_return=None, lookup_side_effect=None):
     patches = _build_app_patches(lookup_return, lookup_side_effect)
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
     return app
 
@@ -99,6 +99,7 @@ async def test_missing_authorization_header(settings_env):
     patches = _build_app_patches()
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
             resp = await ac.post("/v1/chat/completions", headers=_valid_headers(), json=_body())
@@ -116,6 +117,7 @@ async def test_non_bearer_authorization(settings_env):
     patches = _build_app_patches()
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
             resp = await ac.post(
@@ -133,6 +135,7 @@ async def test_empty_bearer_token(settings_env):
     patches = _build_app_patches()
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
             resp = await ac.post(
@@ -164,6 +167,7 @@ async def test_invalid_key_auth_error(settings_env):
         yield session
 
     import gateway.upstream.openai_proxy as proxy_mod
+
     proxy_mod._http_client = None
 
     p1 = patch("gateway.middleware.auth.get_privileged_session", _priv_cm)
@@ -172,6 +176,7 @@ async def test_invalid_key_auth_error(settings_env):
 
     with p1, p2, p3:
         from gateway.main import create_app
+
         app2 = create_app()
 
         async with AsyncClient(transport=ASGITransport(app=app2), base_url="http://t") as ac:
@@ -204,6 +209,7 @@ async def test_db_error_during_auth_returns_500(settings_env):
         yield session
 
     import gateway.upstream.openai_proxy as proxy_mod
+
     proxy_mod._http_client = None
 
     p1 = patch("gateway.middleware.auth.get_privileged_session", _priv_cm)
@@ -212,6 +218,7 @@ async def test_db_error_during_auth_returns_500(settings_env):
 
     with p1, p2, p3:
         from gateway.main import create_app
+
         app = create_app()
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
@@ -230,6 +237,7 @@ async def test_health_exempt_from_auth(settings_env):
     patches = _build_app_patches()
     with patches[0], patches[1], patches[2]:
         from gateway.main import create_app
+
         app = create_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
             resp = await ac.get("/health")
@@ -241,6 +249,7 @@ async def test_ready_exempt_from_auth(settings_env):
     """GET /ready does not require auth (DB check mocked)."""
     _reset_settings()
     import gateway.upstream.openai_proxy as proxy_mod
+
     proxy_mod._http_client = None
     key_row = make_fake_key_row()
     auth_repo = MagicMock()
@@ -265,6 +274,7 @@ async def test_ready_exempt_from_auth(settings_env):
 
     with p1, p2, p3, p4:
         from gateway.main import create_app
+
         app = create_app()
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
