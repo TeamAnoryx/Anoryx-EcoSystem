@@ -24,10 +24,10 @@ emission seam only.
 from __future__ import annotations
 
 import re
-import structlog
-import uuid
 from datetime import UTC, datetime
 from typing import Any
+
+import structlog
 
 log = structlog.get_logger(__name__)
 

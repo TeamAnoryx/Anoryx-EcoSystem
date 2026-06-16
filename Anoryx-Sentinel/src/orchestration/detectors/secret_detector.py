@@ -40,9 +40,10 @@ from __future__ import annotations
 
 import math
 import re
-import structlog
 from dataclasses import dataclass
 from typing import Any
+
+import structlog
 
 from orchestration.hooks.base import DetectorResult, PostResponseHook, PreRequestHook
 

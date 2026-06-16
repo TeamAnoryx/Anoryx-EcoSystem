@@ -14,10 +14,8 @@ Covers:
 
 from __future__ import annotations
 
-import re
 import uuid
-from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -25,7 +23,6 @@ from orchestration.context import HookContext, build_hook_context
 from orchestration.exceptions import HookBlockedError, HookFailSafeError
 from orchestration.hooks.base import DetectorResult, PostResponseHook, PreRequestHook
 from orchestration.registry import HookRegistry
-
 
 # ---------------------------------------------------------------------------
 # Concrete hook implementations for testing
@@ -45,8 +42,12 @@ class MaskHook(PreRequestHook):
     async def inspect(self, content, context) -> DetectorResult:
         return DetectorResult(
             action="mask",
-            event={"event_type": "pii_blocked", "pattern_name": "email",
-                   "severity": "low", "action_taken": "masked"},
+            event={
+                "event_type": "pii_blocked",
+                "pattern_name": "email",
+                "severity": "low",
+                "action_taken": "masked",
+            },
             modified_payload="[REDACTED:EMAIL_ADDRESS]",
         )
 
@@ -57,8 +58,12 @@ class BlockHook(PreRequestHook):
     async def inspect(self, content, context) -> DetectorResult:
         return DetectorResult(
             action="block",
-            event={"event_type": "injection_detected", "classifier_score": 0.9,
-                   "rule_matched": "INJ-001", "action_taken": "blocked"},
+            event={
+                "event_type": "injection_detected",
+                "classifier_score": 0.9,
+                "rule_matched": "INJ-001",
+                "action_taken": "blocked",
+            },
         )
 
 
@@ -71,13 +76,18 @@ class RaisingHook(PreRequestHook):
 
 class LoggedHook(PreRequestHook):
     """Returns pass with an event (logged injection scenario)."""
+
     detector_slug = "test-logged"
 
     async def inspect(self, content, context) -> DetectorResult:
         return DetectorResult(
             action="pass",
-            event={"event_type": "injection_detected", "classifier_score": 0.5,
-                   "rule_matched": "INJ-007", "action_taken": "logged"},
+            event={
+                "event_type": "injection_detected",
+                "classifier_score": 0.5,
+                "rule_matched": "INJ-007",
+                "action_taken": "logged",
+            },
         )
 
 
@@ -94,8 +104,12 @@ class BlockPostHook(PostResponseHook):
     async def inspect(self, content, context) -> DetectorResult:
         return DetectorResult(
             action="block",
-            event={"event_type": "secret_leaked", "secret_type": "api_key",
-                   "direction": "outbound", "action_taken": "blocked"},
+            event={
+                "event_type": "secret_leaked",
+                "secret_type": "api_key",
+                "direction": "outbound",
+                "action_taken": "blocked",
+            },
         )
 
 
@@ -239,7 +253,7 @@ def test_hook_context_event_budget_enforcement():
 
 
 def test_build_hook_context_joins_user_messages(tenant_context):
-    from gateway.models import ChatMessage, CreateChatCompletionRequest
+    from gateway.models import ChatMessage
 
     msgs = [
         ChatMessage(role="system", content="You are helpful."),

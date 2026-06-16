@@ -24,8 +24,9 @@ module global, so tests can stub the registry with recording/raising/empty hooks
 
 from __future__ import annotations
 
-import structlog
 from typing import Any
+
+import structlog
 
 from orchestration.exceptions import HookBlockedError, HookFailSafeError
 from orchestration.hooks.base import DetectorResult, PostResponseHook, PreRequestHook

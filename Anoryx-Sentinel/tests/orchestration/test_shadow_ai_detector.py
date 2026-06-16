@@ -11,9 +11,7 @@ Covers (spec test list):
 from __future__ import annotations
 
 import json
-import uuid
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import jsonschema
 import pytest
@@ -21,8 +19,9 @@ import pytest
 from orchestration.config import _reset_orchestration_settings
 
 _EVENTS_SCHEMA = json.loads(
-    (Path(__file__).parent.parent.parent / "contracts" / "events.schema.json")
-    .read_text(encoding="utf-8")
+    (Path(__file__).parent.parent.parent / "contracts" / "events.schema.json").read_text(
+        encoding="utf-8"
+    )
 )
 _VALIDATOR = jsonschema.Draft202012Validator(_EVENTS_SCHEMA)
 
@@ -203,6 +202,8 @@ def test_shadow_ai_does_not_detect_traffic():
     import orchestration.detectors.shadow_ai_detector as mod
 
     docstring = (mod.__doc__ or "").lower()
-    assert "does not detect" in docstring or "no real" in docstring or "emission primitive" in docstring, (
-        "Module docstring must honestly state F-005 does not detect shadow AI traffic."
-    )
+    assert (
+        "does not detect" in docstring
+        or "no real" in docstring
+        or "emission primitive" in docstring
+    ), "Module docstring must honestly state F-005 does not detect shadow AI traffic."

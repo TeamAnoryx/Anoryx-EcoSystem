@@ -44,9 +44,10 @@ cannot hide injection (ADR-0007 D1).
 from __future__ import annotations
 
 import re
-import structlog
 from dataclasses import dataclass
 from typing import Any
+
+import structlog
 
 from orchestration.hooks.base import DetectorResult, PreRequestHook
 

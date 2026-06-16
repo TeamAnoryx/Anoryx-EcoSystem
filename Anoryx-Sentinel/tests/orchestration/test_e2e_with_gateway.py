@@ -22,12 +22,10 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_asyncio
 
 from gateway.config import _reset_settings
 from gateway.middleware.rate_limit import reset_state_for_testing
 from orchestration.config import _reset_orchestration_settings
-from orchestration.exceptions import HookBlockedError, HookFailSafeError
 from orchestration.hooks.base import DetectorResult, PreRequestHook
 from orchestration.registry import HookRegistry
 
@@ -51,10 +49,12 @@ STANDARD_HEADERS = {
     "Content-Type": "application/json",
 }
 
-BENIGN_BODY = json.dumps({
-    "model": TEST_MODEL,
-    "messages": [{"role": "user", "content": "What is 2+2?"}],
-})
+BENIGN_BODY = json.dumps(
+    {
+        "model": TEST_MODEL,
+        "messages": [{"role": "user", "content": "What is 2+2?"}],
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Stub hooks for testing

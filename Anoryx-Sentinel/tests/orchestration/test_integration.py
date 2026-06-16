@@ -20,11 +20,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from orchestration.context import HookContext, build_hook_context
+from orchestration.context import HookContext
 from orchestration.exceptions import HookBlockedError
-from orchestration.hooks.base import DetectorResult, PostResponseHook, PreRequestHook
+from orchestration.hooks.base import DetectorResult, PreRequestHook
 from orchestration.registry import HookRegistry
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -202,9 +201,9 @@ async def test_integration_secret_outbound_mask(tenant_context):
     # HIGH-B: non-stream mask now defers the event so the handler can emit
     # only after json.loads validates the redacted body.  The event is stored
     # in _deferred_event rather than being emitted immediately.
-    assert getattr(post_ctx, "_deferred_event", None) is not None, (
-        "secret_leaked event must be deferred (defer_emit=True) for non-stream mask"
-    )
+    assert (
+        getattr(post_ctx, "_deferred_event", None) is not None
+    ), "secret_leaked event must be deferred (defer_emit=True) for non-stream mask"
     deferred_ev, deferred_slug = post_ctx._deferred_event
     assert deferred_ev["event_type"] == "secret_leaked"
     assert deferred_ev["action_taken"] == "masked"
@@ -218,8 +217,6 @@ async def test_integration_secret_outbound_mask(tenant_context):
 @pytest.mark.asyncio
 async def test_event_cap_limits_emits(tenant_context):
     """Events beyond cap are coalesced (emit not called beyond cap)."""
-    call_count = {"n": 0}
-
     original_emit = None
 
     ctx = _make_ctx(tenant_context, cap=2)
@@ -310,10 +307,18 @@ async def test_multiple_events_all_stamped_correctly(tenant_context):
     ctx.emit = capturing_emit  # type: ignore[method-assign]
 
     events = [
-        {"event_type": "pii_blocked", "pattern_name": "email", "severity": "low",
-         "action_taken": "masked"},
-        {"event_type": "injection_detected", "classifier_score": 0.5,
-         "rule_matched": "INJ-007", "action_taken": "logged"},
+        {
+            "event_type": "pii_blocked",
+            "pattern_name": "email",
+            "severity": "low",
+            "action_taken": "masked",
+        },
+        {
+            "event_type": "injection_detected",
+            "classifier_score": 0.5,
+            "rule_matched": "INJ-007",
+            "action_taken": "logged",
+        },
     ]
 
     for ev in events:
@@ -367,13 +372,11 @@ async def test_fix1_stream_secret_hook_returns_block(tenant_context):
     result = await hook.inspect(chunk_content, post_ctx)
 
     # The hook must BLOCK (not mask) in stream context.
-    assert result.action == "block", (
-        f"Expected 'block' in stream context, got {result.action!r}"
-    )
+    assert result.action == "block", f"Expected 'block' in stream context, got {result.action!r}"
     assert result.event is not None
-    assert result.event["action_taken"] == "blocked", (
-        f"Expected action_taken='blocked', got {result.event['action_taken']!r}"
-    )
+    assert (
+        result.event["action_taken"] == "blocked"
+    ), f"Expected action_taken='blocked', got {result.event['action_taken']!r}"
     assert result.event["event_type"] == "secret_leaked"
     assert result.event["direction"] == "outbound"
     # modified_payload must be None (block never carries redacted content).
@@ -381,6 +384,7 @@ async def test_fix1_stream_secret_hook_returns_block(tenant_context):
 
     # Verify the raw secret is NOT in any event field (D7 / threat #11).
     import json
+
     event_str = json.dumps(result.event)
     assert secret not in event_str, "Secret value must never appear in event fields"
 
@@ -456,18 +460,16 @@ async def test_fix1_nonstream_secret_hook_returns_mask(tenant_context):
     result = await hook.inspect(response_body, post_ctx)
 
     # The hook must MASK (not block) in non-stream context.
-    assert result.action == "mask", (
-        f"Expected 'mask' in non-stream context, got {result.action!r}"
-    )
+    assert result.action == "mask", f"Expected 'mask' in non-stream context, got {result.action!r}"
     assert result.event is not None
-    assert result.event["action_taken"] == "masked", (
-        f"Expected action_taken='masked', got {result.event['action_taken']!r}"
-    )
+    assert (
+        result.event["action_taken"] == "masked"
+    ), f"Expected action_taken='masked', got {result.event['action_taken']!r}"
     # Client must receive the redacted payload, not the raw secret.
     assert result.modified_payload is not None
-    assert secret not in result.modified_payload, (
-        "Raw secret must not appear in the redacted payload"
-    )
+    assert (
+        secret not in result.modified_payload
+    ), "Raw secret must not appear in the redacted payload"
     assert "[REDACTED" in result.modified_payload
 
 
@@ -522,7 +524,7 @@ async def test_secret_leak_response_body_is_redacted(tenant_context, monkeypatch
     # Build four secrets at runtime — never hard-coded in source.
     # Positions: (a) middle of content string, (b) nested tool_calls arguments,
     # (c) tail string before closing brace, (d) custom top-level field.
-    secret_a = "sk" + "-" + "T3BlbkFJ" + "abcdefghijklmnopqrstuvwxyz01234"  # SEC-OAI: sk-[A-Za-z0-9]{20+}
+    secret_a = "sk" + "-" + "T3BlbkFJ" + "abcdefghijklmnopqrstuvwxyz01234"
     # SEC-OAI pattern: sk-[A-Za-z0-9]{20,}. For sk-proj- style keys the chars
     # after sk- must be alphanumeric (no dashes) for the regex to match.
     # Use high-entropy mixed chars so both the named pattern and the entropy
@@ -633,9 +635,7 @@ async def test_secret_leak_response_body_is_redacted(tenant_context, monkeypatch
     mock_completion = MagicMock()
     mock_completion.model_dump.return_value = fake_dict
 
-    async def fake_proxy_non_stream(
-        validated_body, request_id, upstream_api_key, overall_timeout
-    ):
+    async def fake_proxy_non_stream(validated_body, request_id, upstream_api_key, overall_timeout):
         return mock_completion, 10, 20
 
     # Build a real SecretOutboundHook with real settings.
@@ -674,8 +674,8 @@ async def test_secret_leak_response_body_is_redacted(tenant_context, monkeypatch
 
     real_registry.run_post_response = _recording_run_post  # type: ignore[method-assign]
 
-    import gateway.upstream.openai_proxy as proxy_mod
     import gateway.routes.chat_completions as cc_mod
+    import gateway.upstream.openai_proxy as proxy_mod
 
     # Spy on json.dumps as referenced by the chat_completions module (HIGH-B ordering
     # proof).  We patch the module's `json` attribute with a wrapper whose dumps()
@@ -695,6 +695,7 @@ async def test_secret_leak_response_body_is_redacted(tenant_context, monkeypatch
 
     class _JsonSpy:
         """Drop-in replacement for the json module, with a spying dumps()."""
+
         dumps = staticmethod(_spying_dumps)
         loads = staticmethod(_json.loads)
         JSONDecodeError = _json.JSONDecodeError
@@ -709,10 +710,12 @@ async def test_secret_leak_response_body_is_redacted(tenant_context, monkeypatch
     # Inject registry after app creation.
     cc_mod._get_default_registry = lambda: real_registry
 
-    request_body = _json.dumps({
-        "model": "gpt-4",
-        "messages": [{"role": "user", "content": "show me the keys"}],
-    })
+    request_body = _json.dumps(
+        {
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "show me the keys"}],
+        }
+    )
 
     headers = {
         "X-Anoryx-Tenant-Id": tenant_context.tenant_id,
@@ -728,9 +731,10 @@ async def test_secret_leak_response_body_is_redacted(tenant_context, monkeypatch
         patch("gateway.middleware.auth.get_privileged_session", _privileged_cm),
         patch("gateway.middleware.auth.VirtualApiKeyRepository", return_value=auth_repo),
         patch("gateway.middleware.audit.get_privileged_session", _privileged_cm),
-        patch("gateway.middleware.audit.AuditLogRepository", return_value=MagicMock(
-            append=AsyncMock(return_value=MagicMock())
-        )),
+        patch(
+            "gateway.middleware.audit.AuditLogRepository",
+            return_value=MagicMock(append=AsyncMock(return_value=MagicMock())),
+        ),
         patch("gateway.routes.chat_completions.emit_terminal_record", new=AsyncMock()),
         patch(
             "gateway.routes.chat_completions.proxy_non_stream",
@@ -748,9 +752,7 @@ async def test_secret_leak_response_body_is_redacted(tenant_context, monkeypatch
             )
 
     # 1. Response must be 200 (not 500) — the primary regression guard.
-    assert resp.status_code == 200, (
-        f"Expected 200, got {resp.status_code}. Body: {resp.text[:500]}"
-    )
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}. Body: {resp.text[:500]}"
 
     # 2. Body must be valid JSON — truncation regression guard.
     try:
@@ -764,9 +766,7 @@ async def test_secret_leak_response_body_is_redacted(tenant_context, monkeypatch
     response_body_str = resp.text
 
     # 3. Response body must contain [REDACTED markers.
-    assert "[REDACTED" in response_body_str, (
-        "Response body must contain [REDACTED markers"
-    )
+    assert "[REDACTED" in response_body_str, "Response body must contain [REDACTED markers"
 
     # 4. None of the 4 original secret literals must appear in the response body.
     for secret_literal, label in [
@@ -775,24 +775,22 @@ async def test_secret_leak_response_body_is_redacted(tenant_context, monkeypatch
         (secret_c, "secret_c (ghp_...)"),
         (secret_d, "secret_d (AKIA...)"),
     ]:
-        assert secret_literal not in response_body_str, (
-            f"Raw secret {label} must not appear in the response body"
-        )
+        assert (
+            secret_literal not in response_body_str
+        ), f"Raw secret {label} must not appear in the response body"
 
     # 5. HIGH-B: exactly ONE secret_leaked event must have been emitted.
     secret_leaked_events = [
-        (ev, slug)
-        for ev, slug in emitted_events
-        if ev.get("event_type") == "secret_leaked"
+        (ev, slug) for ev, slug in emitted_events if ev.get("event_type") == "secret_leaked"
     ]
     assert len(secret_leaked_events) == 1, (
         f"Expected exactly 1 secret_leaked event, got {len(secret_leaked_events)}: "
         f"emitted_events={emitted_events!r}"
     )
     ev, _slug = secret_leaked_events[0]
-    assert ev["action_taken"] == "masked", (
-        f"Expected action_taken='masked', got {ev['action_taken']!r}"
-    )
+    assert (
+        ev["action_taken"] == "masked"
+    ), f"Expected action_taken='masked', got {ev['action_taken']!r}"
     assert ev["direction"] == "outbound"
 
     # 6. HIGH-B ordering proof: the emit fired AFTER json.dumps(redacted_parsed)
@@ -813,9 +811,7 @@ async def test_secret_leak_response_body_is_redacted(tenant_context, monkeypatch
         f"{len(serialize_entries)} in ordering_log={ordering_log!r}. "
         "The json.dumps spy predicate may have changed."
     )
-    assert len(emit_entries) >= 1, (
-        f"No emit event recorded in ordering_log={ordering_log!r}."
-    )
+    assert len(emit_entries) >= 1, f"No emit event recorded in ordering_log={ordering_log!r}."
     serialize_seq = serialize_entries[-1][1]
     emit_seq = emit_entries[0][1]
     assert serialize_seq < emit_seq, (
@@ -826,9 +822,7 @@ async def test_secret_leak_response_body_is_redacted(tenant_context, monkeypatch
     # 7. Secret value must never appear in any event field (D7 / threat #11).
     event_str = _json.dumps(ev)
     for secret_literal in [secret_a, secret_b, secret_c, secret_d]:
-        assert secret_literal not in event_str, (
-            "Secret value must never appear in event fields"
-        )
+        assert secret_literal not in event_str, "Secret value must never appear in event fields"
 
 
 @pytest.mark.asyncio
@@ -924,9 +918,7 @@ async def test_secret_outbound_nonserializable_returns_500(tenant_context, monke
     mock_completion = MagicMock()
     mock_completion.model_dump.return_value = fake_dict
 
-    async def fake_proxy_non_stream(
-        validated_body, request_id, upstream_api_key, overall_timeout
-    ):
+    async def fake_proxy_non_stream(validated_body, request_id, upstream_api_key, overall_timeout):
         return mock_completion, 5, 5
 
     hook_settings = MagicMock()
@@ -951,8 +943,8 @@ async def test_secret_outbound_nonserializable_returns_500(tenant_context, monke
 
     real_registry.run_post_response = _recording_run_post  # type: ignore[method-assign]
 
-    import gateway.upstream.openai_proxy as proxy_mod
     import gateway.routes.chat_completions as cc_mod
+    import gateway.upstream.openai_proxy as proxy_mod
 
     proxy_mod._http_client = None
 
@@ -978,10 +970,12 @@ async def test_secret_outbound_nonserializable_returns_500(tenant_context, monke
             result["_poison"] = _NotSerializable()
         return result
 
-    request_body = _json.dumps({
-        "model": "gpt-4",
-        "messages": [{"role": "user", "content": "show me the keys"}],
-    })
+    request_body = _json.dumps(
+        {
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "show me the keys"}],
+        }
+    )
 
     headers = {
         "X-Anoryx-Tenant-Id": tenant_context.tenant_id,
@@ -997,9 +991,10 @@ async def test_secret_outbound_nonserializable_returns_500(tenant_context, monke
         patch("gateway.middleware.auth.get_privileged_session", _privileged_cm),
         patch("gateway.middleware.auth.VirtualApiKeyRepository", return_value=auth_repo),
         patch("gateway.middleware.audit.get_privileged_session", _privileged_cm),
-        patch("gateway.middleware.audit.AuditLogRepository", return_value=MagicMock(
-            append=AsyncMock(return_value=MagicMock())
-        )),
+        patch(
+            "gateway.middleware.audit.AuditLogRepository",
+            return_value=MagicMock(append=AsyncMock(return_value=MagicMock())),
+        ),
         patch("gateway.routes.chat_completions.emit_terminal_record", new=AsyncMock()),
         patch(
             "gateway.routes.chat_completions.proxy_non_stream",
@@ -1017,9 +1012,7 @@ async def test_secret_outbound_nonserializable_returns_500(tenant_context, monke
             )
 
     # Must return 500 internal_error.
-    assert resp.status_code == 500, (
-        f"Expected 500, got {resp.status_code}. Body: {resp.text[:500]}"
-    )
+    assert resp.status_code == 500, f"Expected 500, got {resp.status_code}. Body: {resp.text[:500]}"
     body = resp.json()
     assert body["error_code"] == "internal_error"
 
@@ -1067,7 +1060,7 @@ async def test_d1_hook_chain_order_secret_injection_pii(tenant_context, monkeypa
       1. All three stubs run.
       2. They run in the order: secret_inbound (idx 0) < injection (idx 1) < pii (idx 2).
     """
-    from orchestration.detectors.pii_detector import PIIHook, _reset_analyzer_for_testing
+    from orchestration.detectors.pii_detector import _reset_analyzer_for_testing
 
     _reset_analyzer_for_testing()
 
@@ -1134,12 +1127,14 @@ async def test_d1_hook_chain_order_secret_injection_pii(tenant_context, monkeypa
     result = await registry.run_pre_request(original, ctx)
 
     # All three hooks ran (no short-circuit).
-    assert invocation_log == ["secret_inbound", "injection", "pii"], (
-        f"Expected D1 order [secret_inbound, injection, pii], got {invocation_log!r}"
-    )
+    assert invocation_log == [
+        "secret_inbound",
+        "injection",
+        "pii",
+    ], f"Expected D1 order [secret_inbound, injection, pii], got {invocation_log!r}"
 
     # PII masking applied — content was modified.
-    assert "user@example.com" not in result, (
-        "PII hook should have redacted the email from the forwarded content"
-    )
+    assert (
+        "user@example.com" not in result
+    ), "PII hook should have redacted the email from the forwarded content"
     assert "[REDACTED" in result

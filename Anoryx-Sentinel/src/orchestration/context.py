@@ -17,11 +17,12 @@ phase, so hooks can assert they are called in the correct context.
 
 from __future__ import annotations
 
-import structlog
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
+
+import structlog
 
 from gateway.context import TenantContext
 from persistence.database import get_privileged_session

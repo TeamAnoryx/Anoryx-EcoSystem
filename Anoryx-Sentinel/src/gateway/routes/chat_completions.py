@@ -89,8 +89,12 @@ def _redact_in_place(node: Any, redact_fn) -> Any:
     if isinstance(node, tuple):
         return tuple(_redact_in_place(item, redact_fn) for item in node)
     if isinstance(node, dict):
-        return {(redact_fn(k) if isinstance(k, str) else k): _redact_in_place(v, redact_fn) for k, v in node.items()}
+        return {
+            (redact_fn(k) if isinstance(k, str) else k): _redact_in_place(v, redact_fn)
+            for k, v in node.items()
+        }
     return node
+
 
 _RATE_LIMIT_HEADERS_KEYS = ("x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset")
 
@@ -99,10 +103,10 @@ _RATE_LIMIT_HEADERS_KEYS = ("x-ratelimit-limit", "x-ratelimit-remaining", "x-rat
 # ---------------------------------------------------------------------------
 
 try:
-    from orchestration.exceptions import HookBlockedError, HookFailSafeError
-    from orchestration.registry import HookRegistry
     from orchestration.config import get_orchestration_settings
     from orchestration.detectors.secret_detector import redact as _secret_redact
+    from orchestration.exceptions import HookBlockedError, HookFailSafeError
+    from orchestration.registry import HookRegistry
 
     _HOOKS_AVAILABLE = True
 except ImportError:
@@ -353,9 +357,7 @@ async def create_chat_completion(
                 response_text = json.dumps(completion.model_dump())
                 post_hook_context = _make_post_context(hook_context, is_stream=False)
                 try:
-                    await hook_registry.run_post_response(
-                        response_text, post_hook_context
-                    )
+                    await hook_registry.run_post_response(response_text, post_hook_context)
                 except HookFailSafeError:
                     raise GatewayError("internal_error") from None
                 except HookBlockedError:
@@ -397,9 +399,7 @@ async def create_chat_completion(
                 deferred = getattr(post_hook_context, "_deferred_event", None)
                 if deferred is not None:
                     deferred_ev, deferred_slug = deferred
-                    await post_hook_context.emit(
-                        deferred_ev, detector_slug=deferred_slug
-                    )
+                    await post_hook_context.emit(deferred_ev, detector_slug=deferred_slug)
 
                 # Audit (success path) — must happen before returning.
                 await emit_terminal_record(
@@ -678,7 +678,6 @@ def _apply_masked_user_content(
             new_msg = msg
         new_messages.append(new_msg)
     return validated.model_copy(update={"messages": new_messages})
-
 
 
 def _extract_chunk_content(chunk: str) -> str:

@@ -38,8 +38,9 @@ from orchestration.detectors.secret_detector import (
 )
 
 _EVENTS_SCHEMA = json.loads(
-    (Path(__file__).parent.parent.parent / "contracts" / "events.schema.json")
-    .read_text(encoding="utf-8")
+    (Path(__file__).parent.parent.parent / "contracts" / "events.schema.json").read_text(
+        encoding="utf-8"
+    )
 )
 _VALIDATOR = jsonschema.Draft202012Validator(_EVENTS_SCHEMA)
 
@@ -55,6 +56,7 @@ def _make_settings(min_token_len=20, entropy_threshold=4.5):
 # Synthetic credential builders (built at runtime, not in source literals)
 # ---------------------------------------------------------------------------
 
+
 def _build_secret(parts):
     """Join parts into a credential string."""
     return "".join(parts)
@@ -67,14 +69,37 @@ def _synth_openai():
 
 def _synth_anthropic():
     # Pattern: sk-ant-api03-[A-Za-z0-9_-]{20,}  (SEC-ANT)
-    return _build_secret(["s", "k", "-", "a", "n", "t", "-", "a", "p", "i", "0", "3", "-",
-                          "A" * 20, "z" * 20])
+    return _build_secret(
+        ["s", "k", "-", "a", "n", "t", "-", "a", "p", "i", "0", "3", "-", "A" * 20, "z" * 20]
+    )
 
 
 def _synth_aws():
     # Pattern: AKIA[0-9A-Z]{16}  (SEC-AWS)
-    return _build_secret(["A", "K", "I", "A", "I", "O", "S", "F", "O", "D",
-                          "N", "N", "7", "E", "X", "A", "M", "P", "L", "E"])
+    return _build_secret(
+        [
+            "A",
+            "K",
+            "I",
+            "A",
+            "I",
+            "O",
+            "S",
+            "F",
+            "O",
+            "D",
+            "N",
+            "N",
+            "7",
+            "E",
+            "X",
+            "A",
+            "M",
+            "P",
+            "L",
+            "E",
+        ]
+    )
 
 
 def _synth_stripe():
@@ -94,11 +119,55 @@ def _synth_github():
 
 def _synth_jwt():
     # Pattern: eyJ[...].  [...].  [...]
-    return _build_secret(["e", "y", "J", "h", "b", "G", "c", "i", "O", "i", "J",
-                          "I", "U", "z", "I", "1", "N", "i", "J", "9",
-                          ".", "e", "y", "J", "s", "u", "b", "i", "O", "i", "J",
-                          "0", "e", "X", "Q", "i", "f", "Q",
-                          ".", "a", "b", "c", "1", "2", "3"])
+    return _build_secret(
+        [
+            "e",
+            "y",
+            "J",
+            "h",
+            "b",
+            "G",
+            "c",
+            "i",
+            "O",
+            "i",
+            "J",
+            "I",
+            "U",
+            "z",
+            "I",
+            "1",
+            "N",
+            "i",
+            "J",
+            "9",
+            ".",
+            "e",
+            "y",
+            "J",
+            "s",
+            "u",
+            "b",
+            "i",
+            "O",
+            "i",
+            "J",
+            "0",
+            "e",
+            "X",
+            "Q",
+            "i",
+            "f",
+            "Q",
+            ".",
+            "a",
+            "b",
+            "c",
+            "1",
+            "2",
+            "3",
+        ]
+    )
 
 
 def _synth_pem():
@@ -111,14 +180,14 @@ def _synth_pem():
 # ---------------------------------------------------------------------------
 
 SECRET_FORMAT_CASES = [
-    ("openai",     _synth_openai,     "api_key"),
-    ("anthropic",  _synth_anthropic,  "api_key"),
-    ("aws",        _synth_aws,        "api_key"),
-    ("stripe",     _synth_stripe,     "api_key"),
-    ("slack",      _synth_slack,      "token"),
-    ("github",     _synth_github,     "token"),
-    ("jwt",        _synth_jwt,        "token"),
-    ("pem",        _synth_pem,        "private_key"),
+    ("openai", _synth_openai, "api_key"),
+    ("anthropic", _synth_anthropic, "api_key"),
+    ("aws", _synth_aws, "api_key"),
+    ("stripe", _synth_stripe, "api_key"),
+    ("slack", _synth_slack, "token"),
+    ("github", _synth_github, "token"),
+    ("jwt", _synth_jwt, "token"),
+    ("pem", _synth_pem, "private_key"),
 ]
 
 
@@ -368,7 +437,6 @@ def test_fix2_base64_key_detected_as_credential():
     Entropy of random base64 is ~4.75 bits/char > ENTROPY_THRESHOLD 4.5.
     """
     import base64
-    import os
 
     # 32 random bytes → 44-char base64 string ending in '='
     raw = bytes(range(256))[:32]  # deterministic, not truly random — safe for tests
@@ -385,9 +453,9 @@ def test_fix2_base64_key_detected_as_credential():
         entropy_threshold=4.5,
     )
     credential_findings = [f for f in findings if f[1] == "credential"]
-    assert credential_findings, (
-        f"FIX-2: high-entropy base64 key '{b64_key}' should be detected as credential"
-    )
+    assert (
+        credential_findings
+    ), f"FIX-2: high-entropy base64 key '{b64_key}' should be detected as credential"
 
 
 def test_fix2_uuid_v4_still_not_detected():
@@ -403,9 +471,7 @@ def test_fix2_uuid_v4_still_not_detected():
         entropy_threshold=4.5,
     )
     credential_findings = [f for f in findings if f[1] == "credential"]
-    assert not credential_findings, (
-        f"FIX-2: UUIDv4 {uid!r} should NOT be flagged as credential"
-    )
+    assert not credential_findings, f"FIX-2: UUIDv4 {uid!r} should NOT be flagged as credential"
 
 
 def test_fix2_five_uuids_no_events():
@@ -418,6 +484,6 @@ def test_fix2_five_uuids_no_events():
     text = "IDs: " + " ".join(uids)
     findings = _find_secrets(text, min_token_len=20, entropy_threshold=4.5)
     credential_findings = [f for f in findings if f[1] == "credential"]
-    assert not credential_findings, (
-        f"FIX-2: {len(credential_findings)} credential events for 5 UUIDs — expected 0"
-    )
+    assert (
+        not credential_findings
+    ), f"FIX-2: {len(credential_findings)} credential events for 5 UUIDs — expected 0"

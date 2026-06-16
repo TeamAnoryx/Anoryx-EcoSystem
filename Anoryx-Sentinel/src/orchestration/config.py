@@ -70,7 +70,7 @@ class OrchestrationSettings(BaseSettings):
     secret_detection_enabled: bool = True
 
     #: Character used when masking a detected secret in outbound traffic.
-    secret_redact_character: str = "*"
+    secret_redact_character: str = "*"  # noqa: S105 — masking char, not a credential
 
     #: Shannon-entropy threshold for generic high-entropy credential detection.
     #: Tuned at 4.5 bits/char — above prose (~3.5), below random keys (~5.0–6.0).

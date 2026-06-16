@@ -59,8 +59,9 @@ Multi-language deferral
 from __future__ import annotations
 
 import re
-import structlog
 from typing import Any
+
+import structlog
 
 from orchestration.hooks.base import DetectorResult, PreRequestHook
 
@@ -148,9 +149,7 @@ def _get_analyzer() -> Any:
             exc_type=type(exc).__name__,
             # Never log exc message — may contain path info.
         )
-        raise RuntimeError(
-            f"Presidio AnalyzerEngine failed to load: {type(exc).__name__}"
-        ) from exc
+        raise RuntimeError(f"Presidio AnalyzerEngine failed to load: {type(exc).__name__}") from exc
 
     return _analyzer
 
@@ -241,7 +240,8 @@ class PIIHook(PreRequestHook):
         # the global threshold for higher-precision entities.
         global_threshold = self._settings.pii_confidence_threshold
         above_threshold = [
-            r for r in results
+            r
+            for r in results
             if r.score >= _PER_ENTITY_THRESHOLDS.get(r.entity_type, global_threshold)
         ]
 

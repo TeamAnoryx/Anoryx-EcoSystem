@@ -32,12 +32,9 @@ from orchestration.detectors.pii_detector import (
     _confidence_to_severity,
     _reset_analyzer_for_testing,
 )
-from orchestration.hooks.base import DetectorResult
 
 # Load events schema for contract validation.
-_EVENTS_SCHEMA_PATH = (
-    Path(__file__).parent.parent.parent / "contracts" / "events.schema.json"
-)
+_EVENTS_SCHEMA_PATH = Path(__file__).parent.parent.parent / "contracts" / "events.schema.json"
 _EVENTS_SCHEMA = json.loads(_EVENTS_SCHEMA_PATH.read_text(encoding="utf-8"))
 _VALIDATOR = jsonschema.Draft202012Validator(_EVENTS_SCHEMA)
 
@@ -381,9 +378,9 @@ async def test_fix3_phone_number_detected_at_score_040(mock_hook_context):
     with patch("orchestration.detectors.pii_detector._get_analyzer", return_value=mock_analyzer):
         result = await hook.inspect(content, mock_hook_context)
 
-    assert result.action == "mask", (
-        f"FIX-3: PHONE_NUMBER at score 0.40 should be masked, got {result.action!r}"
-    )
+    assert (
+        result.action == "mask"
+    ), f"FIX-3: PHONE_NUMBER at score 0.40 should be masked, got {result.action!r}"
     assert result.event is not None
     assert result.event["event_type"] == "pii_blocked"
     assert result.event["pattern_name"] == "phone_number"
