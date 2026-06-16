@@ -194,23 +194,44 @@ limiter; per-tenant/per-key limiting begins the moment the key resolves. A coars
 pre-auth safety valve (e.g. global connection limits at the ASGI server / ingress)
 is an infra concern noted under Deferred, not part of this in-process pipeline.
 
-**Audit guarantee on early-rejected requests.** Because audit MUST emit on both
+**Audit coverage on early-rejected requests.** Because audit MUST emit on both
 success and failure, it CANNOT be a normal before-handler middleware (those never
 run when an earlier stage rejects). Instead:
 
-- The outermost wrapper (step 1) and a matched set of **FastAPI exception
-  handlers** funnel **every** terminal response — including `400`/`401`/`403`/
-  `413`/`429`/`500` produced at any inner stage — through a single
-  `emit_terminal_record(...)` call before the response is returned.
-- That emit point writes the audit-log row via `AuditLogRepository.append` on a
-  **privileged session** (ADR-0005: chain ops require privileged) and emits the
-  `usage` event (Decision 7 specifies how `tokens_in`/`tokens_out`/`latency_ms`
-  are populated, including zero/partial values on early rejection).
-- **Fail-safe on audit failure:** if the audit/usage emit itself fails, the
-  request outcome is forced to `500 internal_error` (a successful upstream call is
-  NOT reported as success if it could not be recorded) — consistent with the
-  contract's fail-safe-BLOCK posture and `CLAUDE.md` non-negotiable #5. Audit is
-  not best-effort; an un-auditable success is a failure.
+- A **pure-ASGI outermost wrapper** (`TerminalAuditMiddleware`) wraps the `send`
+  callable for every request. It observes the final HTTP status code produced
+  anywhere in the stack — including `JSONResponse` objects returned directly by
+  inner `BaseHTTPMiddleware` layers (which bypass the `dispatch()` of any outer
+  `BaseHTTPMiddleware` wrapper). This is the correct mechanism to cover
+  `401 invalid_api_key`, `400 missing_required_header`, `413 request_too_large`,
+  `400` TE+CL, and `500` from the exception handler.
+- For route-handled requests (steps 5–8), the route handler calls
+  `emit_terminal_record(...)` and marks `request.state.audit_emitted = True`.
+  The outermost wrapper checks this flag to avoid double-emission.
+- Pre-route rejections (from inner middlewares) have no `TenantContext`; the
+  wrapper calls `emit_terminal_record(tenant_context=None, ...)` and
+  `build_usage_event()` substitutes safe sentinel IDs (all-zeros UUID,
+  agent `gateway-core`), `model=''`, `tokens_in/out=0`.
+- **Fail-safe on audit failure (NON-STREAM):** if the audit/usage emit itself
+  fails for a non-stream request, the request outcome is forced to
+  `500 internal_error` (a non-stream success that cannot be recorded is treated
+  as a failure) — consistent with the fail-safe-BLOCK posture and `CLAUDE.md`
+  non-negotiable #5.
+- **Audit failure on already-committed responses (pre-route rejections and
+  STREAM):** for responses whose bytes are already in-flight when the audit emit
+  is attempted, the status code cannot be changed. The failure is logged at
+  `ERROR` level (structured, no PII) as a documented out-of-band alert signal.
+  It MUST NOT be swallowed silently. Operators must monitor `audit_append_failed`
+  and `terminal_audit_emit_failed_post_response` log events.
+
+**HIGH-3 Amendment — Streaming honest scope:**
+  For **streaming** requests, the `200` response headers are sent before the
+  generator runs. If the audit emit inside the generator's `finally`-block fails,
+  the `200` cannot be retroactively changed to `500`. This is an inherent SSE
+  constraint, not a code defect. The "audit-failure → 500" guarantee is scoped
+  to **NON-STREAMING** requests only. For streams, audit is best-effort-after-
+  headers with failure surfaced out-of-band at `ERROR` log level. This honest
+  scoping is documented in `chat_completions.py` and `audit.py`.
 
 ### Decision 4 — Tenant context semantics (conform to contract)
 
@@ -443,7 +464,7 @@ schema-enforced). No interpolation.
 | 3 | HTTP request smuggling | Single edge body-size guard before parse; one typed parse path; no raw passthrough | Edge guard (step 2); ASGI server HTTP framing | **Partial** — wire-level smuggling resistance relies on the uvicorn[standard]/httptools parser; gateway adds no second HTTP parser to differ against. We rely on the server parser and keep it pinned/updated; out-of-process WAF is infra-deferred |
 | 4 | Streaming abuse / runaway generation | `MAX_TOKENS_PER_REQUEST` cap, `STREAM_TIMEOUT_SECONDS` idle + `REQUEST_TIMEOUT_SECONDS` overall, ≤20 concurrent SSE/tenant, disconnect cancels upstream | Body validation (step 7) + streaming lifecycle (Decision 7) + rate limit (step 6) | In scope |
 | 5 | Rate-limit bypass via IP spoofing | Limiter keyed ONLY on virtual-key id + resolved tenant_id, never IP/`X-Forwarded-For` | Rate limit (step 6, Decision 5) | In scope (IP spoof immaterial by design) |
-| 6 | Audit bypass | Terminal-audit wrapper + exception handlers emit on EVERY terminal outcome; audit-emit failure forces 500 (fail-safe); chain append on privileged session | Terminal wrapper (step 1, Decision 3) | In scope |
+| 6 | Audit bypass | Pure-ASGI TerminalAuditMiddleware wraps send callable — observes every terminal status including direct JSONResponses from inner BaseHTTPMiddleware layers; audit-emit failure forces 500 for NON-STREAM (fail-safe); for STREAM and pre-route rejections where response is already committed, failure logged at ERROR level out-of-band (inherent SSE constraint); chain append on privileged session | Terminal wrapper (step 1, Decision 3 + HIGH-3 amendment) | In scope (with documented SSE honest-scope caveat) |
 | 7 | Upstream injection (smuggled fields) | Closed Pydantic schema rejects unknown keys; upstream request re-serialized from typed model; NO raw body passthrough | Body validation (step 7) + upstream proxy (Decision 8) | In scope |
 | 8 | Memory exhaustion (oversize body) | 1 MiB edge cap checked before parse; per-field bounds; bounded `messages`/`content` | Edge guard (step 2) | In scope |
 | 9 | Information disclosure | Fixed enum messages, no interpolation, no body/PII/header content in errors or logs; correlate by `request_id`; upstream cause logged server-side only | Error mapping (Decision 6), upstream proxy (Decision 8) | In scope |
@@ -564,7 +585,7 @@ configured above the contract's `max_tokens` maximum of 131072.
 | F-004 endpoint scope | `/v1/chat/completions` full; `/v1/completions` + `/v1/models` deferred | Prove the pipeline once; cheap to extend |
 | Operational endpoints | `/health` (liveness), `/ready` (DB) — outside `/v1`, no tenant data | Not contract API endpoints; not added to openapi.yaml; no "invented" surface |
 | Pipeline order | size → headers → auth → id-cross-check → rate-limit → body-validate → handler, under a terminal-audit wrapper | Cheap pre-auth rejects; rate limit needs resolved key+tenant |
-| Audit guarantee | Outermost wrapper + exception handlers; emit on EVERY terminal outcome; audit failure → 500 | Auditing must not be skippable by early rejection |
+| Audit coverage | Pure-ASGI outermost send-wrapper (TerminalAuditMiddleware) + exception handlers; emits on every terminal outcome including inner-middleware direct JSONResponses; audit failure → 500 for non-stream; for streams, failure logged out-of-band at ERROR level (inherent SSE constraint, honest scope) | Auditing must not be bypassable by early middleware rejection; streaming honest-scope documented |
 | Tenant context | Resolved from key; headers (incl. agent) cross-checked → 403; request-scoped; resolved values only on events/audit | Conform to contract; threat #2 + #10 |
 | Rate limiting | In-process sliding window, dual key+tenant (stricter wins) + ≤20 SSE/tenant; keyed never on IP | Contract semantics; brief config names; per-worker honesty; Redis → F-010 |
 | Error mapping | Constant code→message→status table, verbatim contract strings, no interpolation, unit-tested | Contract pairing not schema-enforced; threat #9/#12 |

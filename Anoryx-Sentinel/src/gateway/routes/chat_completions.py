@@ -9,9 +9,20 @@ here, steps 2–7 have already run:
   6. Rate limit (check_rate_limit, called here after context is resolved)
   7. Request-body validation (Pydantic model on the route)
 
-Audit guarantee: emit_terminal_record() is called in ALL paths — success,
-upstream failure, validation failure, etc. (ADR-0006 Decision 3).
-If the audit append fails, the response is forced to 500 internal_error.
+AUDIT COVERAGE (honest scope — HIGH-3 / LOW-4):
+  - NON-STREAM: emit_terminal_record() is called in all non-streaming paths —
+    success, upstream failure, validation failure, etc. (ADR-0006 Decision 3).
+    If the audit append fails, the response is forced to 500 internal_error.
+    After successful emit we set request.state.audit_emitted = True so the
+    outermost TerminalAuditMiddleware skips double-emission.
+  - STREAM: 200 headers are committed before the generator runs. Audit is
+    emitted in the generator's finally-block. If that emit fails, it is logged
+    at ERROR level out-of-band — the committed 200 cannot be changed to 500.
+    This is an inherent SSE constraint. See ADR-0006 Decision 3 amendment.
+
+MED-3: Uses request.state.request_id (set by TerminalAuditMiddleware, the
+outermost layer) instead of generating a new ID here. All middleware layers
+and the route handler share the ONE canonical request_id.
 
 The request body is read from request.state.raw_body (set by
 RequestValidationMiddleware after the 1 MiB capped read).
@@ -92,6 +103,16 @@ def _success_headers(
     }
 
 
+def _make_request_id() -> str:
+    """Generate a request_id conforming to events.schema.json pattern ^[A-Za-z0-9._-]{1,64}$.
+
+    Used only as a fallback if request.state.request_id was not set by the
+    outermost middleware (e.g. in certain test configurations). Prefer
+    request.state.request_id in all normal paths (MED-3).
+    """
+    return "req-" + uuid.uuid4().hex[:32]
+
+
 @router.post("/v1/chat/completions", response_model=None)
 async def create_chat_completion(request: Request) -> JSONResponse | StreamingResponse:
     """POST /v1/chat/completions — full pipeline handler (non-stream + stream).
@@ -102,15 +123,19 @@ async def create_chat_completion(request: Request) -> JSONResponse | StreamingRe
       7. Body validation (Pydantic, closed schema)
       8. Upstream proxy (typed re-serialization, no raw passthrough)
 
-    Audit emitted on every terminal outcome (steps 1 / Decision 3).
+    Audit emitted on every terminal outcome for non-stream requests (step 1 /
+    Decision 3). Stream audit is emitted in the generator's finally-block;
+    see module docstring for the honest scope of the audit guarantee.
     """
     settings = get_settings()
     start_time = time.monotonic()
-    request_id = _make_request_id()
+
+    # MED-3: use the ONE canonical request_id set by TerminalAuditMiddleware.
+    request_id: str = getattr(request.state, "request_id", None) or _make_request_id()
 
     # These will be populated progressively; used by the finally-block emit.
     tenant_context: TenantContext | None = None
-    model: str = "unknown"
+    model: str = ""
     tokens_in: int = 0
     tokens_out: int = 0
     rl_limit: int = settings.rate_limit_rpm
@@ -145,6 +170,8 @@ async def create_chat_completion(request: Request) -> JSONResponse | StreamingRe
             raise GatewayError("invalid_request")
 
         model = validated.model
+        # Store on state so TerminalAuditMiddleware can include it if needed.
+        request.state.audit_model = model
 
         # Enforce MAX_TOKENS_PER_REQUEST cap (threat #4, ADR-0006 step 7).
         if validated.max_tokens is not None and validated.max_tokens > settings.max_tokens_per_request:
@@ -155,6 +182,8 @@ async def create_chat_completion(request: Request) -> JSONResponse | StreamingRe
 
         if validated.stream:
             # Streaming path (ADR-0006 Decision 7).
+            # Note: stream_slot() now only DECREMENTS (MED-1 fix: check_rate_limit
+            # already incremented the counter atomically at admission).
             return await _handle_stream(
                 validated=validated,
                 request_id=request_id,
@@ -184,6 +213,8 @@ async def create_chat_completion(request: Request) -> JSONResponse | StreamingRe
                 tokens_out=tokens_out,
                 start_time=start_time,
             )
+            # Signal TerminalAuditMiddleware to skip double-emission.
+            request.state.audit_emitted = True
 
             headers = _success_headers(request_id, rl_limit, rl_remaining, rl_reset)
             return JSONResponse(
@@ -193,7 +224,7 @@ async def create_chat_completion(request: Request) -> JSONResponse | StreamingRe
             )
 
     except GatewayError as exc:
-        # Audit on every rejection (ADR-0006 audit guarantee).
+        # Audit on every non-stream rejection (ADR-0006 audit coverage).
         try:
             await emit_terminal_record(
                 request_id=request_id,
@@ -203,12 +234,16 @@ async def create_chat_completion(request: Request) -> JSONResponse | StreamingRe
                 tokens_out=0,
                 start_time=start_time,
             )
+            # Signal TerminalAuditMiddleware to skip double-emission.
+            request.state.audit_emitted = True
         except GatewayError:
             # Audit-emit itself failed → already GatewayError("internal_error").
             # Surface the audit-failure 500 (overrides the original error code).
             exc = GatewayError("internal_error")
+            request.state.audit_emitted = True
         except Exception:
             exc = GatewayError("internal_error")
+            request.state.audit_emitted = True
 
         resp = _error_response(exc.error_code, request_id, retry_after=exc.retry_after)
         resp.headers["X-RateLimit-Limit"] = str(rl_limit)
@@ -231,15 +266,24 @@ async def _handle_stream(
 ) -> StreamingResponse:
     """Build and return a StreamingResponse for stream: true requests.
 
-    The concurrent-stream slot is acquired/released via stream_slot() inside
-    the generator — guaranteed decrement on close/complete/error/disconnect.
+    The concurrent-stream slot was already reserved (incremented) atomically
+    by check_rate_limit() under the lock (MED-1 fix). stream_slot() here only
+    DECREMENTS on exit — guaranteed on close/complete/error/disconnect.
+
     Partial-stream audit is emitted in the generator's finally block.
+
+    HIGH-3 / honest scope: audit failure in the finally-block logs at ERROR
+    level out-of-band. The committed 200 response cannot be retroactively
+    changed to 500 once streaming headers are sent. This is an inherent SSE
+    constraint documented in ADR-0006 Decision 3 (amended).
     """
     # Token counters for partial-stream audit.
     token_state: dict = {"tokens_in": 0, "tokens_out": 0}
 
     async def _generate():
         """Async generator that wraps the upstream stream with audit + slot management."""
+        # MED-1: stream_slot() only DECREMENTS now. Counter was already incremented
+        # by check_rate_limit() at admission time.
         async with stream_slot(tenant_context.tenant_id):
             try:
                 async for chunk in _proxy_stream_generator(
@@ -267,7 +311,10 @@ async def _handle_stream(
                     yield chunk
             finally:
                 # Partial-stream audit: emit with tokens accumulated so far.
-                # This runs on complete, error, timeout, and client disconnect.
+                # Runs on complete, error, timeout, and client disconnect.
+                # HIGH-3 honest scope: if this emit fails after 200 headers are
+                # sent, we CANNOT force 500. Log at ERROR level as the out-of-band
+                # signal. Operators must monitor this log event.
                 try:
                     # Estimate tokens_in from messages (word count approximation).
                     prompt_words = sum(
@@ -283,12 +330,14 @@ async def _handle_stream(
                         start_time=start_time,
                     )
                 except Exception:
-                    # Audit failure in streaming path: log but cannot force 500
-                    # (headers already sent). This is an edge case; the audit-
-                    # failure-forces-500 guarantee applies to the response itself,
-                    # which for streams means we cannot change the status code
-                    # after streaming begins. Log for operator visibility.
-                    log.exception("stream_audit_failed", request_id=request_id)
+                    # HIGH-3: audit failure in streaming path — cannot force 500
+                    # (200 headers already sent). Log at ERROR level as the
+                    # documented out-of-band alert. MUST NOT be swallowed silently.
+                    log.error(
+                        "stream_audit_failed",
+                        request_id=request_id,
+                        # Never log token counts or content — PII risk.
+                    )
 
     headers = _success_headers(request_id, rl_limit, rl_remaining, rl_reset)
     return StreamingResponse(
@@ -297,11 +346,6 @@ async def _handle_stream(
         media_type="text/event-stream",
         headers=headers,
     )
-
-
-def _make_request_id() -> str:
-    """Generate a request_id conforming to events.schema.json pattern ^[A-Za-z0-9._-]{1,64}$."""
-    return "req-" + uuid.uuid4().hex[:32]
 
 
 def _peek_stream_flag(request: Request) -> bool:

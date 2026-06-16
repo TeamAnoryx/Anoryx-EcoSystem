@@ -10,6 +10,9 @@ The body is read once here and stored on request.state.raw_body so that
 downstream handlers can access it without a second read from the stream
 (which would be empty after the first read).
 
+MED-3: Does NOT generate its own request_id. Reads the canonical
+request.state.request_id set by TerminalAuditMiddleware (outermost layer).
+
 Rejects:
   - Content-Length > MAX_BODY_BYTES → 413 request_too_large
   - body read exceeds MAX_BODY_BYTES → 413 request_too_large
@@ -36,6 +39,22 @@ log = structlog.get_logger(__name__)
 _BODY_EXEMPT_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
+def _get_request_id(request: Request) -> str:
+    """Return the canonical request_id from state, or generate a fallback.
+
+    The canonical ID should always be set by TerminalAuditMiddleware before
+    this middleware runs. The fallback ensures a valid ID even in test
+    scenarios where the wrapper is not present.
+    """
+    rid = getattr(request.state, "request_id", None)
+    if rid:
+        return rid
+    # Fallback: generate and store so downstream layers use the same ID.
+    rid = "req-" + uuid.uuid4().hex[:32]
+    request.state.request_id = rid
+    return rid
+
+
 def _error_json(error_code: str, request_id: str) -> JSONResponse:
     message, status = ERROR_TABLE[error_code]
     return JSONResponse(
@@ -59,7 +78,8 @@ class RequestValidationMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         settings = get_settings()
         max_bytes = settings.max_body_bytes
-        request_id = "req-" + uuid.uuid4().hex[:32]
+        # MED-3: use the single canonical request_id from the outermost wrapper.
+        request_id = _get_request_id(request)
 
         # --- Request-smuggling rejection (threat #3 partial in-process defense) ---
         has_te = "transfer-encoding" in request.headers

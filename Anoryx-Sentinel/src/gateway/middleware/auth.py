@@ -31,6 +31,10 @@ Failure modes (all → 401 invalid_api_key, no timing distinction):
   - VirtualApiKeyAuthError from lookup_by_plaintext (not found / revoked /
     expired / inactive)
 
+MED-3: Does NOT generate its own request_id. Reads the canonical
+request.state.request_id set by TerminalAuditMiddleware (outermost layer).
+The now-removed request.state.auth_request_id is no longer set.
+
 NOTE: This middleware returns JSONResponse directly rather than raising
 GatewayError, because BaseHTTPMiddleware does not reliably propagate
 exceptions to FastAPI exception handlers across Starlette versions.
@@ -59,6 +63,16 @@ log = structlog.get_logger(__name__)
 _AUTH_EXEMPT_PATHS = frozenset({"/health", "/ready"})
 
 
+def _get_request_id(request: Request) -> str:
+    """Return the canonical request_id from state, or generate a fallback."""
+    rid = getattr(request.state, "request_id", None)
+    if rid:
+        return rid
+    rid = "req-" + uuid.uuid4().hex[:32]
+    request.state.request_id = rid
+    return rid
+
+
 def _error_json(error_code: str, request_id: str, *, retry_after: int | None = None) -> JSONResponse:
     message, status = ERROR_TABLE[error_code]
     headers: dict[str, str] = {"X-Request-Id": request_id}
@@ -85,7 +99,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.url.path in _AUTH_EXEMPT_PATHS:
             return await call_next(request)
 
-        request_id = "req-" + uuid.uuid4().hex[:32]
+        # MED-3: use the single canonical request_id from the outermost wrapper.
+        request_id = _get_request_id(request)
 
         auth_header = request.headers.get("authorization", "")
         if not auth_header.startswith("Bearer "):
@@ -116,6 +131,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Store the resolved row — tenant_context middleware reads it next.
         # NEVER log the key_fingerprint or any secret material here.
+        # MED-3: request.state.auth_request_id removed; single canonical ID is
+        # already on request.state.request_id.
         request.state.virtual_key_row = key_row
-        request.state.auth_request_id = request_id
         return await call_next(request)

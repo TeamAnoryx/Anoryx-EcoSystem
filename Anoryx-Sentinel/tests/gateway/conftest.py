@@ -88,6 +88,34 @@ def make_audit_session_cm(audit_repo_mock):
     return _cm
 
 
+def make_privileged_session_cm_for_both(auth_repo_mock, audit_repo_mock):
+    """Return a get_privileged_session CM that serves both auth and audit calls.
+
+    Uses call counting to decide which repo to serve. Auth calls always come
+    before audit calls within a single request.
+    """
+    call_count = [0]
+
+    @asynccontextmanager
+    async def _cm():
+        session = MagicMock()
+
+        @asynccontextmanager
+        async def _begin():
+            yield MagicMock()
+
+        session.begin = _begin
+        call_count[0] += 1
+        if call_count[0] == 1:
+            with patch("gateway.middleware.auth.VirtualApiKeyRepository", return_value=auth_repo_mock):
+                yield session
+        else:
+            with patch("gateway.middleware.audit.AuditLogRepository", return_value=audit_repo_mock):
+                yield session
+
+    return _cm
+
+
 @pytest.fixture(autouse=True)
 def reset_rate_limit_state():
     """Clear in-process rate-limit state before every test."""
@@ -137,6 +165,11 @@ def build_app_with_auth(key_row=None, audit_append=None):
 
     key_row: VirtualApiKey mock row. Defaults to a standard test row.
     audit_append: AsyncMock for AuditLogRepository.append. Defaults to no-op.
+
+    NOTE: This helper patches emit_terminal_record at the ROUTE level, which
+    suppresses double-audit from TerminalAuditMiddleware. Use
+    build_app_with_real_audit() for regression tests that must prove audit
+    fires for middleware-stage rejections.
     """
     _reset_settings()
     if key_row is None:
@@ -182,6 +215,60 @@ def build_app_with_auth(key_row=None, audit_append=None):
         app = create_app()
 
     return app
+
+
+def build_app_with_real_audit(key_row=None, audit_repo_mock=None):
+    """Build the gateway app with mocked auth but REAL audit path.
+
+    Unlike build_app_with_auth(), this does NOT patch out emit_terminal_record
+    at the route level. This allows the TerminalAuditMiddleware to call the
+    real emit_terminal_record(), proving the audit bypass is dead.
+
+    audit_repo_mock: a MagicMock with an .append AsyncMock; if None, a default
+    no-op mock is used. Callers inspect audit_repo_mock.append.call_count to
+    assert audit fires for middleware rejections.
+
+    Returns (app, audit_repo_mock) so callers can assert on the repo mock.
+    """
+    _reset_settings()
+    if key_row is None:
+        key_row = make_fake_key_row()
+
+    auth_repo = MagicMock()
+    auth_repo.lookup_by_plaintext = AsyncMock(return_value=key_row)
+
+    if audit_repo_mock is None:
+        audit_repo_mock = MagicMock()
+        audit_repo_mock.append = AsyncMock(return_value=MagicMock())
+
+    @asynccontextmanager
+    async def _privileged_cm():
+        session = MagicMock()
+
+        @asynccontextmanager
+        async def _begin():
+            yield MagicMock()
+
+        session.begin = _begin
+        # Both auth and audit share the same session mock; they're patched separately.
+        yield session
+
+    import gateway.upstream.openai_proxy as proxy_mod
+    proxy_mod._http_client = None
+
+    with (
+        patch("gateway.middleware.auth.get_privileged_session", _privileged_cm),
+        patch("gateway.middleware.auth.VirtualApiKeyRepository", return_value=auth_repo),
+        patch("gateway.middleware.audit.get_privileged_session", _privileged_cm),
+        patch("gateway.middleware.audit.AuditLogRepository", return_value=audit_repo_mock),
+        # NOTE: Do NOT patch gateway.routes.chat_completions.emit_terminal_record here.
+        # The real function is called so TerminalAuditMiddleware invocations
+        # go through to the mocked AuditLogRepository.
+    ):
+        from gateway.main import create_app
+        app = create_app()
+
+    return app, audit_repo_mock
 
 
 @pytest.fixture()

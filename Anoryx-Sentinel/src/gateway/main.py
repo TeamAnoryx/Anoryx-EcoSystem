@@ -1,27 +1,51 @@
 """Gateway application factory (F-004, ADR-0006).
 
-create_app() wires the middleware pipeline in the EXACT ADR-0006 order
-(Decision 3, outermost → innermost):
+create_app() wires the middleware pipeline in the EXACT ADR-0006 order.
+Starlette adds middleware in LIFO order (last-added = outermost). We add
+middlewares in innermost-first order so the last-added is outermost.
 
-  1. Exception handlers (terminal-audit wrapper equivalent — catch all
-     unhandled GatewayError and Exception at the app level, funnel every
-     terminal response through emit_terminal_record).
-  2. RequestValidationMiddleware (body-size / edge guard).
-  3. TenantContextMiddleware (header presence / format gate — step 3 of the ADR
-     pipeline; ID cross-check step 5 runs inside the route handler).
-  4. AuthMiddleware (Bearer extraction + virtual key resolution).
-  NOTE: Starlette adds middleware in LIFO order (last-added = outermost).
-  We add them innermost-first so the last-added is outermost.
+Final outermost-to-innermost execution order:
 
-CORSMiddleware: default-deny (threat #11). Explicit allowlist from config;
-never "*" with credentials.
+  [outermost]  TerminalAuditMiddleware   — pure-ASGI; generates ONE canonical
+                                           request_id; emits audit on EVERY
+                                           terminal outcome including direct
+                                           JSONResponses from inner middlewares.
+                                           Added LAST → outermost.
+  [2nd]        CORSMiddleware            — must be outside security middlewares
+                                           so OPTIONS preflight resolves before
+                                           TenantContext / Auth gate it → 400.
+                                           Added 2nd-to-last.
+  [3rd]        RequestValidationMiddleware  — body-size / edge guard (step 2)
+  [4th]        TenantContextMiddleware      — header-format gate (step 3)
+  [innermost]  AuthMiddleware               — Bearer key resolution (step 4)
+                                             Added FIRST → innermost.
+
+Steps 5–8 (ID cross-check, rate limit, body validation, upstream proxy) run
+inside the route handler.
+
+NOTE: The TerminalAuditMiddleware is a pure-ASGI class (not BaseHTTPMiddleware),
+added via app.add_middleware(). This lets it wrap the send callable and observe
+the final HTTP status code of EVERY response — including JSONResponses returned
+directly by inner BaseHTTPMiddleware layers (which bypass the dispatch() method
+of outer BaseHTTPMiddleware wrappers). This is the architectural fix for
+audit-bypass on pre-route rejections (HIGH-1).
+
+CORSMiddleware is added AFTER RequestValidation/TenantContext/Auth (so it is
+outer) and BEFORE TerminalAuditMiddleware (so audit still observes CORS
+responses). This fixes the LIFO ordering bug that placed CORS innermost, causing
+OPTIONS preflight to hit TenantContext → 400 (HIGH-2).
 
 Lifespan: initializes the shared httpx.AsyncClient (upstream proxy) and tears
 it down on shutdown.
+
+LOW-2: structlog / stdout is configured to use UTF-8 with errors='replace' so
+log emission never raises UnicodeEncodeError into the request path on Windows
+cp1252 consoles.
 """
 
 from __future__ import annotations
 
+import sys
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -35,11 +59,22 @@ from gateway.exceptions import ERROR_TABLE, GatewayError
 from gateway.middleware.auth import AuthMiddleware
 from gateway.middleware.request_validation import RequestValidationMiddleware
 from gateway.middleware.tenant_context import TenantContextMiddleware
+from gateway.middleware.terminal_audit_wrapper import TerminalAuditMiddleware
 from gateway.models import ErrorResponse
-from gateway.routes.chat_completions import _make_request_id
 from gateway.routes.chat_completions import router as chat_router
 from gateway.routes.health import router as health_router
 from gateway.upstream.openai_proxy import close_http_client, init_http_client
+
+# ---------------------------------------------------------------------------
+# LOW-2: Configure stdout to UTF-8 with errors='replace' so structlog never
+# raises UnicodeEncodeError on cp1252 consoles (Windows). Must run before any
+# log emission so the reconfigured stream is used from the first log call.
+# ---------------------------------------------------------------------------
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except Exception:
+        pass  # Non-reconfigurable stdout (e.g. pytest capture) — skip silently.
 
 log = structlog.get_logger(__name__)
 
@@ -79,23 +114,15 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
 
-    # --- Exception handlers (step 1 / terminal-audit wrapper equivalent) ---
-    # These funnel EVERY unhandled terminal outcome through an error response.
-    # The route handler itself calls emit_terminal_record; for exceptions that
-    # escape the route (middleware GatewayErrors, unhandled Exceptions), we
-    # build a clean error response here without audit (they are pre-route errors
-    # that the route's finally-block did not execute). The audit guarantee for
-    # middleware-level rejections is enforced by the route handler's try/except
-    # which wraps the entire call chain including tenant-context + rate-limit.
-    # For errors that bypass the route entirely (raised in middleware before the
-    # route is reached), we handle them here and do NOT attempt audit — those
-    # paths (body-too-large, malformed header) are covered by the route handler
-    # calling them as GatewayErrors that propagate up.
+    # --- Exception handlers ---
+    # These handle GatewayErrors and bare Exceptions that escape the route
+    # handler. The TerminalAuditMiddleware (outermost) will still see the final
+    # status code via its send-wrapper and emit the audit record.
 
     @app.exception_handler(GatewayError)
     async def gateway_error_handler(request: Request, exc: GatewayError) -> JSONResponse:
         """Handle GatewayError raised outside the route handler (e.g. in middleware)."""
-        request_id = getattr(request.state, "request_id", _make_request_id())
+        request_id = getattr(request.state, "request_id", None) or ("req-" + __import__("uuid").uuid4().hex[:32])
         message, status = ERROR_TABLE[exc.error_code]
         body = ErrorResponse(
             error_code=exc.error_code,  # type: ignore[arg-type]
@@ -117,7 +144,8 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def generic_error_handler(request: Request, exc: Exception) -> JSONResponse:
         """Catch-all for unhandled exceptions — fail-safe BLOCK (never silently pass)."""
-        request_id = getattr(request.state, "request_id", _make_request_id())
+        request_id = getattr(request.state, "request_id", None) or ("req-" + __import__("uuid").uuid4().hex[:32])
+        # LOW-2: log.exception uses the reconfigured UTF-8 stdout.
         log.exception(
             "unhandled_exception",
             request_id=request_id,
@@ -136,8 +164,21 @@ def create_app() -> FastAPI:
             headers={"X-Request-Id": request_id},
         )
 
-    # --- CORS: default-deny; explicit allowlist; never "*" with credentials ---
-    # (threat #11, ADR-0006 Decision 9)
+    # --- Middleware pipeline (Starlette LIFO: last-added = outermost) ---
+    #
+    # Add INNERMOST first, OUTERMOST last.
+    #
+    # Step 4 (innermost): AuthMiddleware — closest to the route handler.
+    app.add_middleware(AuthMiddleware)
+    # Step 3: TenantContextMiddleware — header-format gate.
+    app.add_middleware(TenantContextMiddleware)
+    # Step 2: RequestValidationMiddleware — body-size / edge guard.
+    app.add_middleware(RequestValidationMiddleware)
+    # HIGH-2 FIX: CORSMiddleware is added AFTER the three security middlewares
+    # so it is OUTER to them. OPTIONS preflight now resolves at the CORS layer
+    # before TenantContextMiddleware or AuthMiddleware can produce 400/401.
+    # CORSMiddleware is INNER to TerminalAuditMiddleware so audit still sees
+    # CORS-handled responses.
     allowed_origins = settings.cors_allowed_origins or []
     app.add_middleware(
         CORSMiddleware,
@@ -151,20 +192,11 @@ def create_app() -> FastAPI:
             "X-Anoryx-Agent-Id",
         ],
     )
-
-    # --- Middleware pipeline (Starlette LIFO: last-added = outermost) ---
-    # We add innermost-first so the execution order matches ADR-0006:
-    #   outermost (step 2): RequestValidationMiddleware
-    #   step 3:             TenantContextMiddleware
-    #   step 4:             AuthMiddleware
-    # (Steps 5–8 are in the route handler itself.)
-
-    # Add AuthMiddleware FIRST → it runs INNERMOST (closest to route).
-    app.add_middleware(AuthMiddleware)
-    # Add TenantContextMiddleware SECOND → it runs in the middle.
-    app.add_middleware(TenantContextMiddleware)
-    # Add RequestValidationMiddleware LAST → it runs OUTERMOST (first to see the request).
-    app.add_middleware(RequestValidationMiddleware)
+    # HIGH-1 FIX: TerminalAuditMiddleware is the TRUE outermost layer.
+    # Added LAST so it wraps everything including CORS and the security
+    # middlewares. Uses pure-ASGI send-wrapping to observe every terminal
+    # response regardless of where in the stack it originated.
+    app.add_middleware(TerminalAuditMiddleware)
 
     # --- Routers ---
     app.include_router(health_router)          # /health, /ready (no /v1 prefix)

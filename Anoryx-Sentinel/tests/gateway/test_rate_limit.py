@@ -140,21 +140,38 @@ async def test_concurrent_stream_cap_enforced(settings_env, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_stream_slot_decrements_on_exit():
-    """stream_slot() increments and decrements the concurrent-stream counter."""
+    """stream_slot() decrements the concurrent-stream counter on exit (MED-1).
+
+    After MED-1 fix: check_rate_limit() atomically increments the counter at
+    admission time. stream_slot() only decrements — it does NOT increment on
+    entry. Callers must pre-increment via check_rate_limit(is_stream=True).
+    """
     tenant = "tenant-slot-test"
     _stream_counters.pop(tenant, None)
 
+    # Simulate what check_rate_limit(is_stream=True) would have done atomically.
+    _stream_counters[tenant] = 1
+
     async with stream_slot(tenant):
+        # stream_slot() must NOT increment further (counter stays at 1).
         assert _stream_counters.get(tenant, 0) == 1
 
+    # On exit, counter decremented to 0 and entry is pruned (LOW-1).
     assert _stream_counters.get(tenant, 0) == 0
 
 
 @pytest.mark.asyncio
 async def test_stream_slot_decrements_on_exception():
-    """stream_slot() still decrements counter even when an exception is raised."""
+    """stream_slot() still decrements counter even when an exception is raised (MED-1).
+
+    After MED-1 fix: stream_slot() only decrements; pre-set the counter to 1
+    to simulate what check_rate_limit(is_stream=True) would have set.
+    """
     tenant = "tenant-exc-test"
     _stream_counters.pop(tenant, None)
+
+    # Simulate what check_rate_limit(is_stream=True) would have done atomically.
+    _stream_counters[tenant] = 1
 
     with pytest.raises(ValueError):
         async with stream_slot(tenant):
@@ -171,3 +188,48 @@ async def test_rate_limit_headers_returned_on_success(settings_env):
     assert isinstance(remaining, int) and remaining >= 0
     assert isinstance(reset, int) and reset > 0
     assert remaining == limit - 1
+
+
+# ---------------------------------------------------------------------------
+# LOW-1: Key/tenant window dict pruning to prevent unbounded growth
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stale_key_window_pruned_after_next_request(settings_env, monkeypatch):
+    """LOW-1: Stale key/tenant window entries are pruned from the dict on the next
+    request so that inactive keys do not accumulate indefinitely in memory.
+
+    We inject a stale entry with an old timestamp (outside the 60-second window)
+    into _key_windows for a key that never makes another request. When a DIFFERENT
+    key makes a request, check_rate_limit() calls _prune_empty_windows() which
+    removes the now-empty stale entry.
+    """
+    import time
+    from collections import deque
+    from gateway.middleware.rate_limit import _key_windows, _tenant_windows
+
+    stale_key = "stale-key-low1-prune"
+    stale_tenant = "stale-tenant-low1-prune"
+
+    # Inject a window entry with a timestamp well outside the 60-second window.
+    stale_ts = time.monotonic() - 120.0  # 2 minutes ago
+    _key_windows[stale_key] = deque([stale_ts])
+    _tenant_windows[stale_tenant] = deque([stale_ts])
+
+    # Verify entry is present before the test.
+    assert stale_key in _key_windows, "Pre-condition: stale key window must be present"
+    assert stale_tenant in _tenant_windows, "Pre-condition: stale tenant window must be present"
+
+    # Make a request for a DIFFERENT key — this triggers eviction + pruning.
+    active_key = "active-key-low1-prune"
+    active_tenant = "active-tenant-low1-prune"
+    await check_rate_limit(active_key, active_tenant)
+
+    # Stale entries (now-empty after eviction) must have been pruned.
+    assert stale_key not in _key_windows, (
+        "Stale key window entry was not pruned (LOW-1) — unbounded memory growth risk"
+    )
+    assert stale_tenant not in _tenant_windows, (
+        "Stale tenant window entry was not pruned (LOW-1) — unbounded memory growth risk"
+    )

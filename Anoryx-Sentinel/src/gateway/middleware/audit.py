@@ -1,17 +1,33 @@
-"""Audit / terminal-emit wrapper (ADR-0006 pipeline step 1, Decision 3).
+"""Audit / terminal-emit helpers (ADR-0006 pipeline step 1, Decision 3).
 
 emit_terminal_record() builds the usage event from server-resolved IDs and
 appends it to the audit log via AuditLogRepository on get_privileged_session().
 
-AUDIT GUARANTEE:
-  - Called on EVERY terminal outcome: 2xx success, every 4xx/5xx rejection.
-  - If the audit append itself fails → the request outcome is forced to
-    500 internal_error (an un-auditable success is a failure, ADR-0006 §Audit-
-    guarantee, fail-safe posture from CLAUDE.md non-negotiable #5).
+AUDIT COVERAGE (honest scope — HIGH-3 / LOW-4 amendment):
+  - emit_terminal_record() is called on every terminal outcome for NON-STREAMING
+    requests: 2xx success, every 4xx/5xx rejection. This covers the full
+    non-stream lifecycle.
+  - For STREAMING requests (text/event-stream), the 200 response headers are
+    sent before the generator runs. Audit for the stream body is emitted inside
+    the generator's finally-block (chat_completions.py). If that finally-block
+    audit fails, the failure is surfaced out-of-band (error-level structured
+    log) — the 200 headers cannot be retroactively changed to 500. This is an
+    inherent SSE constraint, not a code defect. See ADR-0006 Decision 3 amendment.
+  - Pre-route rejections (401, 400, 413) are covered by TerminalAuditMiddleware
+    (outermost ASGI wrapper) which calls emit_terminal_record() for every
+    direct JSONResponse returned by inner middlewares.
   - On early-rejected requests (4xx before upstream call): tokens_in/out = 0,
     latency_ms = elapsed wall time (records the rejected attempt).
   - On partial streams (disconnect/timeout): tokens_out = count so far,
     latency_ms = elapsed wall time at termination.
+
+AUDIT-FAILURE BEHAVIOR:
+  - NON-STREAM: if the audit append fails → raises GatewayError("internal_error")
+    so the caller can force 500. A non-stream success that cannot be audited is
+    treated as a failure (fail-safe posture, CLAUDE.md non-negotiable #5).
+  - STREAM / PRE-ROUTE REJECTION: audit failure is logged at ERROR level as an
+    out-of-band signal. The already-committed response cannot be changed.
+    This must NOT be swallowed silently — operators must be alerted.
 
 NEVER LOG:
   - DATABASE_URL, APP_DATABASE_URL, SENTINEL_KEY_SECRET
@@ -77,8 +93,8 @@ def build_usage_event(
     TenantContext — never client-supplied values (ADR-0006 Decision 4).
 
     If tenant_context is None (rejected before auth resolved), the four IDs
-    are set to the zero UUID and empty slug as safe sentinel values.
-    The event is still appended so the audit trail records the attempt.
+    are set to the zero UUID and 'gateway-core' agent slug as safe sentinel
+    values. The event is still appended so the audit trail records the attempt.
     """
     elapsed_ms = int((time.monotonic() - start_time) * 1000)
     now_utc = datetime.now(UTC).isoformat().replace("+00:00", "Z")
@@ -91,10 +107,11 @@ def build_usage_event(
     else:
         # Pre-auth rejection: no resolved context yet.
         # Use safe sentinel values so the required fields are present.
+        # Sentinel IDs: all-zeros UUID; agent slug 'gateway-core'.
         tenant_id = "00000000-0000-0000-0000-000000000000"
         team_id = "00000000-0000-0000-0000-000000000000"
         project_id = "00000000-0000-0000-0000-000000000000"
-        agent_id = "unknown"
+        agent_id = "gateway-core"
 
     # Enforce schema bounds on all numeric fields.
     safe_tokens_in = _clamp(tokens_in, 0, _MAX_TOKENS)
@@ -130,12 +147,16 @@ async def emit_terminal_record(
 ) -> None:
     """Append a usage event to the audit log.
 
-    AUDIT GUARANTEE (ADR-0006 Decision 3):
-    - Called on every terminal outcome (success and failure).
+    AUDIT-FAILURE BEHAVIOR (ADR-0006 Decision 3):
+    - For NON-STREAM callers: if the audit append fails → raises
+      GatewayError("internal_error") so the caller can force 500.
+      A non-stream success that cannot be audited is treated as a failure.
+    - For STREAM / pre-route-rejection callers: the caller catches all
+      exceptions and logs at ERROR level out-of-band. The already-committed
+      response cannot be changed. See TerminalAuditMiddleware and
+      chat_completions._handle_stream for handling.
     - Uses get_privileged_session() for the chain append (audit is a chain op
       that requires global visibility — ADR-0005).
-    - If the audit append fails → raises GatewayError("internal_error") so
-      the caller can force 500. An un-auditable success is treated as a failure.
     """
     event_data = build_usage_event(
         request_id=request_id,

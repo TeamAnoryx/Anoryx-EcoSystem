@@ -15,16 +15,23 @@ Upstream failure → contract surface (ADR-0006 Decision 8 reconciliation):
   (without request body or PII) and correlated by request_id.
 
 Stream lifecycle (ADR-0006 Decision 7):
-  - STREAM_TIMEOUT_SECONDS bounds the idle gap between chunks.
-  - REQUEST_TIMEOUT_SECONDS bounds the overall request wall time.
+  - MED-2 FIX: STREAM_TIMEOUT_SECONDS now enforces the IDLE gap between
+    chunks via asyncio.wait_for(anext(...), idle_timeout) on every chunk read.
+    Previously idle_timeout was accepted as a parameter but never used.
+  - REQUEST_TIMEOUT_SECONDS bounds the overall request wall time (checked
+    between chunks AND enforced as a hard deadline around the whole stream).
   - On any mid-stream error: emit one terminal `event: error` SSE frame
     carrying the Error envelope, then close WITHOUT `data: [DONE]`.
   - Client disconnect cancels the upstream httpx stream.
   - concurrent-stream counter is managed by the caller via stream_slot().
+
+LOW-3: The unused proxy_stream() function (lines 196-226 in the original) has
+been removed. The route uses _proxy_stream_generator directly. One clean path.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import AsyncIterator
@@ -193,39 +200,6 @@ async def proxy_non_stream(
     return completion, tokens_in, tokens_out
 
 
-async def proxy_stream(
-    validated_body: CreateChatCompletionRequest,
-    request_id: str,
-    upstream_api_key: str | None = None,
-    idle_timeout: float = 30.0,
-    overall_timeout: float = 60.0,
-) -> AsyncIterator[str]:
-    """Stream SSE chunks from upstream to client.
-
-    Yields raw SSE lines (strings) to be forwarded to the client.
-    On any error: yields a single `event: error` frame (with Error envelope)
-    and stops WITHOUT yielding `data: [DONE]`.
-
-    This is an async generator. The caller must consume it inside stream_slot()
-    to ensure the concurrent-stream counter is decremented on exit.
-
-    Returns (via generator protocol) a tuple (tokens_in, tokens_out) via the
-    StopIteration value — callers cannot easily receive it from an async generator,
-    so we instead store accumulated counts in request.state or pass a callback.
-    Since FastAPI / Starlette's StreamingResponse wraps the generator, we use
-    a mutable container pattern: the generator writes to a provided dict.
-
-    Yields string chunks that are raw SSE event lines.
-    """
-    return _proxy_stream_generator(
-        validated_body=validated_body,
-        request_id=request_id,
-        upstream_api_key=upstream_api_key,
-        idle_timeout=idle_timeout,
-        overall_timeout=overall_timeout,
-    )
-
-
 async def _proxy_stream_generator(
     validated_body: CreateChatCompletionRequest,
     request_id: str,
@@ -233,9 +207,16 @@ async def _proxy_stream_generator(
     idle_timeout: float = 30.0,
     overall_timeout: float = 60.0,
 ) -> AsyncIterator[str]:
-    """Inner async generator for streaming proxy."""
-    import asyncio
+    """Inner async generator for streaming proxy.
 
+    MED-2 FIX: idle_timeout is now enforced via asyncio.wait_for() on each
+    chunk read, bounding the idle gap between SSE chunks. overall_timeout is
+    enforced as a hard deadline wrapping the entire generator body.
+
+    On idle timeout: emits error frame, closes without [DONE].
+    On overall timeout: emits error frame, closes without [DONE].
+    On upstream error / disconnect: emits error frame, closes without [DONE].
+    """
     client = get_http_client()
     payload = _build_upstream_request(validated_body)
     headers = _build_headers(upstream_api_key)
@@ -250,45 +231,81 @@ async def _proxy_stream_generator(
         err = ErrorResponse(error_code=error_code, message=message, request_id=rid)  # type: ignore[arg-type]
         return f"event: error\ndata: {err.model_dump_json()}\n\n"
 
-    try:
-        async with client.stream(
-            "POST",
-            "/v1/chat/completions",
-            json=payload,
-            headers=headers,
-        ) as resp:
-            if resp.status_code >= 400:
-                log.error(
-                    "upstream_stream_error_status",
-                    request_id=request_id,
-                    upstream_status=resp.status_code,
-                )
-                yield _make_error_frame("internal_error", request_id)
-                return
-
-            async for line in resp.aiter_lines():
-                if not line:
-                    yield "\n"
-                    continue
-
-                # Check overall timeout BEFORE emitting each content chunk.
-                elapsed = time.monotonic() - overall_start
-                if elapsed > overall_timeout:
-                    log.warning("upstream_stream_overall_timeout", request_id=request_id)
+    async def _stream_lines() -> AsyncIterator[str]:
+        """Inner generator that enforces idle_timeout per-chunk and overall_timeout overall."""
+        try:
+            async with client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json=payload,
+                headers=headers,
+            ) as resp:
+                if resp.status_code >= 400:
+                    log.error(
+                        "upstream_stream_error_status",
+                        request_id=request_id,
+                        upstream_status=resp.status_code,
+                    )
                     yield _make_error_frame("internal_error", request_id)
                     return
 
-                yield line + "\n"
+                # MED-2: Use aiter_lines() as an async iterator and wrap each
+                # anext() call in asyncio.wait_for() to enforce idle_timeout.
+                line_iter = resp.aiter_lines().__aiter__()
 
-                if line.strip() == "data: [DONE]":
-                    return
+                while True:
+                    # Check overall timeout before reading next chunk.
+                    elapsed = time.monotonic() - overall_start
+                    if elapsed > overall_timeout:
+                        log.warning("upstream_stream_overall_timeout", request_id=request_id)
+                        yield _make_error_frame("internal_error", request_id)
+                        return
 
-    except httpx.ConnectError:
-        log.error("upstream_stream_connect_error", request_id=request_id)
-        yield _make_error_frame("internal_error", request_id)
-    except (httpx.TimeoutException, asyncio.TimeoutError):
-        log.error("upstream_stream_timeout", request_id=request_id)
-        yield _make_error_frame("internal_error", request_id)
-    except Exception:
-        log.exception("upstream_stream_unexpected_error", request_id=request_id)
+                    # MED-2: enforce idle timeout on each individual chunk read.
+                    try:
+                        line = await asyncio.wait_for(
+                            line_iter.__anext__(),
+                            timeout=idle_timeout,
+                        )
+                    except StopAsyncIteration:
+                        # Stream ended normally.
+                        return
+                    except asyncio.TimeoutError:
+                        log.warning(
+                            "upstream_stream_idle_timeout",
+                            request_id=request_id,
+                            idle_timeout=idle_timeout,
+                        )
+                        yield _make_error_frame("internal_error", request_id)
+                        return
+
+                    if not line:
+                        yield "\n"
+                        continue
+
+                    yield line + "\n"
+
+                    if line.strip() == "data: [DONE]":
+                        return
+
+        except httpx.ConnectError:
+            log.error("upstream_stream_connect_error", request_id=request_id)
+            yield _make_error_frame("internal_error", request_id)
+        except (httpx.TimeoutException, asyncio.TimeoutError):
+            log.error("upstream_stream_timeout", request_id=request_id)
+            yield _make_error_frame("internal_error", request_id)
+        except Exception:
+            log.exception("upstream_stream_unexpected_error", request_id=request_id)
+            yield _make_error_frame("internal_error", request_id)
+
+    # MED-2: wrap the entire stream in an overall deadline as well.
+    # The per-chunk idle_timeout check above handles gaps; this asyncio.timeout
+    # ensures the absolute wall clock does not exceed overall_timeout even if
+    # the upstream is drip-feeding chunks just under the idle threshold.
+    try:
+        async with asyncio.timeout(overall_timeout):
+            async for chunk in _stream_lines():
+                yield chunk
+    except asyncio.TimeoutError:
+        log.warning("upstream_stream_hard_overall_timeout", request_id=request_id)
         yield _make_error_frame("internal_error", request_id)

@@ -19,6 +19,9 @@ only server-resolved values — it is what reaches the audit trail.
 TenantContext is built fresh each request and lives only in request.state.
 It is NEVER shared across requests (threat #10 session/state leakage).
 
+MED-3: Does NOT generate its own request_id. Reads the canonical
+request.state.request_id set by TerminalAuditMiddleware (outermost layer).
+
 NOTE: Returns JSONResponse directly on error (does not raise GatewayError
 through the middleware stack — see auth.py module docstring for reason).
 """
@@ -47,6 +50,16 @@ _AGENT_SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _AUTH_EXEMPT_PATHS = frozenset({"/health", "/ready"})
 
 _MAX_HEADER_LEN = 64
+
+
+def _get_request_id(request: Request) -> str:
+    """Return the canonical request_id from state, or generate a fallback."""
+    rid = getattr(request.state, "request_id", None)
+    if rid:
+        return rid
+    rid = "req-" + uuid.uuid4().hex[:32]
+    request.state.request_id = rid
+    return rid
 
 
 def _error_json(error_code: str, request_id: str) -> JSONResponse:
@@ -91,7 +104,8 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         if request.url.path in _AUTH_EXEMPT_PATHS:
             return await call_next(request)
 
-        request_id = "req-" + uuid.uuid4().hex[:32]
+        # MED-3: use the single canonical request_id from the outermost wrapper.
+        request_id = _get_request_id(request)
 
         h_tenant = request.headers.get("x-anoryx-tenant-id")
         h_team = request.headers.get("x-anoryx-team-id")
