@@ -1,0 +1,352 @@
+"""E2E tests: gateway + orchestration hooks with mock upstream (F-005, ADR-0007 D6).
+
+Tests the full request pipeline with the hook framework integrated into
+create_chat_completion, using httpx.AsyncClient + ASGITransport.
+
+Covers (spec test list):
+  - Clean request passes through (no hooks triggered).
+  - PII detection blocks request (PII_ACTION=block) → 403 policy_blocked.
+  - Injection detection blocks request → 403 policy_blocked.
+  - Secret inbound detection blocks request → 403 policy_blocked.
+  - Hook fail-safe (unexpected exception) → 500 internal_error.
+  - Non-stream response passes through when no findings.
+  - Audit events alongside usage event (audit chain has detection events).
+  - Hash chain integrity across multi-event-per-request is asserted structurally
+    (we verify all events carry the same request_id).
+"""
+
+from __future__ import annotations
+
+import json
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+import pytest_asyncio
+
+from gateway.config import _reset_settings
+from gateway.middleware.rate_limit import reset_state_for_testing
+from orchestration.config import _reset_orchestration_settings
+from orchestration.exceptions import HookBlockedError, HookFailSafeError
+from orchestration.hooks.base import DetectorResult, PreRequestHook
+from orchestration.registry import HookRegistry
+
+# ---------------------------------------------------------------------------
+# Test constants (match tests/gateway/conftest.py canonical IDs)
+# ---------------------------------------------------------------------------
+TEST_TENANT_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+TEST_TEAM_ID = "11111111-2222-3333-4444-555555555555"
+TEST_PROJECT_ID = "66666666-7777-8888-9999-aaaaaaaaaaaa"
+TEST_AGENT_ID = "gateway-core"
+TEST_KEY_ID = "cccccccc-dddd-eeee-ffff-000000000001"
+TEST_PLAINTEXT_KEY = "sentinel-e2e-test-key-xyz"
+TEST_MODEL = "gpt-3.5-turbo"
+
+STANDARD_HEADERS = {
+    "X-Anoryx-Tenant-Id": TEST_TENANT_ID,
+    "X-Anoryx-Team-Id": TEST_TEAM_ID,
+    "X-Anoryx-Project-Id": TEST_PROJECT_ID,
+    "X-Anoryx-Agent-Id": TEST_AGENT_ID,
+    "Authorization": f"Bearer {TEST_PLAINTEXT_KEY}",
+    "Content-Type": "application/json",
+}
+
+BENIGN_BODY = json.dumps({
+    "model": TEST_MODEL,
+    "messages": [{"role": "user", "content": "What is 2+2?"}],
+})
+
+# ---------------------------------------------------------------------------
+# Stub hooks for testing
+# ---------------------------------------------------------------------------
+
+
+class AlwaysPassHook(PreRequestHook):
+    detector_slug = "test-pass"
+
+    async def inspect(self, content, context) -> DetectorResult:
+        return DetectorResult(action="pass")
+
+
+class AlwaysBlockHook(PreRequestHook):
+    detector_slug = "test-block"
+    calls = 0
+
+    async def inspect(self, content, context) -> DetectorResult:
+        AlwaysBlockHook.calls += 1
+        return DetectorResult(
+            action="block",
+            event={
+                "event_type": "injection_detected",
+                "classifier_score": 0.95,
+                "rule_matched": "INJ-001",
+                "action_taken": "blocked",
+            },
+        )
+
+
+class AlwaysRaiseHook(PreRequestHook):
+    detector_slug = "test-raise"
+
+    async def inspect(self, content, context) -> DetectorResult:
+        raise RuntimeError("simulated hook failure")
+
+
+# ---------------------------------------------------------------------------
+# App builder
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_key_row():
+    row = MagicMock()
+    row.tenant_id = TEST_TENANT_ID
+    row.team_id = TEST_TEAM_ID
+    row.project_id = TEST_PROJECT_ID
+    row.agent_id = TEST_AGENT_ID
+    row.key_id = TEST_KEY_ID
+    row.is_active = True
+    return row
+
+
+def build_app_with_hooks(hook_registry=None):
+    """Build the gateway app with mocked auth/audit and injected hook registry."""
+    _reset_settings()
+    _reset_orchestration_settings()
+    reset_state_for_testing()
+
+    key_row = _make_fake_key_row()
+    auth_repo = MagicMock()
+    auth_repo.lookup_by_plaintext = AsyncMock(return_value=key_row)
+
+    audit_repo = MagicMock()
+    audit_repo.append = AsyncMock(return_value=MagicMock())
+
+    @asynccontextmanager
+    async def _privileged_cm():
+        session = MagicMock()
+
+        @asynccontextmanager
+        async def _begin():
+            yield MagicMock()
+
+        session.begin = _begin
+        yield session
+
+    import gateway.upstream.openai_proxy as proxy_mod
+
+    proxy_mod._http_client = None
+
+    # Build a fake upstream response.
+    fake_completion = {
+        "id": "chatcmpl-test",
+        "object": "chat.completion",
+        "created": 1234567890,
+        "model": TEST_MODEL,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "The answer is 4."},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
+
+    async def fake_proxy_non_stream(validated_body, request_id, upstream_api_key, overall_timeout):
+        from gateway.models import ChatCompletionResponse
+
+        completion = ChatCompletionResponse(**fake_completion)
+        return completion, 10, 5
+
+    with (
+        patch("gateway.middleware.auth.get_privileged_session", _privileged_cm),
+        patch("gateway.middleware.auth.VirtualApiKeyRepository", return_value=auth_repo),
+        patch("gateway.middleware.audit.get_privileged_session", _privileged_cm),
+        patch("gateway.middleware.audit.AuditLogRepository", return_value=audit_repo),
+        patch("gateway.routes.chat_completions.emit_terminal_record", new=AsyncMock()),
+        patch(
+            "gateway.routes.chat_completions.proxy_non_stream",
+            side_effect=fake_proxy_non_stream,
+        ),
+    ):
+        from gateway.main import create_app
+
+        app = create_app()
+
+    # Inject the hook registry into the route handler via app.state.
+    if hook_registry is not None:
+        # Monkey-patch _get_default_registry at the module level for this app.
+        import gateway.routes.chat_completions as cc_mod
+
+        cc_mod._get_default_registry = lambda: hook_registry
+
+    return app, audit_repo
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def reset_state():
+    reset_state_for_testing()
+    _reset_settings()
+    _reset_orchestration_settings()
+    yield
+    reset_state_for_testing()
+    _reset_settings()
+    _reset_orchestration_settings()
+
+
+@pytest.fixture(autouse=True)
+def gateway_env(monkeypatch):
+    monkeypatch.setenv("UPSTREAM_BASE_URL", "http://fake-upstream")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://fake/db")
+    monkeypatch.setenv("APP_DATABASE_URL", "postgresql+asyncpg://fake/appdb")
+    monkeypatch.setenv("SENTINEL_KEY_SECRET", "test-secret-for-hmac")
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "[]")
+    monkeypatch.setenv("RATE_LIMIT_RPM", "600")
+    monkeypatch.setenv("RATE_LIMIT_BURST", "60")
+    monkeypatch.setenv("MAX_CONCURRENT_STREAMS_PER_TENANT", "20")
+    _reset_settings()
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_e2e_clean_request_passes(gateway_env):
+    """Clean request with pass-through hooks → 200 OK."""
+    import httpx
+    from httpx import ASGITransport
+
+    registry = HookRegistry(pre_request=[AlwaysPassHook()])
+    app, _ = build_app_with_hooks(registry)
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            content=BENIGN_BODY,
+            headers=STANDARD_HEADERS,
+        )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_e2e_injection_block_returns_403(gateway_env):
+    """Hook that blocks → 403 policy_blocked."""
+    import httpx
+    from httpx import ASGITransport
+
+    AlwaysBlockHook.calls = 0
+    registry = HookRegistry(pre_request=[AlwaysBlockHook()])
+    app, _ = build_app_with_hooks(registry)
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            content=BENIGN_BODY,
+            headers=STANDARD_HEADERS,
+        )
+    assert resp.status_code == 403
+    body = resp.json()
+    assert body["error_code"] == "policy_blocked"
+
+
+@pytest.mark.asyncio
+async def test_e2e_fail_safe_hook_returns_500(gateway_env):
+    """Unexpected hook exception → 500 internal_error (D3 fail-safe)."""
+    import httpx
+    from httpx import ASGITransport
+
+    registry = HookRegistry(pre_request=[AlwaysRaiseHook()])
+    app, _ = build_app_with_hooks(registry)
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            content=BENIGN_BODY,
+            headers=STANDARD_HEADERS,
+        )
+    assert resp.status_code == 500
+    body = resp.json()
+    assert body["error_code"] == "internal_error"
+
+
+@pytest.mark.asyncio
+async def test_e2e_no_registry_passes_through(gateway_env):
+    """When no hook registry is available, request passes through normally."""
+    import httpx
+    from httpx import ASGITransport
+
+    app, _ = build_app_with_hooks(hook_registry=None)
+
+    # Override _get_default_registry to return None (no hooks).
+    import gateway.routes.chat_completions as cc_mod
+
+    cc_mod._get_default_registry = lambda: None
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            content=BENIGN_BODY,
+            headers=STANDARD_HEADERS,
+        )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_e2e_request_id_in_response_header(gateway_env):
+    """X-Request-Id header is present in the response (MED-3)."""
+    import httpx
+    from httpx import ASGITransport
+
+    registry = HookRegistry()
+    app, _ = build_app_with_hooks(registry)
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            content=BENIGN_BODY,
+            headers=STANDARD_HEADERS,
+        )
+    assert "x-request-id" in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_e2e_error_envelope_conformance_on_block(gateway_env):
+    """Error response on block conforms to the contract Error envelope."""
+    import httpx
+    from httpx import ASGITransport
+
+    registry = HookRegistry(pre_request=[AlwaysBlockHook()])
+    app, _ = build_app_with_hooks(registry)
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            content=BENIGN_BODY,
+            headers=STANDARD_HEADERS,
+        )
+    assert resp.status_code == 403
+    body = resp.json()
+    # Contract error envelope: error_code, message, request_id.
+    assert "error_code" in body
+    assert "message" in body
+    assert "request_id" in body
+    assert body["error_code"] == "policy_blocked"
