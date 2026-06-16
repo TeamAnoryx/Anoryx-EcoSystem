@@ -108,6 +108,17 @@ def _make_fake_key_row():
     return row
 
 
+# Patchers kept ACTIVE for the lifetime of each test (started in
+# build_app_with_hooks, stopped in the autouse `reset_state` teardown). The request
+# handlers resolve get_privileged_session / proxy_non_stream by module reference at
+# REQUEST time, so a `with patch(...)` that exits after create_app() would leave the
+# real functions in place — the request then builds a real engine on the fake
+# DATABASE_URL and the route fail-safes to 500. (f-003b-harness-fix: this
+# mock-scoping defect — not the persistence conftest — was the real reason these
+# e2e tests were skipped; the skip reason was a mislabeled copy of the F-004 waiver.)
+_active_patchers: list = []
+
+
 def build_app_with_hooks(hook_registry=None):
     """Build the gateway app with mocked auth/audit and injected hook registry."""
     _reset_settings()
@@ -158,7 +169,7 @@ def build_app_with_hooks(hook_registry=None):
         completion = ChatCompletionResponse(**fake_completion)
         return completion, 10, 5
 
-    with (
+    patchers = [
         patch("gateway.middleware.auth.get_privileged_session", _privileged_cm),
         patch("gateway.middleware.auth.VirtualApiKeyRepository", return_value=auth_repo),
         patch("gateway.middleware.audit.get_privileged_session", _privileged_cm),
@@ -168,17 +179,26 @@ def build_app_with_hooks(hook_registry=None):
             "gateway.routes.chat_completions.proxy_non_stream",
             side_effect=fake_proxy_non_stream,
         ),
-    ):
-        from gateway.main import create_app
+    ]
+    # Start (not `with`) so the mocks stay active through request handling, then
+    # stop them in the autouse reset_state teardown. See module note above.
+    for _p in patchers:
+        _p.start()
+    _active_patchers.extend(patchers)
 
-        app = create_app()
+    from gateway.main import create_app
 
-    # Inject the hook registry into the route handler via app.state.
+    app = create_app()
+
+    # Inject the hook registry into the route handler.
     if hook_registry is not None:
-        # Monkey-patch _get_default_registry at the module level for this app.
+        # patch.object tracked in _active_patchers so the override is reverted in
+        # teardown — a bare module assignment would leak across tests/files.
         import gateway.routes.chat_completions as cc_mod
 
-        cc_mod._get_default_registry = lambda: hook_registry
+        reg_patcher = patch.object(cc_mod, "_get_default_registry", lambda: hook_registry)
+        reg_patcher.start()
+        _active_patchers.append(reg_patcher)
 
     return app, audit_repo
 
@@ -194,6 +214,10 @@ def reset_state():
     _reset_settings()
     _reset_orchestration_settings()
     yield
+    # Stop any patchers started by build_app_with_hooks so they do not leak across
+    # tests (they must stay active through request handling, not just create_app()).
+    while _active_patchers:
+        _active_patchers.pop().stop()
     reset_state_for_testing()
     _reset_settings()
     _reset_orchestration_settings()
@@ -217,12 +241,6 @@ def gateway_env(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(
-    reason="Pre-existing F-003b conftest auto-provisioning defect — "
-    "sentinel_app SCRAM/pooler issue blocks privileged-session "
-    "lookup in test env. Tracked as f-003b-harness-fix follow-up. "
-    "Same waiver applied in F-004 PR #5."
-)
 @pytest.mark.asyncio
 async def test_e2e_clean_request_passes(gateway_env):
     """Clean request with pass-through hooks → 200 OK."""
@@ -243,12 +261,6 @@ async def test_e2e_clean_request_passes(gateway_env):
     assert resp.status_code == 200
 
 
-@pytest.mark.skip(
-    reason="Pre-existing F-003b conftest auto-provisioning defect — "
-    "sentinel_app SCRAM/pooler issue blocks privileged-session "
-    "lookup in test env. Tracked as f-003b-harness-fix follow-up. "
-    "Same waiver applied in F-004 PR #5."
-)
 @pytest.mark.asyncio
 async def test_e2e_injection_block_returns_403(gateway_env):
     """Hook that blocks → 403 policy_blocked."""
@@ -294,12 +306,6 @@ async def test_e2e_fail_safe_hook_returns_500(gateway_env):
     assert body["error_code"] == "internal_error"
 
 
-@pytest.mark.skip(
-    reason="Pre-existing F-003b conftest auto-provisioning defect — "
-    "sentinel_app SCRAM/pooler issue blocks privileged-session "
-    "lookup in test env. Tracked as f-003b-harness-fix follow-up. "
-    "Same waiver applied in F-004 PR #5."
-)
 @pytest.mark.asyncio
 async def test_e2e_no_registry_passes_through(gateway_env):
     """When no hook registry is available, request passes through normally."""
@@ -308,10 +314,13 @@ async def test_e2e_no_registry_passes_through(gateway_env):
 
     app, _ = build_app_with_hooks(hook_registry=None)
 
-    # Override _get_default_registry to return None (no hooks).
+    # Override _get_default_registry to return None (no hooks). patch.object
+    # tracked in _active_patchers so teardown reverts it (no cross-test leak).
     import gateway.routes.chat_completions as cc_mod
 
-    cc_mod._get_default_registry = lambda: None
+    reg_patcher = patch.object(cc_mod, "_get_default_registry", lambda: None)
+    reg_patcher.start()
+    _active_patchers.append(reg_patcher)
 
     async with httpx.AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -344,12 +353,6 @@ async def test_e2e_request_id_in_response_header(gateway_env):
     assert "x-request-id" in resp.headers
 
 
-@pytest.mark.skip(
-    reason="Pre-existing F-003b conftest auto-provisioning defect — "
-    "sentinel_app SCRAM/pooler issue blocks privileged-session "
-    "lookup in test env. Tracked as f-003b-harness-fix follow-up. "
-    "Same waiver applied in F-004 PR #5."
-)
 @pytest.mark.asyncio
 async def test_e2e_error_envelope_conformance_on_block(gateway_env):
     """Error response on block conforms to the contract Error envelope."""
