@@ -1,4 +1,4 @@
-"""POST /v1/chat/completions route handler (ADR-0006, F-004).
+"""POST /v1/chat/completions route handler (ADR-0006, F-004, F-005).
 
 This is the innermost handler (pipeline step 8). By the time a request reaches
 here, steps 2–7 have already run:
@@ -20,6 +20,17 @@ AUDIT COVERAGE (honest scope — HIGH-3 / LOW-4):
     at ERROR level out-of-band — the committed 200 cannot be changed to 500.
     This is an inherent SSE constraint. See ADR-0006 Decision 3 amendment.
 
+F-005 INSPECTION HOOKS (ADR-0007):
+  - PreRequestHooks run AFTER Step 7 body validation, BEFORE upstream proxy.
+    Hook order (D1): SecretInbound → Injection → PII.
+  - PostResponseHooks (non-stream): run AFTER proxy_non_stream, BEFORE JSONResponse.
+    Hook order (D1): SecretOutbound.
+  - PostResponseHooks (stream): applied per-chunk via bounded 8 KiB sliding window
+    inside _generate(); a finding stops emission and sends SSEErrorEvent.
+  - On HookBlockedError → 403 policy_blocked (or 500 for HookFailSafeError).
+  - HookRegistry is DI-injectable (tests stub it via build_app_with_hooks()).
+    Default registry is built from OrchestrationSettings if none is injected.
+
 MED-3: Uses request.state.request_id (set by TerminalAuditMiddleware, the
 outermost layer) instead of generating a new ID here. All middleware layers
 and the route handler share the ONE canonical request_id.
@@ -33,10 +44,11 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from typing import Any
 
 import structlog
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 
 from gateway.config import get_settings
@@ -58,7 +70,68 @@ log = structlog.get_logger(__name__)
 
 router = APIRouter()
 
+
+def _redact_in_place(node: Any, redact_fn) -> Any:
+    """Recursively redact secrets from a parsed JSON structure.
+
+    Applies *redact_fn* (a pure str->str function) to every string leaf so
+    that structural characters (`"`, `}`, `]`, etc.) are never part of the
+    span that gets replaced.  This avoids the corrupted-JSON bug that occurs
+    when redaction runs on a serialized JSON string and the entropy tokenizer
+    bleeds into adjacent structural chars.
+
+    Returns a new node (immutable traversal — original is not mutated).
+    """
+    if isinstance(node, str):
+        return redact_fn(node)
+    if isinstance(node, list):
+        return [_redact_in_place(item, redact_fn) for item in node]
+    if isinstance(node, tuple):
+        return tuple(_redact_in_place(item, redact_fn) for item in node)
+    if isinstance(node, dict):
+        return {
+            (redact_fn(k) if isinstance(k, str) else k): _redact_in_place(v, redact_fn)
+            for k, v in node.items()
+        }
+    return node
+
+
 _RATE_LIMIT_HEADERS_KEYS = ("x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset")
+
+# ---------------------------------------------------------------------------
+# F-005: lazy-import HookRegistry to keep F-004 importable without orchestration deps.
+# ---------------------------------------------------------------------------
+
+try:
+    from orchestration.config import get_orchestration_settings
+    from orchestration.detectors.secret_detector import redact as _secret_redact
+    from orchestration.exceptions import HookBlockedError, HookFailSafeError
+    from orchestration.registry import HookRegistry
+
+    _HOOKS_AVAILABLE = True
+except ImportError:
+    _HOOKS_AVAILABLE = False
+    HookRegistry = None  # type: ignore[assignment,misc]
+    HookBlockedError = None  # type: ignore[assignment,misc]
+    HookFailSafeError = None  # type: ignore[assignment,misc]
+    get_orchestration_settings = None  # type: ignore[assignment,misc]
+    _secret_redact = None  # type: ignore[assignment,misc]
+
+
+def _get_default_registry():
+    """Return the default HookRegistry, or None when hooks are not installed.
+
+    Returns None ONLY when the orchestration package is unavailable (a
+    deliberate deployment without F-005). A build *failure* (misconfiguration,
+    missing model, etc.) is NOT swallowed — it propagates so the caller can
+    fail-safe BLOCK the request (ADR-0007 D3: inspection failure → block, never
+    silently pass uninspected traffic upstream).
+    """
+    if not _HOOKS_AVAILABLE:
+        return None
+    from orchestration.registry import build_default_registry
+
+    return build_default_registry()
 
 
 def _error_response(
@@ -113,14 +186,19 @@ def _make_request_id() -> str:
 
 
 @router.post("/v1/chat/completions", response_model=None)
-async def create_chat_completion(request: Request) -> JSONResponse | StreamingResponse:
+async def create_chat_completion(
+    request: Request,
+    hook_registry=None,  # DI seam: tests inject a stub; production uses default.
+) -> JSONResponse | StreamingResponse:
     """POST /v1/chat/completions — full pipeline handler (non-stream + stream).
 
     Pipeline steps executed here (steps 5–8):
       5. ID cross-check + tenant context resolution
       6. Rate limit (post-auth, keyed on resolved key_id + tenant_id)
       7. Body validation (Pydantic, closed schema)
+      7b. F-005 PreRequestHooks (after body validation, before upstream)
       8. Upstream proxy (typed re-serialization, no raw passthrough)
+      8b. F-005 PostResponseHooks (after upstream, before flush)
 
     Audit emitted on every terminal outcome for non-stream requests (step 1 /
     Decision 3). Stream audit is emitted in the generator's finally-block;
@@ -142,6 +220,17 @@ async def create_chat_completion(request: Request) -> JSONResponse | StreamingRe
     rl_reset: int = 0
 
     try:
+        # Resolve the hook registry inside the try so a build FAILURE fails safe
+        # (ADR-0007 D3): a misconfigured / unbuildable inspection layer BLOCKS the
+        # request rather than silently forwarding it upstream uninspected. A plain
+        # None return (hooks not installed) remains a deliberate pass-through.
+        if hook_registry is None:
+            try:
+                hook_registry = _get_default_registry()
+            except Exception:
+                log.error("orchestration.registry.build_failed")
+                raise GatewayError("internal_error") from None
+
         # --- Step 5: ID cross-check + tenant context resolution ---
         tenant_context = resolve_tenant_context(request)
 
@@ -179,6 +268,41 @@ async def create_chat_completion(request: Request) -> JSONResponse | StreamingRe
         ):
             raise GatewayError("invalid_request")
 
+        # --- Step 7b: F-005 PreRequestHooks (after body validation, before proxy) ---
+        # Build HookContext and run the pre-request chain (ADR-0007 D6 integration).
+        hook_context = None
+        forwarded_content: str | None = None
+
+        if hook_registry is not None and _HOOKS_AVAILABLE:
+            # get_orchestration_settings is hoisted to module scope under the
+            # _HOOKS_AVAILABLE try/except (L3); build_hook_context stays local.
+            from orchestration.context import build_hook_context
+
+            orch_settings = get_orchestration_settings()
+            hook_context = build_hook_context(
+                tenant_context=tenant_context,
+                request_id=request_id,
+                validated_messages=validated.messages,
+                phase="pre_request",
+                events_per_detector_cap=orch_settings.events_per_detector_cap,
+            )
+
+            # Snapshot of user content for forwarding (may be mutated by PII masking).
+            user_content_snapshot = hook_context.original_user_content
+
+            try:
+                forwarded_content = await hook_registry.run_pre_request(
+                    user_content_snapshot, hook_context
+                )
+            except HookFailSafeError:
+                raise GatewayError("internal_error") from None
+            except HookBlockedError:
+                raise GatewayError("policy_blocked") from None
+
+            # If PII masking mutated the content, apply it back to validated messages.
+            if forwarded_content is not None and forwarded_content != user_content_snapshot:
+                validated = _apply_masked_user_content(validated, forwarded_content)
+
         # --- Step 8: Upstream proxy ---
         upstream_api_key: str | None = None  # Phase 0: no upstream key vaulting yet
 
@@ -196,6 +320,8 @@ async def create_chat_completion(request: Request) -> JSONResponse | StreamingRe
                 rl_reset=rl_reset,
                 upstream_api_key=upstream_api_key,
                 settings=settings,
+                hook_registry=hook_registry,
+                hook_context=hook_context,
             )
         else:
             # Non-streaming path.
@@ -206,7 +332,95 @@ async def create_chat_completion(request: Request) -> JSONResponse | StreamingRe
                 overall_timeout=settings.request_timeout_seconds,
             )
 
-            # Audit (success path) — must happen before returning.
+            # --- Step 8b: F-005 PostResponseHooks (non-stream, before Response) ---
+            # F-005 REWORK (SEC-ENT truncation fix):
+            #   Detection runs through the existing post-response hook so the
+            #   event + defer_emit semantics are fully preserved (HIGH-B).
+            #   REDACTION moves to parsed-structure traversal (_redact_in_place)
+            #   so structural JSON chars ('"', '}', ']', etc.) are never part of
+            #   the replacement span — eliminating the SEC-ENT truncation bug that
+            #   corrupted the serialized JSON and caused 500 on every maskable
+            #   non-stream response.
+            #
+            # HIGH-A (preserved): secrets in ANY field (id, tool_calls, etc.) are
+            # redacted because _redact_in_place walks the full parsed dict.
+            # HIGH-B (preserved): the secret_leaked event is deferred
+            # (defer_emit=True in SecretOutboundHook) and emitted here ONLY after
+            # json.dumps of the redacted parsed dict succeeds.  If json.dumps
+            # raises (non-serializable), we raise internal_error and do NOT emit.
+            response_text: str | None = None
+            post_hook_context = None
+            secret_found: bool = False
+            if hook_registry is not None and hook_context is not None and _HOOKS_AVAILABLE:
+                # Pass the serialized string to the hook so detection + deferred
+                # event storage work exactly as before.
+                response_text = json.dumps(completion.model_dump())
+                post_hook_context = _make_post_context(hook_context, is_stream=False)
+                try:
+                    await hook_registry.run_post_response(response_text, post_hook_context)
+                except HookFailSafeError:
+                    raise GatewayError("internal_error") from None
+                except HookBlockedError:
+                    raise GatewayError("policy_blocked") from None
+
+                # A secret was found iff the hook stored a deferred event.
+                secret_found = getattr(post_hook_context, "_deferred_event", None) is not None
+
+            # Determine the body to send to the client.
+            if secret_found and post_hook_context is not None:
+                # Masking occurred — redact on the PARSED structure so no
+                # structural JSON chars are consumed by the replacement.
+                _orch = get_orchestration_settings()
+                _min_len = _orch.min_token_length_for_entropy
+                _threshold = _orch.entropy_threshold
+
+                def _redact_fn(s: str) -> str:
+                    return _secret_redact(
+                        s,
+                        min_token_len=_min_len,
+                        entropy_threshold=_threshold,
+                    )
+
+                parsed = completion.model_dump()
+                redacted_parsed = _redact_in_place(parsed, _redact_fn)
+
+                # json.dumps of a dict round-tripped through model_dump() is
+                # always valid JSON; we still guard against non-serializable
+                # objects (e.g. custom fields injected by a future hook) so the
+                # fail-safe path remains correct.
+                try:
+                    redacted_text = json.dumps(redacted_parsed)
+                except (TypeError, ValueError):
+                    # Non-serializable structure — fail safe to 500 and do NOT
+                    # emit the secret_leaked event (HIGH-B fail-safe).
+                    raise GatewayError("internal_error") from None
+
+                # Redacted body is valid JSON — emit deferred secret_leaked event.
+                deferred = getattr(post_hook_context, "_deferred_event", None)
+                if deferred is not None:
+                    deferred_ev, deferred_slug = deferred
+                    await post_hook_context.emit(deferred_ev, detector_slug=deferred_slug)
+
+                # Audit (success path) — must happen before returning.
+                await emit_terminal_record(
+                    request_id=request_id,
+                    tenant_context=tenant_context,
+                    model=model,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                    start_time=start_time,
+                )
+                request.state.audit_emitted = True
+
+                headers = _success_headers(request_id, rl_limit, rl_remaining, rl_reset)
+                return Response(
+                    content=redacted_text,
+                    media_type="application/json",
+                    status_code=200,
+                    headers=headers,
+                )
+
+            # No masking — standard success path.
             await emit_terminal_record(
                 request_id=request_id,
                 tenant_context=tenant_context,
@@ -269,12 +483,18 @@ async def _handle_stream(
     rl_reset: int,
     upstream_api_key: str | None,
     settings,
+    hook_registry=None,
+    hook_context=None,
 ) -> StreamingResponse:
     """Build and return a StreamingResponse for stream: true requests.
 
     The concurrent-stream slot was already reserved (incremented) atomically
     by check_rate_limit() under the lock (MED-1 fix). stream_slot() here only
     DECREMENTS on exit — guaranteed on close/complete/error/disconnect.
+
+    F-005 PostResponseHooks: applied per-chunk via a bounded 8 KiB sliding
+    window (ADR-0007 D2).  On a secret finding → stop content, emit SSEErrorEvent
+    (error_code: policy_blocked), close WITHOUT [DONE].
 
     Partial-stream audit is emitted in the generator's finally block.
 
@@ -286,11 +506,32 @@ async def _handle_stream(
     # Token counters for partial-stream audit.
     token_state: dict = {"tokens_in": 0, "tokens_out": 0}
 
+    # Resolve stream inspect buffer size.
+    stream_buf_bytes = 8_192
+    if _HOOKS_AVAILABLE and hook_registry is not None:
+        try:
+            from orchestration.config import get_orchestration_settings
+
+            stream_buf_bytes = get_orchestration_settings().stream_inspect_buffer_bytes
+        except Exception:
+            pass
+
+    # Build the post-response context for streaming phase.
+    # FIX-1: mark is_stream=True so SecretOutboundHook returns block (not mask)
+    # when a secret is found in a stream chunk — stopping the stream immediately
+    # so no raw secret reaches the client.
+    post_hook_ctx = None
+    if hook_context is not None:
+        post_hook_ctx = _make_post_context(hook_context, is_stream=True)
+
     async def _generate():
-        """Async generator that wraps the upstream stream with audit + slot management."""
+        """Async generator: upstream stream with F-005 windowed inspection + audit."""
         # MED-1: stream_slot() only DECREMENTS now. Counter was already incremented
         # by check_rate_limit() at admission time.
         async with stream_slot(tenant_context.tenant_id):
+            carried_tail: str = ""
+            stream_blocked = False
+
             try:
                 async for chunk in _proxy_stream_generator(
                     validated_body=validated,
@@ -300,8 +541,6 @@ async def _handle_stream(
                     overall_timeout=settings.request_timeout_seconds,
                 ):
                     # Accumulate output tokens from content chunks.
-                    # Simple whitespace-token estimate — accurate accounting
-                    # requires tiktoken (deferred to F-006/F-010).
                     if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
                         raw = chunk[6:].strip()
                         if raw and raw != "[DONE]":
@@ -310,19 +549,52 @@ async def _handle_stream(
                                 choices = parsed.get("choices", [])
                                 for c in choices:
                                     content = c.get("delta", {}).get("content") or ""
-                                    # Approximate: split on whitespace for token estimate.
                                     token_state["tokens_out"] += len(content.split())
                             except (json.JSONDecodeError, KeyError, AttributeError):
                                 pass
+
+                    # F-005 PostResponseHook: bounded sliding-window inspection (D2).
+                    if (
+                        hook_registry is not None
+                        and post_hook_ctx is not None
+                        and _HOOKS_AVAILABLE
+                        and not stream_blocked
+                    ):
+                        # Extract delta content for inspection.
+                        chunk_content = _extract_chunk_content(chunk)
+                        if chunk_content:
+                            window = carried_tail + chunk_content
+                            try:
+                                await hook_registry.run_post_response(window, post_hook_ctx)
+                            except (HookBlockedError, HookFailSafeError) as exc:
+                                stream_blocked = True
+                                # Emit SSEErrorEvent (ADR-0007 §7 / ADR-0006 Decision 3).
+                                # internal_error for a fail-safe exception (unexpected
+                                # hook error); policy_blocked for a clean detection block.
+                                error_code = (
+                                    "internal_error"
+                                    if isinstance(exc, HookFailSafeError)
+                                    else "policy_blocked"
+                                )
+                                error_msg, _ = ERROR_TABLE[error_code]
+                                sse_error = _build_sse_error_event(
+                                    error_code=error_code,
+                                    message=error_msg,
+                                    request_id=request_id,
+                                )
+                                yield sse_error
+                                return  # Close WITHOUT [DONE].
+                            # Advance sliding window.
+                            combined = carried_tail + chunk_content
+                            carried_tail = combined[-stream_buf_bytes:]
+
                     yield chunk
+
             finally:
                 # Partial-stream audit: emit with tokens accumulated so far.
-                # Runs on complete, error, timeout, and client disconnect.
                 # HIGH-3 honest scope: if this emit fails after 200 headers are
-                # sent, we CANNOT force 500. Log at ERROR level as the out-of-band
-                # signal. Operators must monitor this log event.
+                # sent, we CANNOT force 500. Log at ERROR level as out-of-band.
                 try:
-                    # Estimate tokens_in from messages (word count approximation).
                     prompt_words = sum(len(m.content.split()) for m in validated.messages)
                     token_state["tokens_in"] = prompt_words
                     await emit_terminal_record(
@@ -334,13 +606,9 @@ async def _handle_stream(
                         start_time=start_time,
                     )
                 except Exception:
-                    # HIGH-3: audit failure in streaming path — cannot force 500
-                    # (200 headers already sent). Log at ERROR level as the
-                    # documented out-of-band alert. MUST NOT be swallowed silently.
                     log.error(
                         "stream_audit_failed",
                         request_id=request_id,
-                        # Never log token counts or content — PII risk.
                     )
 
     headers = _success_headers(request_id, rl_limit, rl_remaining, rl_reset)
@@ -350,6 +618,103 @@ async def _handle_stream(
         media_type="text/event-stream",
         headers=headers,
     )
+
+
+def _make_post_context(pre_ctx: Any, *, is_stream: bool = False) -> Any:
+    """Build a post-response HookContext from the pre-request context.
+
+    The same tenant IDs, request_id, and original_user_content carry over;
+    only the phase changes to "post_response".  The event budget is shared so
+    the per-detector cap (D4) is enforced across both phases of a request.
+
+    is_stream: when True, the returned context carries _is_stream=True so that
+    SecretOutboundHook can choose BLOCK (stop stream) over MASK (redact body).
+    This is necessary because the 200 headers are already committed in streaming
+    mode and the content cannot be retroactively replaced (FIX-1 / ADR-0007 §5).
+    """
+    if pre_ctx is None:
+        return None
+    try:
+        from orchestration.context import HookContext
+
+        ctx = HookContext(
+            tenant_context=pre_ctx.tenant_context,
+            request_id=pre_ctx.request_id,
+            original_user_content=pre_ctx.original_user_content,
+            phase="post_response",
+            _events_per_detector_cap=pre_ctx._events_per_detector_cap,
+            _event_budget=pre_ctx._event_budget,  # share budget across phases
+        )
+        # FIX-1: tag the context so outbound hooks know the streaming phase.
+        ctx._is_stream = is_stream  # type: ignore[attr-defined]
+        return ctx
+    except Exception:
+        return None
+
+
+def _apply_masked_user_content(
+    validated: CreateChatCompletionRequest,
+    masked_content: str,
+) -> CreateChatCompletionRequest:
+    """Return a new CreateChatCompletionRequest with user message content replaced.
+
+    Distributes the masked_content back into role="user" messages.  Since
+    HookContext concatenates all user messages with "\\n", we replace all user
+    message content with the full masked string in the first user message and
+    blank the rest.  This is a simple distribution strategy; more precise
+    per-message masking is deferred to F-006.
+    """
+    new_messages = []
+    first_user = True
+    for msg in validated.messages:
+        if msg.role == "user":
+            if first_user:
+                # Replace with masked content (still bounded by field max_length).
+                new_msg = msg.model_copy(update={"content": masked_content[:131_072]})
+                first_user = False
+            else:
+                new_msg = msg.model_copy(update={"content": ""})
+        else:
+            new_msg = msg
+        new_messages.append(new_msg)
+    return validated.model_copy(update={"messages": new_messages})
+
+
+def _extract_chunk_content(chunk: str) -> str:
+    """Extract delta.content from an SSE chunk string, or "" if not present."""
+    if not chunk.startswith("data: ") or chunk.startswith("data: [DONE]"):
+        return ""
+    raw = chunk[6:].strip()
+    if not raw or raw == "[DONE]":
+        return ""
+    try:
+        parsed = json.loads(raw)
+        choices = parsed.get("choices", [])
+        parts = []
+        for c in choices:
+            content = c.get("delta", {}).get("content") or ""
+            parts.append(content)
+        return "".join(parts)
+    except (json.JSONDecodeError, KeyError, AttributeError):
+        return ""
+
+
+def _build_sse_error_event(*, error_code: str, message: str, request_id: str) -> str:
+    """Build an SSE error event frame conforming to ADR-0007 §7 / ADR-0006 SSEErrorEvent.
+
+    Format: event: error\\ndata: <Error JSON>\\n\\n
+    No [DONE] is appended — the stream closes after this frame.
+    """
+    import json as _json
+
+    payload = _json.dumps(
+        {
+            "error_code": error_code,
+            "message": message,
+            "request_id": request_id,
+        }
+    )
+    return f"event: error\ndata: {payload}\n\n"
 
 
 def _peek_stream_flag(request: Request) -> bool:
