@@ -13,6 +13,7 @@ from persistence.models.project import Project
 from persistence.models.role_assignment import RoleAssignment
 from persistence.models.team import Team
 from persistence.models.tenant import Tenant
+from persistence.models.tenant_routing_policy import TenantRoutingPolicy
 from persistence.models.user import User
 from persistence.models.virtual_api_key import VirtualApiKey
 
@@ -28,4 +29,5 @@ __all__ = [
     "Policy",
     "PolicyVersion",
     "EventsAuditLog",
+    "TenantRoutingPolicy",
 ]

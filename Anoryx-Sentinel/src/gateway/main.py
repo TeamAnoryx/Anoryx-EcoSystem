@@ -56,11 +56,13 @@ from fastapi.responses import JSONResponse
 
 from gateway.config import get_settings
 from gateway.exceptions import ERROR_TABLE, GatewayError
+from gateway.logging import configure_logging
 from gateway.middleware.auth import AuthMiddleware
 from gateway.middleware.request_validation import RequestValidationMiddleware
 from gateway.middleware.tenant_context import TenantContextMiddleware
 from gateway.middleware.terminal_audit_wrapper import TerminalAuditMiddleware
 from gateway.models import ErrorResponse
+from gateway.router.registry import ProviderRegistry
 from gateway.routes.chat_completions import router as chat_router
 from gateway.routes.health import router as health_router
 from gateway.upstream.openai_proxy import close_http_client, init_http_client
@@ -89,9 +91,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         request_timeout=settings.request_timeout_seconds,
         stream_timeout=settings.stream_timeout_seconds,
     )
+    # F-006: build the per-provider registry (OpenAI reuses the global client;
+    # Anthropic gets a dedicated httpx client; Bedrock is lazy aioboto3). A
+    # provider with no configured credential is fail-closed unavailable (§3).
+    registry = ProviderRegistry()
+    registry.init(settings)
+    app.state.provider_registry = registry
     try:
         yield
     finally:
+        await registry.teardown()
         await close_http_client()
         log.info("gateway_shutdown")
 
@@ -103,6 +112,10 @@ def create_app() -> FastAPI:
     Settings are loaded from the environment at call time (fail-loud on missing
     required values — ADR-0006 Decision 9).
     """
+    # F-006 threat #1: install the structlog secret-redaction processor before
+    # any request is served (drops *_API_KEY / *_SECRET* / AWS_* log keys).
+    configure_logging()
+
     settings = get_settings()
 
     app = FastAPI(

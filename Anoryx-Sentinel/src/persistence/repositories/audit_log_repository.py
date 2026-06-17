@@ -119,6 +119,13 @@ def _row_to_hash_data(row: EventsAuditLog) -> dict[str, Any]:
         "detected_endpoint": row.detected_endpoint,
         "traffic_volume": row.traffic_volume,
         "first_seen_at": row.first_seen_at,
+        # routing_decision variant (F-006, ADR-0008 §5.6) — fixed position,
+        # immediately before prev_hash, matching hash_chain.CANONICAL_FIELDS.
+        "selected_provider": row.selected_provider,
+        "routing_reason": row.routing_reason,
+        "outcome": row.outcome,
+        "attempt_index": row.attempt_index,
+        "requested_model": row.requested_model,
         "prev_hash": row.prev_hash,
     }
 
@@ -256,6 +263,12 @@ class AuditLogRepository:
             detected_endpoint=row_data.get("detected_endpoint"),
             traffic_volume=row_data.get("traffic_volume"),
             first_seen_at=row_data.get("first_seen_at"),
+            # routing_decision variant (F-006, ADR-0008 §5.6)
+            selected_provider=row_data.get("selected_provider"),
+            routing_reason=row_data.get("routing_reason"),
+            outcome=row_data.get("outcome"),
+            attempt_index=row_data.get("attempt_index"),
+            requested_model=row_data.get("requested_model"),
             # chain fields
             prev_hash=prev_hash,
             row_hash=row_hash,

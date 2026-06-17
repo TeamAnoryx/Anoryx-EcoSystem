@@ -63,6 +63,14 @@ CANONICAL_FIELDS = [
     "detected_endpoint",
     "traffic_volume",
     "first_seen_at",
+    # routing_decision variant (F-006, ADR-0008 §5.6) — appended in a fixed,
+    # documented position immediately before the chain fields. action_taken
+    # (already present above) is reused by this variant.
+    "selected_provider",
+    "routing_reason",
+    "outcome",
+    "attempt_index",
+    "requested_model",
     # Chain fields — must be last to surface ordering issues clearly.
     "prev_hash",
 ]

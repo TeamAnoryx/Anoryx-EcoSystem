@@ -171,7 +171,13 @@ async def proxy_non_stream(
             upstream_status=resp.status_code,
             # Never log resp.text — may contain PII / upstream secrets
         )
-        raise GatewayError("internal_error")
+        # MEDIUM-1: attach the upstream status ADDITIVELY so the F-006 OpenAI
+        # adapter can classify (5xx -> transient/retryable). This does NOT change
+        # the public behavior: error_code, the 500 wire status, and the message
+        # are all unchanged; only an optional attribute rides on the exception.
+        _exc = GatewayError("internal_error")
+        _exc.upstream_status = resp.status_code  # type: ignore[attr-defined]
+        raise _exc
 
     if resp.status_code != 200:
         # Upstream 4xx (bad request to upstream, auth failure, etc.) → internal_error
@@ -181,7 +187,13 @@ async def proxy_non_stream(
             request_id=request_id,
             upstream_status=resp.status_code,
         )
-        raise GatewayError("internal_error")
+        # MEDIUM-1: attach the upstream status ADDITIVELY (see above). The OpenAI
+        # adapter maps 401/403 -> auth (TERMINAL, never retried), so a key
+        # rejection can no longer trigger provider-shopping / budget burn (§6,
+        # threat #5). Public wire behavior is UNCHANGED.
+        _exc = GatewayError("internal_error")
+        _exc.upstream_status = resp.status_code  # type: ignore[attr-defined]
+        raise _exc
 
     try:
         data = resp.json()

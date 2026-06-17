@@ -163,11 +163,33 @@ def build_app_with_hooks(hook_registry=None):
         "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
     }
 
-    async def fake_proxy_non_stream(validated_body, request_id, upstream_api_key, overall_timeout):
+    async def fake_proxy_non_stream(
+        validated_body, request_id, upstream_api_key=None, overall_timeout=60.0
+    ):
         from gateway.models import ChatCompletionResponse
 
         completion = ChatCompletionResponse(**fake_completion)
         return completion, 10, 5
+
+    # F-006: the router resolves the tenant routing policy on a tenant session and
+    # emits routing_decision events. Stub both so the F-005 hook E2E exercises the
+    # router (default policy -> OpenAI). The OpenAI adapter calls proxy_non_stream
+    # at its OWN module, so patch it there (not at chat_completions).
+    from persistence.repositories.tenant_routing_policy_repository import default_policy
+
+    @asynccontextmanager
+    async def _tenant_cm(tenant_id):
+        session = MagicMock()
+
+        @asynccontextmanager
+        async def _begin():
+            yield MagicMock()
+
+        session.begin = _begin
+        yield session
+
+    async def _fake_get_for_tenant(self, tenant_id, caller_tenant_id):
+        return default_policy(tenant_id)
 
     patchers = [
         patch("gateway.middleware.auth.get_privileged_session", _privileged_cm),
@@ -176,8 +198,16 @@ def build_app_with_hooks(hook_registry=None):
         patch("gateway.middleware.audit.AuditLogRepository", return_value=audit_repo),
         patch("gateway.routes.chat_completions.emit_terminal_record", new=AsyncMock()),
         patch(
-            "gateway.routes.chat_completions.proxy_non_stream",
+            "gateway.router.providers.openai_provider.proxy_non_stream",
             side_effect=fake_proxy_non_stream,
+        ),
+        # Router DB touchpoints (F-006).
+        patch("gateway.router.selection.emit_routing_decision", new=AsyncMock()),
+        patch("persistence.database.get_tenant_session", _tenant_cm),
+        patch(
+            "persistence.repositories.tenant_routing_policy_repository."
+            "TenantRoutingPolicyRepository.get_for_tenant",
+            new=_fake_get_for_tenant,
         ),
     ]
     # Start (not `with`) so the mocks stay active through request handling, then

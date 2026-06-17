@@ -95,6 +95,26 @@ def _build_patches(key_row=None, audit_mock=None):
         session.begin = _begin
         yield session
 
+    # F-006: the router resolves the tenant routing policy on a tenant session
+    # and emits routing_decision events on the privileged session. Stub both so
+    # the OpenAI happy/failure paths exercise the router without a live DB. The
+    # default policy (no row) routes to OpenAI exactly as before.
+    from persistence.repositories.tenant_routing_policy_repository import default_policy
+
+    @asynccontextmanager
+    async def _tenant_cm(tenant_id):
+        session = MagicMock()
+
+        @asynccontextmanager
+        async def _begin():
+            yield MagicMock()
+
+        session.begin = _begin
+        yield session
+
+    async def _fake_get_for_tenant(self, tenant_id, caller_tenant_id):
+        return default_policy(tenant_id)
+
     import gateway.upstream.openai_proxy as proxy_mod
 
     proxy_mod._http_client = None
@@ -103,6 +123,14 @@ def _build_patches(key_row=None, audit_mock=None):
         patch("gateway.middleware.auth.get_privileged_session", _priv_cm),
         patch("gateway.middleware.auth.VirtualApiKeyRepository", return_value=auth_repo),
         patch("gateway.routes.chat_completions.emit_terminal_record", new=_audit),
+        # Router DB touchpoints (F-006).
+        patch("gateway.router.selection.emit_routing_decision", new=AsyncMock()),
+        patch("persistence.database.get_tenant_session", _tenant_cm),
+        patch(
+            "persistence.repositories.tenant_routing_policy_repository."
+            "TenantRoutingPolicyRepository.get_for_tenant",
+            new=_fake_get_for_tenant,
+        ),
     ]
     return patches, _audit
 
@@ -121,7 +149,7 @@ async def test_e2e_happy_path_non_stream(settings_env):
     mock_client = MagicMock()
     mock_client.post = AsyncMock(return_value=upstream_resp)
 
-    with patches[0], patches[1], patches[2]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
         from gateway.main import create_app
 
         app = create_app()
@@ -156,7 +184,7 @@ async def test_e2e_audit_emitted_on_success(settings_env):
     mock_client = MagicMock()
     mock_client.post = AsyncMock(return_value=upstream_resp)
 
-    with patches[0], patches[1], patches[2]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
         from gateway.main import create_app
 
         app = create_app()
@@ -177,7 +205,7 @@ async def test_e2e_audit_emitted_on_invalid_request(settings_env):
     audit_mock = AsyncMock()
     patches, _ = _build_patches(audit_mock=audit_mock)
 
-    with patches[0], patches[1], patches[2]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
         from gateway.main import create_app
 
         app = create_app()
@@ -202,7 +230,7 @@ async def test_e2e_upstream_failure_returns_500_not_502(settings_env):
     mock_client = MagicMock()
     mock_client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
 
-    with patches[0], patches[1], patches[2]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
         from gateway.main import create_app
 
         app = create_app()
@@ -268,7 +296,7 @@ async def test_e2e_rate_limit_returns_429_with_retry_after(settings_env, monkeyp
     mock_client = MagicMock()
     mock_client.post = AsyncMock(return_value=upstream_resp)
 
-    with patches[0], patches[1], patches[2]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
         from gateway.main import create_app
 
         app = create_app()
@@ -294,7 +322,7 @@ async def test_e2e_413_on_oversized_body(settings_env, monkeypatch):
     _reset_settings()
     patches, _ = _build_patches()
 
-    with patches[0], patches[1], patches[2]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
         from gateway.main import create_app
 
         app = create_app()

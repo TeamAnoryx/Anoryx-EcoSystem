@@ -16,6 +16,7 @@ Tests the orchestration layer end-to-end without a real DB or Presidio:
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,6 +25,29 @@ from orchestration.context import HookContext
 from orchestration.exceptions import HookBlockedError
 from orchestration.hooks.base import DetectorResult, PreRequestHook
 from orchestration.registry import HookRegistry
+
+# ---------------------------------------------------------------------------
+# F-006 router stubs (shared): default policy -> OpenAI, no live DB.
+# ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def _router_tenant_cm(tenant_id):
+    session = MagicMock()
+
+    @asynccontextmanager
+    async def _begin():
+        yield MagicMock()
+
+    session.begin = _begin
+    yield session
+
+
+async def _router_fake_get_for_tenant(self, tenant_id, caller_tenant_id):
+    from persistence.repositories.tenant_routing_policy_repository import default_policy
+
+    return default_policy(tenant_id)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -635,7 +659,9 @@ async def test_secret_leak_response_body_is_redacted(tenant_context, monkeypatch
     mock_completion = MagicMock()
     mock_completion.model_dump.return_value = fake_dict
 
-    async def fake_proxy_non_stream(validated_body, request_id, upstream_api_key, overall_timeout):
+    async def fake_proxy_non_stream(
+        validated_body, request_id, upstream_api_key=None, overall_timeout=60.0
+    ):
         return mock_completion, 10, 20
 
     # Build a real SecretOutboundHook with real settings.
@@ -737,8 +763,16 @@ async def test_secret_leak_response_body_is_redacted(tenant_context, monkeypatch
         ),
         patch("gateway.routes.chat_completions.emit_terminal_record", new=AsyncMock()),
         patch(
-            "gateway.routes.chat_completions.proxy_non_stream",
+            "gateway.router.providers.openai_provider.proxy_non_stream",
             side_effect=fake_proxy_non_stream,
+        ),
+        # F-006 router DB touchpoints (default policy -> OpenAI).
+        patch("gateway.router.selection.emit_routing_decision", new=AsyncMock()),
+        patch("persistence.database.get_tenant_session", _router_tenant_cm),
+        patch(
+            "persistence.repositories.tenant_routing_policy_repository."
+            "TenantRoutingPolicyRepository.get_for_tenant",
+            new=_router_fake_get_for_tenant,
         ),
         patch.object(cc_mod, "json", new=_JsonSpy()),
     ):
@@ -918,7 +952,9 @@ async def test_secret_outbound_nonserializable_returns_500(tenant_context, monke
     mock_completion = MagicMock()
     mock_completion.model_dump.return_value = fake_dict
 
-    async def fake_proxy_non_stream(validated_body, request_id, upstream_api_key, overall_timeout):
+    async def fake_proxy_non_stream(
+        validated_body, request_id, upstream_api_key=None, overall_timeout=60.0
+    ):
         return mock_completion, 5, 5
 
     hook_settings = MagicMock()
@@ -997,8 +1033,16 @@ async def test_secret_outbound_nonserializable_returns_500(tenant_context, monke
         ),
         patch("gateway.routes.chat_completions.emit_terminal_record", new=AsyncMock()),
         patch(
-            "gateway.routes.chat_completions.proxy_non_stream",
+            "gateway.router.providers.openai_provider.proxy_non_stream",
             side_effect=fake_proxy_non_stream,
+        ),
+        # F-006 router DB touchpoints (default policy -> OpenAI).
+        patch("gateway.router.selection.emit_routing_decision", new=AsyncMock()),
+        patch("persistence.database.get_tenant_session", _router_tenant_cm),
+        patch(
+            "persistence.repositories.tenant_routing_policy_repository."
+            "TenantRoutingPolicyRepository.get_for_tenant",
+            new=_router_fake_get_for_tenant,
         ),
         patch.object(cc_mod, "_redact_in_place", side_effect=_bad_redact_in_place),
     ):
