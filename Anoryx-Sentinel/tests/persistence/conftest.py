@@ -217,13 +217,10 @@ def ensure_schema_at_head() -> None:
     This guarantees the schema is present even if a previous test run left
     the DB in a downgraded state (e.g., after test_incremental_downgrade).
 
-    After upgrading to head, also ensures sentinel_app has a password set for
-    local dev testing. In production, the password is Vault-managed and injected
-    at runtime. In tests, we use the APP_DATABASE_URL credential from the env.
-    If APP_DATABASE_URL is set, we extract the password and apply it to the role.
-    This handles the case where test_incremental_downgrade drops and re-creates
-    sentinel_app (the migration creates the role without a password; the password
-    must be provisioned out-of-band — in local dev that means here).
+    Note: sentinel_app password provisioning was moved to
+    _provision_app_role_for_each_test (autouse function-scoped) in
+    f-003b-harness-fix v2, to handle mid-session role drops by
+    test_migration_downgrade_and_reapply and test_incremental_downgrade.
     """
     env = os.environ.copy()
     env["PYTHONPATH"] = str(_SENTINEL_ROOT / "src")
