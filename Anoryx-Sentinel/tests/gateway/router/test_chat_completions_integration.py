@@ -20,6 +20,7 @@ from httpx import ASGITransport, AsyncClient
 from gateway.config import _reset_settings
 from gateway.models import ChatCompletionResponse
 from persistence.repositories.tenant_routing_policy_repository import EffectiveRoutingPolicy
+from policy.enforcement import BudgetOk, ModelAllow
 from tests.gateway.conftest import (
     TEST_AGENT_ID,
     TEST_PLAINTEXT_KEY,
@@ -111,6 +112,10 @@ async def test_translated_body_reaches_post_hook_in_openai_shape(settings_env):
             cost_ceiling_cents=None,
         )
 
+    # F-008 gate stubbed to "allow, no budgets" (its behavior is covered in tests/policy/).
+    async def _allow_enforce(tenant_context, body):
+        return ModelAllow(None), BudgetOk(), []
+
     import gateway.upstream.openai_proxy as proxy_mod
 
     proxy_mod._http_client = None
@@ -120,6 +125,7 @@ async def test_translated_body_reaches_post_hook_in_openai_shape(settings_env):
         patch("gateway.middleware.auth.VirtualApiKeyRepository", return_value=auth_repo),
         patch("gateway.routes.chat_completions.emit_terminal_record", new=AsyncMock()),
         patch("gateway.router.selection.emit_routing_decision", new=AsyncMock()),
+        patch("gateway.router.selection._enforce_policies_pre_request", new=_allow_enforce),
         patch("persistence.database.get_tenant_session", _tenant_cm),
         patch(
             "persistence.repositories.tenant_routing_policy_repository."

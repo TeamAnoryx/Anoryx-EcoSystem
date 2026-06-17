@@ -12,7 +12,14 @@
     { "$ref": "#/$defs/PolicyViolatedEvent" },
     { "$ref": "#/$defs/ComplianceCheckedEvent" },
     { "$ref": "#/$defs/ShadowAiDetectedEvent" },
-    { "$ref": "#/$defs/RoutingDecisionEvent" }
+    { "$ref": "#/$defs/RoutingDecisionEvent" },
+    { "$ref": "#/$defs/PolicyIntakeAcceptedEvent" },
+    { "$ref": "#/$defs/PolicyIntakeRejectedSignatureEvent" },
+    { "$ref": "#/$defs/PolicyIntakeRejectedScopeMismatchEvent" },
+    { "$ref": "#/$defs/PolicyIntakeRejectedReplayEvent" },
+    { "$ref": "#/$defs/PolicyIntakeRejectedSchemaEvent" },
+    { "$ref": "#/$defs/PolicyDecisionAllowEvent" },
+    { "$ref": "#/$defs/PolicyDecisionDenyEvent" }
   ],
 
   "$comment": "Dispatch is normative via oneOf + the event_type const on each variant under JSON Schema Draft 2020-12. The 'discriminator' keyword below is a NON-NORMATIVE hint for OpenAPI tooling ONLY; it is not a 2020-12 keyword and has NO validation effect under this dialect. Do not rely on it for correctness.",
@@ -457,6 +464,138 @@
           "enum": ["routed", "blocked", "failed_over"],
           "description": "Disposition the router applied: 'routed' (served by selected_provider), 'blocked' (allow-list/cost terminal), 'failed_over' (retryable failure, advancing the fallback chain)."
         }
+      }
+    },
+    "PolicyIntakeAcceptedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-008 policy intake (ADR-0009) when a Delta-signed policy record is verified, scope-resolved (the verified signature claims are authoritative; body IDs are a cross-check only), version-fresh, persisted, and audited. agent_id is the emitting component slug 'gateway-core'. Carries NO signature material, key material, or raw policy plaintext; policy_id is a join hint to contracts/policy.schema.json.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "policy_intake_accepted" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (the verified policy was recorded)." },
+        "policy_id": { "type": "string", "format": "uuid", "maxLength": 64, "description": "Identifier of the accepted policy; joins to contracts/policy.schema.json policy_id." }
+      }
+    },
+    "PolicyIntakeRejectedSignatureEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-008 policy intake when signature verification fails (absent/malformed/wrong-alg/wrong-key) or no verifying key is configured (fail-closed). No tenant is resolvable, so the four IDs are the reserved system-sentinel values (zero-UUID tenant/team/project, 'gateway-core' agent) per ADR-0009 Decision B. Carries NO signature bytes.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "policy_intake_rejected_signature" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["blocked"], "description": "Disposition: 'blocked' (record rejected, not persisted)." },
+        "violation_type": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$", "maxLength": 128, "description": "Reason slug (e.g. 'signature.invalid', 'signature.no_key'). Charset restricted to forbid control chars/whitespace (log-injection defense)." }
+      }
+    },
+    "PolicyIntakeRejectedScopeMismatchEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-008 policy intake when the verified signature scope disagrees with the record body, or the signature claims the forbidden wildcard tenant. Attributed to the signature-resolved tenant when one exists, else the system-sentinel IDs (ADR-0009 Decision B). violation_type carries ONLY the mismatched-dimension slug — the raw disputed body IDs are NEVER emitted (they go to structured logs keyed by request_id).",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "policy_intake_rejected_scope_mismatch" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["blocked"], "description": "Disposition: 'blocked'." },
+        "policy_id": { "type": "string", "format": "uuid", "maxLength": 64, "description": "Identifier of the policy, when resolvable; joins to contracts/policy.schema.json policy_id." },
+        "violation_type": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$", "maxLength": 128, "description": "Mismatched-dimension slug (e.g. 'scope_mismatch.tenant_id', 'scope_mismatch.wildcard_tenant'). Never the disputed raw IDs." }
+      }
+    },
+    "PolicyIntakeRejectedReplayEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-008 policy intake when policy_version is not strictly greater than the stored max for the policy_id (replay/rollback defense). The signature is valid, so it is attributed to the signature-resolved tenant.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "policy_intake_rejected_replay" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["blocked"], "description": "Disposition: 'blocked'." },
+        "policy_id": { "type": "string", "format": "uuid", "maxLength": 64, "description": "Identifier of the replayed policy; joins to contracts/policy.schema.json policy_id." },
+        "violation_type": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$", "maxLength": 128, "description": "Reason slug (e.g. 'replay'). No stored-version value is leaked here." }
+      }
+    },
+    "PolicyIntakeRejectedSchemaEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-008 policy intake when the record fails Draft 2020-12 schema validation (unparseable, oversized, missing field, additionalProperties poisoning, wrong variant). No signature is parsed, so it is attributed to the system-sentinel IDs (ADR-0009 Decision B).",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "policy_intake_rejected_schema" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["blocked"], "description": "Disposition: 'blocked'." },
+        "violation_type": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$", "maxLength": 128, "description": "Reason slug (e.g. 'schema.invalid', 'schema.unparseable')." }
+      }
+    },
+    "PolicyDecisionAllowEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted at request time (F-006 router, F-008 enforcement) when a model allow-list policy permitted the requested model for the request scope. agent_id is 'gateway-core'. NOT a Delta policy violation (that is policy_violated).",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "policy_decision_allow" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (request permitted)." },
+        "policy_id": { "type": "string", "format": "uuid", "maxLength": 64, "description": "Identifier of the allow-list policy that applied; joins to contracts/policy.schema.json policy_id." },
+        "requested_model": { "type": "string", "maxLength": 256, "description": "The model the client requested (echo). Never a secret." },
+        "violation_type": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$", "maxLength": 128, "description": "Optional decision detail slug." }
+      }
+    },
+    "PolicyDecisionDenyEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted at request time (F-006 router, F-008 enforcement) when a model deny-list (deny precedence over allow), an absent-from-allow-list condition, or a budget ceiling terminally blocked the request for the scope. agent_id is 'gateway-core'. NOT a Delta policy violation (that is policy_violated).",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "policy_decision_deny" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["blocked"], "description": "Disposition: 'blocked' (request terminally denied, no fallback)." },
+        "policy_id": { "type": "string", "format": "uuid", "maxLength": 64, "description": "Identifier of the policy that denied the request; joins to contracts/policy.schema.json policy_id." },
+        "requested_model": { "type": "string", "maxLength": 256, "description": "The model the client requested (echo). Never a secret." },
+        "violation_type": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$", "maxLength": 128, "description": "Reason slug (e.g. 'model_denied', 'model_not_in_allowlist', 'budget_tokens_exceeded', 'budget_cost_exceeded')." }
       }
     }
   }

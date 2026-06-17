@@ -752,6 +752,14 @@ async def test_secret_leak_response_body_is_redacted(tenant_context, monkeypatch
         "Content-Type": "application/json",
     }
 
+    # F-008: stub the pre-request policy gate to a no-op allow (no policies seeded;
+    # the bare mock tenant session cannot answer the gate's queries) — same stub the
+    # F-006 router tests use.
+    from policy.enforcement import BudgetOk, ModelAllow
+
+    async def _allow_enforce(tenant_context, body):
+        return ModelAllow(None), BudgetOk(), []
+
     # Patches must be active during the HTTP request, not just during create_app.
     with (
         patch("gateway.middleware.auth.get_privileged_session", _privileged_cm),
@@ -768,6 +776,7 @@ async def test_secret_leak_response_body_is_redacted(tenant_context, monkeypatch
         ),
         # F-006 router DB touchpoints (default policy -> OpenAI).
         patch("gateway.router.selection.emit_routing_decision", new=AsyncMock()),
+        patch("gateway.router.selection._enforce_policies_pre_request", new=_allow_enforce),
         patch("persistence.database.get_tenant_session", _router_tenant_cm),
         patch(
             "persistence.repositories.tenant_routing_policy_repository."

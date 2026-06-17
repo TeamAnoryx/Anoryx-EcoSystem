@@ -145,6 +145,81 @@ class PolicyRepository:
         await self._session.flush()
         return policy_row, version_row
 
+    async def save_new_version(
+        self,
+        *,
+        policy_id: str,
+        policy_type: str,
+        policy_version: int,
+        tenant_id: str,
+        team_id: str,
+        project_id: str,
+        agent_id: str,
+        effective_from: datetime,
+        signature: str,
+        policy_payload: dict[str, Any],
+    ) -> tuple[Policy, PolicyVersion]:
+        """F-008 (ADR-0009 §3) alias for persisting a new verified, signed version.
+
+        Named per the F-008 charter; delegates to upsert_policy so the monotonicity
+        check + append-only version history (shared with F-003 callers) stay in one
+        place. The scope arguments MUST be the signature-resolved scope, not body IDs.
+        """
+        return await self.upsert_policy(
+            policy_id=policy_id,
+            policy_type=policy_type,
+            policy_version=policy_version,
+            tenant_id=tenant_id,
+            team_id=team_id,
+            project_id=project_id,
+            agent_id=agent_id,
+            effective_from=effective_from,
+            signature=signature,
+            policy_payload=policy_payload,
+        )
+
+    async def get_max_version(self, policy_id: str) -> int | None:
+        """Return the current max policy_version for a policy_id, or None if unseen.
+
+        F-008 (ADR-0009 §5): the intake-time replay/rollback check. Runs on the
+        privileged session during intake (BYPASSRLS) so it sees the true global
+        max regardless of tenant context, before any write. The 0004 monotonic
+        trigger remains the last line of defense.
+        """
+        stmt = select(func.max(PolicyVersion.policy_version)).where(
+            PolicyVersion.policy_id == policy_id
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_active_policies_for_scope(
+        self,
+        tenant_id: str,
+        policy_type: str,
+        *,
+        now: datetime | None = None,
+    ) -> list[Policy]:
+        """Return active (effective_from <= now) current policies of a type for a tenant.
+
+        F-008 (ADR-0009 §6): a coarse tenant + type + active fetch. Precise
+        per-variant matching — the Sentinel-ID wildcard convention for model
+        policies (which needs Python-side specificity ranking, Decision A) and the
+        scope-field match for budget policies — is performed in the enforcement
+        layer, not in SQL, so the persistence layer stays free of policy semantics.
+        Runs on the caller's session: a tenant session at request time, where RLS
+        plus the explicit tenant_id predicate both scope the rows.
+        """
+        effective_now = now or datetime.now(timezone.utc)
+        stmt = (
+            select(Policy)
+            .where(Policy.tenant_id == tenant_id)
+            .where(Policy.policy_type == policy_type)
+            .where(Policy.effective_from <= effective_now)
+            .order_by(Policy.policy_id)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
     async def get_by_id(self, policy_id: str, caller_tenant_id: str) -> Policy:
         """Return the current policy row for policy_id, or raise PolicyNotFoundError.
 

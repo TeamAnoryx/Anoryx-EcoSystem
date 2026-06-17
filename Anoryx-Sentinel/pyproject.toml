@@ -39,6 +39,12 @@ dependencies = [
     # argon2-cffi: Argon2id password hashing per OWASP recommendation.
     "argon2-cffi>=23,<25",
     "python-dotenv>=1.0,<2",
+    # cryptography: ECDSA P-256 (ES256) compact-JWS for F-008 policy signature
+    # verification. Declared explicitly — not relied upon transitively.
+    "cryptography>=42,<50",
+    # jsonschema: F-008 validates policy records with JSON Schema Draft 2020-12 at
+    # RUNTIME (src/policy/schema_validator.py); also used by contract tests.
+    "jsonschema[format]>=4.22,<5",
 ]
 
 [project.optional-dependencies]
@@ -52,9 +58,12 @@ dev = [
     "httpx",
     "semgrep",
     "hypothesis>=6,<7",
-    # jsonschema: used by gateway contract tests to validate events.schema.json
-    "jsonschema[format]>=4.22,<5",
+    # jsonschema moved to [project.dependencies] (runtime need for F-008 intake).
 ]
+
+[project.scripts]
+# F-008 operator CLI (ADR-0009 §11): sign + push a policy, or generate a dev keypair.
+sentinel-cli = "policy.cli:main"
 
 [tool.ruff]
 target-version = "py312"

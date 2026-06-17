@@ -1,4 +1,5 @@
 {
+  "$comment": "LOCKED at F-008 commit a9e2344 (a9e23447bc5d8ea9c48ced55e916163ba2d21170). This policy schema is frozen. Any change requires a new $id (sentinel:policy:v2) and a migration plan — do not mutate this schema in place.",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "sentinel:policy:v1",
   "title": "Sentinel Policy Intake",

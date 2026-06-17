@@ -191,6 +191,16 @@ def build_app_with_hooks(hook_registry=None):
     async def _fake_get_for_tenant(self, tenant_id, caller_tenant_id):
         return default_policy(tenant_id)
 
+    # F-008: the pre-request policy gate reads model/budget policies on a tenant
+    # session. This F-005 hook E2E seeds no policies, and the bare MagicMock tenant
+    # session cannot answer the gate's async queries — so stub the gate to a no-op
+    # allow exactly as the F-006 router tests do (the gate has its own F-006/F-008
+    # coverage; here it must simply pass through).
+    from policy.enforcement import BudgetOk, ModelAllow
+
+    async def _allow_enforce(tenant_context, body):
+        return ModelAllow(None), BudgetOk(), []
+
     patchers = [
         patch("gateway.middleware.auth.get_privileged_session", _privileged_cm),
         patch("gateway.middleware.auth.VirtualApiKeyRepository", return_value=auth_repo),
@@ -203,6 +213,7 @@ def build_app_with_hooks(hook_registry=None):
         ),
         # Router DB touchpoints (F-006).
         patch("gateway.router.selection.emit_routing_decision", new=AsyncMock()),
+        patch("gateway.router.selection._enforce_policies_pre_request", new=_allow_enforce),
         patch("persistence.database.get_tenant_session", _tenant_cm),
         patch(
             "persistence.repositories.tenant_routing_policy_repository."

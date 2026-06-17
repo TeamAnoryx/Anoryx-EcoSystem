@@ -26,6 +26,7 @@ from gateway.models import ChatCompletionResponse
 from gateway.router.exceptions import ProviderError
 from gateway.router.selection import route_non_stream, route_stream
 from persistence.repositories.tenant_routing_policy_repository import EffectiveRoutingPolicy
+from policy.enforcement import BudgetOk, ModelAllow
 from tests.gateway.router.conftest import make_body
 
 _TENANT = TenantContext(
@@ -35,6 +36,18 @@ _TENANT = TenantContext(
     agent_id="gateway-core",
     virtual_key_id="key-1",
 )
+
+
+# F-008 (ADR-0009 §6): the router now runs a model + budget enforcement step before
+# the F-006 tenant_routing_policy. These matrix tests pin the F-006 fallback/cost
+# boundary, so they stub the F-008 gate to "allow, no budgets" (its own behavior is
+# covered by tests/policy/), exactly as they stub _resolve_policy + emit_routing_decision.
+async def _allow_enforce(tenant_context, body):
+    return ModelAllow(None), BudgetOk(), []
+
+
+async def _noop_policy_decision(*args, **kwargs):
+    return None
 
 
 def _resp(model="m"):
@@ -117,6 +130,8 @@ async def _run_non_stream(policy, registry, body=None, events=None):
     with (
         patch("gateway.router.selection._resolve_policy", new=_fake_resolve),
         patch("gateway.router.selection.emit_routing_decision", new=_fake_emit),
+        patch("gateway.router.selection._enforce_policies_pre_request", new=_allow_enforce),
+        patch("gateway.router.selection.emit_policy_decision", new=_noop_policy_decision),
     ):
         return await route_non_stream(
             validated_body=body,
@@ -140,6 +155,8 @@ async def _collect_stream(policy, registry, body=None, events=None):
     with (
         patch("gateway.router.selection._resolve_policy", new=_fake_resolve),
         patch("gateway.router.selection.emit_routing_decision", new=_fake_emit),
+        patch("gateway.router.selection._enforce_policies_pre_request", new=_allow_enforce),
+        patch("gateway.router.selection.emit_policy_decision", new=_noop_policy_decision),
     ):
         lines = []
         async for line in route_stream(

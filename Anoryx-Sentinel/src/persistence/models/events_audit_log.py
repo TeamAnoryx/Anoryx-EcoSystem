@@ -47,6 +47,14 @@ VALID_EVENT_TYPES = frozenset(
         "compliance_checked",
         "shadow_ai_detected",
         "routing_decision",  # F-006 (ADR-0008 §5)
+        # F-008 (ADR-0009 §7) — policy intake + enforcement variants.
+        "policy_intake_accepted",
+        "policy_intake_rejected_signature",
+        "policy_intake_rejected_scope_mismatch",
+        "policy_intake_rejected_replay",
+        "policy_intake_rejected_schema",
+        "policy_decision_allow",
+        "policy_decision_deny",
     }
 )
 
@@ -62,6 +70,16 @@ ACTION_TAKEN_BY_EVENT_TYPE: dict[str, frozenset[str]] = {
     "policy_violated": frozenset({"blocked", "throttled", "warned"}),
     # F-006 (ADR-0008 §5.4): routing_decision carries action_taken.
     "routing_decision": frozenset({"routed", "blocked", "failed_over"}),
+    # F-008 (ADR-0009 §7): intake + enforcement variants reuse the existing
+    # action_taken enum values 'logged' (accepted/allowed) and 'blocked'
+    # (rejected/denied), so ck_eal_action_taken is unchanged.
+    "policy_intake_accepted": frozenset({"logged"}),
+    "policy_intake_rejected_signature": frozenset({"blocked"}),
+    "policy_intake_rejected_scope_mismatch": frozenset({"blocked"}),
+    "policy_intake_rejected_replay": frozenset({"blocked"}),
+    "policy_intake_rejected_schema": frozenset({"blocked"}),
+    "policy_decision_allow": frozenset({"logged"}),
+    "policy_decision_deny": frozenset({"blocked"}),
 }
 
 
@@ -162,7 +180,11 @@ class EventsAuditLog(Base):
             "event_type IN ("
             "'usage','pii_blocked','injection_detected',"
             "'secret_leaked','policy_violated','compliance_checked',"
-            "'shadow_ai_detected','routing_decision')",
+            "'shadow_ai_detected','routing_decision',"
+            # F-008 (ADR-0009 §7) — kept in sync with migration 0008.
+            "'policy_intake_accepted','policy_intake_rejected_signature',"
+            "'policy_intake_rejected_scope_mismatch','policy_intake_rejected_replay',"
+            "'policy_intake_rejected_schema','policy_decision_allow','policy_decision_deny')",
             name="ck_eal_event_type",
         ),
         CheckConstraint(
