@@ -126,6 +126,17 @@ def _row_to_hash_data(row: EventsAuditLog) -> dict[str, Any]:
         "outcome": row.outcome,
         "attempt_index": row.attempt_index,
         "requested_model": row.requested_model,
+        # F-007 (ADR-0010 §8) variant fields — fixed position before the chain field.
+        "judge_score": float(row.judge_score) if row.judge_score is not None else None,
+        "judge_confidence": (
+            float(row.judge_confidence) if row.judge_confidence is not None else None
+        ),
+        "final_score": float(row.final_score) if row.final_score is not None else None,
+        "judge_model": row.judge_model,
+        "judge_preset": row.judge_preset,
+        "judge_outcome": row.judge_outcome,
+        "audit_mode": row.audit_mode,
+        "classifier_reason": row.classifier_reason,
         "prev_hash": row.prev_hash,
     }
 
@@ -269,6 +280,15 @@ class AuditLogRepository:
             outcome=row_data.get("outcome"),
             attempt_index=row_data.get("attempt_index"),
             requested_model=row_data.get("requested_model"),
+            # F-007 (ADR-0010 §8) variant fields.
+            judge_score=row_data.get("judge_score"),
+            judge_confidence=row_data.get("judge_confidence"),
+            final_score=row_data.get("final_score"),
+            judge_model=row_data.get("judge_model"),
+            judge_preset=row_data.get("judge_preset"),
+            judge_outcome=row_data.get("judge_outcome"),
+            audit_mode=row_data.get("audit_mode"),
+            classifier_reason=row_data.get("classifier_reason"),
             # chain fields
             prev_hash=prev_hash,
             row_hash=row_hash,

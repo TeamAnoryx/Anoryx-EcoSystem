@@ -71,6 +71,19 @@ CANONICAL_FIELDS = [
     "outcome",
     "attempt_index",
     "requested_model",
+    # F-007 (ADR-0010 §8) variant fields — appended in a fixed, documented position
+    # immediately before the chain fields. action_taken / classifier_score /
+    # rule_matched / tokens_in / tokens_out / cost_estimate_cents / latency_ms /
+    # selected_provider / detected_endpoint / traffic_volume / first_seen_at (above)
+    # are reused by the F-007 variants.
+    "judge_score",
+    "judge_confidence",
+    "final_score",
+    "judge_model",
+    "judge_preset",
+    "judge_outcome",
+    "audit_mode",
+    "classifier_reason",
     # Chain fields — must be last to surface ordering issues clearly.
     "prev_hash",
 ]

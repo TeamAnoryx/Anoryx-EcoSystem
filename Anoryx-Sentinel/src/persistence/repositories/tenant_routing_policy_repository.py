@@ -18,11 +18,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from persistence.models.tenant_routing_policy import TenantRoutingPolicy
+
+if TYPE_CHECKING:  # pragma: no cover - typing only (avoids persistence→orchestration at runtime)
+    from gateway.context import TenantContext
+    from orchestration.judge.config import ClassifierConfig
 
 _KNOWN_PROVIDERS = ("openai", "anthropic", "bedrock")
 # ADR-0008 §4.2 default fallback order.
@@ -127,3 +132,50 @@ class TenantRoutingPolicyRepository:
             cost_ceiling_cents=ceiling,
             is_default=False,
         )
+
+    async def resolve_classifier_config(
+        self,
+        tenant_id: str,
+        caller_tenant_id: str,
+    ) -> "ClassifierConfig":
+        """Resolve the F-007 classifier config via the B2C inheritance walk (ADR-0010 §6).
+
+        Reads the tenant_routing_policy row (defense-in-depth tenant predicate on top
+        of RLS) and feeds it as a candidate to the pure inheritance resolver. The
+        table is one row per tenant, so the candidate list is tenant-scoped today;
+        the resolver is future-proof for per-scope rows. No row → UNCONFIGURED.
+        """
+        from orchestration.judge.config import ScopeConfig, resolve_inherited_config
+
+        stmt = (
+            select(TenantRoutingPolicy)
+            .where(TenantRoutingPolicy.tenant_id == tenant_id)
+            .where(TenantRoutingPolicy.tenant_id == caller_tenant_id)
+        )
+        row = (await self._session.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            return resolve_inherited_config([])
+        candidates = [
+            ScopeConfig(
+                specificity=0,
+                model_id=row.classifier_model_id,
+                audit_mode=row.audit_mode,
+            )
+        ]
+        return resolve_inherited_config(candidates)
+
+
+async def get_classifier_config(tenant_context: "TenantContext") -> "ClassifierConfig":
+    """Resolve a tenant's classifier config on a tenant session (RLS, R13).
+
+    Module-level entry used by the injection detector. Opens a tenant session and
+    delegates to TenantRoutingPolicyRepository.resolve_classifier_config.
+    """
+    from persistence.database import get_tenant_session
+
+    async with get_tenant_session(tenant_context.tenant_id) as session:
+        async with session.begin():
+            repo = TenantRoutingPolicyRepository(session)
+            return await repo.resolve_classifier_config(
+                tenant_context.tenant_id, caller_tenant_id=tenant_context.tenant_id
+            )

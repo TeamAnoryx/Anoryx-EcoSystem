@@ -27,33 +27,13 @@ _VALIDATOR = jsonschema.Draft202012Validator(_EVENTS_SCHEMA)
 
 
 # ---------------------------------------------------------------------------
-# Gate: default false → no emission
+# Emission (F-007 removed the SHADOW_AI_EMISSION_ENABLED opt-in gate)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_shadow_ai_gated_off_by_default(mock_hook_context, monkeypatch):
-    """With SHADOW_AI_EMISSION_ENABLED=false, no event is emitted."""
-    monkeypatch.setenv("SHADOW_AI_EMISSION_ENABLED", "false")
-    _reset_orchestration_settings()
-
-    from orchestration.detectors.shadow_ai_detector import emit_shadow_ai_event
-
-    result = await emit_shadow_ai_event(
-        context=mock_hook_context,
-        detected_endpoint="example.com/api",
-        traffic_volume=1,
-    )
-    assert result is False
-    mock_hook_context.emit.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_shadow_ai_enabled_emits(mock_hook_context, monkeypatch):
-    """With SHADOW_AI_EMISSION_ENABLED=true, a valid event is emitted."""
-    monkeypatch.setenv("SHADOW_AI_EMISSION_ENABLED", "true")
-    _reset_orchestration_settings()
-
+async def test_shadow_ai_emits_without_gate(mock_hook_context):
+    """F-007 removed the opt-in gate: a valid endpoint always emits."""
     from orchestration.detectors.shadow_ai_detector import emit_shadow_ai_event
 
     mock_hook_context.emit.return_value = True

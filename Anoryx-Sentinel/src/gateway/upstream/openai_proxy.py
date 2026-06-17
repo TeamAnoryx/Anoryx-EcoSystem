@@ -73,10 +73,15 @@ async def init_http_client(
         write=request_timeout,
         pool=request_timeout,
     )
+    # F-007 (ADR-0010 §5): register the shadow-AI egress hook so outbound calls
+    # to a disallowed provider are flagged. The hook never blocks or raises.
+    from gateway.middleware.egress_monitor import egress_request_hook
+
     _http_client = httpx.AsyncClient(
         base_url=base_url,
         timeout=timeout,
         follow_redirects=False,
+        event_hooks={"request": [egress_request_hook]},
     )
     log.info("http_client_initialized", base_url=base_url)
 

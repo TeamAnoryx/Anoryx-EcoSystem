@@ -62,6 +62,13 @@ class TenantRoutingPolicy(Base):
         Numeric(precision=20, scale=6), nullable=True
     )
 
+    # F-007 (ADR-0010 §6/§7): classifier preset for the LLM-as-judge step.
+    # NULL = unconfigured (the detector uses regex only). Restricted to the two
+    # contract presets by ck_trp_classifier_model_id.
+    classifier_model_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Audit privacy mode for ML classification events (R10). 'full' | 'redacted'.
+    audit_mode: Mapped[str] = mapped_column(String(16), nullable=False, server_default="full")
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -77,6 +84,16 @@ class TenantRoutingPolicy(Base):
         CheckConstraint(
             "length(trim(allowed_providers)) > 0",
             name="ck_trp_allowed_providers_nonempty",
+        ),
+        # F-007 (ADR-0010 §7): audit_mode enum + classifier preset allow-list.
+        CheckConstraint(
+            "audit_mode IN ('full','redacted')",
+            name="ck_trp_audit_mode",
+        ),
+        CheckConstraint(
+            "classifier_model_id IS NULL OR classifier_model_id IN "
+            "('anthropic:claude-haiku-4-5','openai:gpt-4o-mini')",
+            name="ck_trp_classifier_model_id",
         ),
         Index("ix_trp_tenant_id", "tenant_id"),
     )

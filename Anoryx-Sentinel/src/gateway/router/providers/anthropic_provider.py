@@ -28,6 +28,11 @@ from gateway.router.providers import _translate
 _ANTHROPIC_VERSION = "2023-06-01"
 _MESSAGES_PATH = "/v1/messages"
 
+# F-007 (ADR-0010 §3): judge-only structured-output forcing via Anthropic tool-use.
+# Additive — does NOT touch complete()/stream() or the user-traffic request shape.
+_JUDGE_TOOL_NAME = "report_verdict"
+_JUDGE_MAX_TOKENS = 256
+
 
 def _classify_status(status: int) -> str:
     """Map an Anthropic HTTP status to a ProviderError kind (§2.2 / §6)."""
@@ -109,6 +114,26 @@ def _translate_response(
         raise
     except Exception:
         raise ProviderError(kind="parse") from None
+
+
+def _extract_tool_input(data: dict[str, Any], tool_name: str) -> dict[str, Any]:
+    """Return the input dict of the forced tool_use block, or raise ProviderError(parse).
+
+    Anthropic returns the forced verdict as a `tool_use` content block whose
+    `input` is the structured JSON.  A missing block (the model declined to call
+    the tool) is a structured-output failure → kind="parse" (the judge invoker maps
+    this to classifier_invocation_failed, not degraded).
+    """
+    for block in data.get("content", []) or []:
+        if (
+            isinstance(block, dict)
+            and block.get("type") == "tool_use"
+            and block.get("name") == tool_name
+        ):
+            inp = block.get("input")
+            if isinstance(inp, dict):
+                return inp
+    raise ProviderError(kind="parse")
 
 
 class AnthropicAdapter:
@@ -254,3 +279,62 @@ class AnthropicAdapter:
             chunk_id=chunk_id, model=model, created=created, finish_reason=finish_reason
         )
         yield _translate.DONE_LINE
+
+    async def classify_structured(
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        model: str,
+        ctx: RoutingContext,
+    ) -> tuple[dict[str, Any], int, int]:
+        """F-007 judge call: forced structured verdict via Anthropic tool-use (R6).
+
+        Additive judge-only path — does NOT modify complete()/stream(). Reuses the
+        config-pinned client (threat #9) and the RoutingContext budget. Returns
+        (verdict_dict, tokens_in, tokens_out). Raises ProviderError(kind="parse")
+        when no structured tool_use block is present (→ invocation_failed), or
+        kind="transient"/status on transport / HTTP failure (→ degraded).
+        """
+        payload: dict[str, Any] = {
+            "model": model,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+            "max_tokens": _JUDGE_MAX_TOKENS,
+            "tools": [
+                {
+                    "name": _JUDGE_TOOL_NAME,
+                    "description": "Report the injection-classification verdict.",
+                    "input_schema": schema,
+                }
+            ],
+            "tool_choice": {"type": "tool", "name": _JUDGE_TOOL_NAME},
+        }
+        try:
+            resp = await self._client.post(
+                _MESSAGES_PATH,
+                json=payload,
+                headers=self._headers(),
+                timeout=ctx.time_left(),
+            )
+        except (httpx.ConnectError, httpx.TimeoutException):
+            raise ProviderError(kind="transient") from None
+        except Exception:
+            raise ProviderError(kind="transient") from None
+
+        if resp.status_code != 200:
+            raise ProviderError(kind=_classify_status(resp.status_code), status=resp.status_code)
+
+        try:
+            data = resp.json()
+        except Exception:
+            raise ProviderError(kind="parse") from None
+
+        parsed = _extract_tool_input(data, _JUDGE_TOOL_NAME)
+        usage = data.get("usage", {}) or {}
+        return (
+            parsed,
+            int(usage.get("input_tokens", 0) or 0),
+            int(usage.get("output_tokens", 0) or 0),
+        )

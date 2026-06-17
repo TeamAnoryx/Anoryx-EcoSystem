@@ -64,6 +64,12 @@ class HookContext:
     phase: Literal["pre_request", "post_response"]
     _events_per_detector_cap: int = field(default=10)
     _event_budget: dict[str, int] = field(default_factory=dict)
+    # F-007 (ADR-0010 §2): optional judge wiring threaded by the gateway so the
+    # injection detector's LLM-as-judge step can route through the F-006 provider
+    # layer (R5). None when the classifier is disabled or in non-gateway/test paths
+    # → the detector falls back to regex (fail-safe, R9).
+    provider_registry: Any = None
+    gateway_settings: Any = None
 
     # -------------------------------------------------------------------------
     # Internal helpers
@@ -165,6 +171,8 @@ def build_hook_context(
     validated_messages: list[Any],
     phase: Literal["pre_request", "post_response"],
     events_per_detector_cap: int = 10,
+    provider_registry: Any = None,
+    gateway_settings: Any = None,
 ) -> HookContext:
     """Factory: build a HookContext from gateway request state.
 
@@ -192,4 +200,6 @@ def build_hook_context(
         original_user_content=original_user_content,
         phase=phase,
         _events_per_detector_cap=events_per_detector_cap,
+        provider_registry=provider_registry,
+        gateway_settings=gateway_settings,
     )

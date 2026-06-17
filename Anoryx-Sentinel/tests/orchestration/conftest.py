@@ -54,7 +54,6 @@ def orchestration_env(monkeypatch):
     monkeypatch.setenv("SECRET_REDACT_CHARACTER", "*")
     monkeypatch.setenv("ENTROPY_THRESHOLD", "4.5")
     monkeypatch.setenv("MIN_TOKEN_LENGTH_FOR_ENTROPY", "20")
-    monkeypatch.setenv("SHADOW_AI_EMISSION_ENABLED", "false")
     monkeypatch.setenv("EVENTS_PER_DETECTOR_CAP", "10")
     monkeypatch.setenv("STREAM_INSPECT_BUFFER_BYTES", "8192")
     monkeypatch.setenv("SENTINEL_ENV", "test")

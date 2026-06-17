@@ -1,24 +1,23 @@
-"""Shadow-AI event-emission primitive (F-005, ADR-0007 §13, threat #10).
+"""Shadow-AI event-emission primitives (F-005 seam, F-007 wired, ADR-0010 §5).
 
-HONEST SCOPE STATEMENT
------------------------
-F-005 does NOT detect shadow-AI traffic.  This module provides ONLY the event-
-emission primitive for a shadow_ai_detected event.  In F-005:
-  - There is no network egress monitoring.
-  - There is no DNS inspection.
-  - There is no traffic analysis to endpoints that bypass the gateway.
-  - The primitive is gated behind SHADOW_AI_EMISSION_ENABLED (default false).
+This module provides the emission primitives for the shadow-AI event variants.
+It does NOT itself detect traffic — DETECTION lives in the egress monitor
+(`gateway/middleware/egress_monitor.py`), which observes Sentinel's outbound
+httpx calls and calls `emit_shadow_ai_outbound_event` here on a disallowed-provider
+egress (F-007).
 
-When the flag is enabled, an out-of-band caller (NOT wired in F-005) can invoke
-emit_shadow_ai_event() with a host/path endpoint, a traffic volume, and a
-first_seen_at timestamp.  The function validates the endpoint format
-(ADR-0007 D7 — host/path only, no query/fragment/userinfo) and appends a
-contract-valid shadow_ai_detected event to the audit log.
+HONEST SCOPE STATEMENT (ADR-0010 §12.1)
+---------------------------------------
+F-007 detection covers egress through Sentinel's OWN httpx clients (OpenAI,
+Anthropic) to the well-known provider hosts. It does NOT cover Bedrock/aioboto3
+egress (deferred), custom proxy base_urls outside the host table, or traffic that
+bypasses Sentinel entirely (network-layer — out of scope). The monitor detects +
+audits; it does not block.
 
-Real shadow-AI detection (network egress monitoring) is deferred to F-007.
-Operators MUST NOT interpret this module's presence as evidence that shadow-AI
-traffic is being detected.  It is not.  F-005 delivers the event shape and the
-emission seam only.
+The F-005 `SHADOW_AI_EMISSION_ENABLED` opt-in gate has been REMOVED (F-007): the
+detection seam is wired and production-ready. Both emit functions validate the
+endpoint format (host/path only — no query/fragment/userinfo, D7) and append a
+contract-valid, hash-chained event via the privileged session.
 """
 
 from __future__ import annotations
@@ -65,11 +64,11 @@ async def emit_shadow_ai_event(
     traffic_volume: int,
     first_seen_at: str | None = None,
 ) -> bool:
-    """Emit a shadow_ai_detected event (gated on SHADOW_AI_EMISSION_ENABLED).
+    """Emit a shadow_ai_detected event (the F-005 locked variant).
 
-    This is an out-of-band primitive: it does NOT detect anything; it only
-    formats and appends the event.  F-005 contains no detection logic for
-    shadow-AI traffic (see module docstring).
+    This is an emission primitive: it does NOT detect anything; it only formats
+    and appends the event.  Detection lives in the egress monitor (see module
+    docstring) which calls emit_shadow_ai_outbound_event below.
 
     Parameters
     ----------
@@ -83,18 +82,8 @@ async def emit_shadow_ai_event(
     first_seen_at:
         RFC3339 UTC timestamp of first observation.  Defaults to now.
 
-    Returns True if the event was emitted, False if gated off or invalid.
+    Returns True if the event was emitted, False if the endpoint is invalid.
     """
-    from orchestration.config import get_orchestration_settings
-
-    settings = get_orchestration_settings()
-    if not settings.shadow_ai_emission_enabled:
-        log.debug(
-            "orchestration.shadow_ai.emission_gated_off",
-            request_id=getattr(context, "request_id", "unknown"),
-        )
-        return False
-
     # Strip unsafe URL components before validation.
     safe_endpoint = _strip_unsafe_url_components(detected_endpoint)
 
@@ -129,3 +118,51 @@ async def emit_shadow_ai_event(
 
     emitted = await context.emit(event, detector_slug=detector_slug)
     return emitted
+
+
+async def emit_shadow_ai_outbound_event(
+    *,
+    egress: Any,
+    provider: str,
+    endpoint: str,
+    traffic_volume: int = 1,
+    first_seen_at: str | None = None,
+) -> bool:
+    """Emit a shadow_ai_detected_outbound event (F-007 egress detection, ADR-0010 §5).
+
+    Called by the egress monitor when an outbound httpx call targets a provider
+    that is NOT in the request's tenant allow-list. Builds a HookContext from the
+    EgressContext so the event is stamped, hash-chained, and appended on the
+    privileged session exactly like every other inspection event (R12). The same
+    endpoint sanitization as emit_shadow_ai_event applies (host/path only, D7).
+
+    Returns True if emitted, False if the endpoint is invalid.
+    """
+    from orchestration.context import HookContext
+
+    safe_endpoint = _strip_unsafe_url_components(endpoint)
+    if not safe_endpoint or not _ENDPOINT_RE.match(safe_endpoint):
+        log.warning("orchestration.shadow_ai.invalid_outbound_endpoint", provider=provider)
+        return False
+    safe_endpoint = safe_endpoint[:256]
+    safe_volume = max(0, min(int(traffic_volume), 1_000_000_000))
+    if first_seen_at is None:
+        first_seen_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+    event = {
+        "event_type": "shadow_ai_detected_outbound",
+        "action_taken": "logged",
+        "detected_endpoint": safe_endpoint,
+        "traffic_volume": safe_volume,
+        "first_seen_at": first_seen_at,
+        # The disallowed provider the egress targeted (reuses the selected_provider column).
+        "selected_provider": provider,
+    }
+
+    ctx = HookContext(
+        tenant_context=egress.tenant_context,
+        request_id=egress.request_id,
+        original_user_content="",
+        phase="post_response",
+    )
+    return await ctx.emit(event, detector_slug="defense")

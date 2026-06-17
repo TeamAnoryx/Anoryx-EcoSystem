@@ -21,6 +21,7 @@ import httpx
 import structlog
 
 from gateway.config import GatewaySettings
+from gateway.middleware.egress_monitor import egress_request_hook
 from gateway.router.providers.anthropic_provider import AnthropicAdapter
 from gateway.router.providers.bedrock_provider import BedrockAdapter
 from gateway.router.providers.openai_provider import OpenAiAdapter
@@ -63,6 +64,8 @@ class ProviderRegistry:
                 base_url=settings.anthropic_base_url,  # config-pinned (threat #9)
                 timeout=timeout,
                 follow_redirects=False,
+                # F-007 (ADR-0010 §5): shadow-AI egress hook (never blocks/raises).
+                event_hooks={"request": [egress_request_hook]},
             )
             self._adapters["anthropic"] = AnthropicAdapter(
                 client=self._anthropic_client,

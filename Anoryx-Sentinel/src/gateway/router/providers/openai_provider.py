@@ -30,13 +30,24 @@ numeric status (no PII) is consulted.
 
 from __future__ import annotations
 
-from typing import AsyncIterator
+import json
+from typing import Any, AsyncIterator
+
+import httpx
 
 from gateway.exceptions import GatewayError
 from gateway.models import ChatCompletionResponse, CreateChatCompletionRequest
 from gateway.router.context import RoutingContext
 from gateway.router.exceptions import ProviderError
-from gateway.upstream.openai_proxy import _proxy_stream_generator, proxy_non_stream
+from gateway.upstream.openai_proxy import (
+    _proxy_stream_generator,
+    get_http_client,
+    proxy_non_stream,
+)
+
+# F-007 (ADR-0010 §3): judge-only structured-output forcing via response_format.
+# Additive — does NOT touch complete()/stream() or the user-traffic request shape.
+_JUDGE_MAX_TOKENS = 256
 
 
 def _classify_gateway_error(exc: GatewayError) -> ProviderError:
@@ -98,3 +109,70 @@ class OpenAiAdapter:
             overall_timeout=ctx.time_left(),
         ):
             yield line
+
+    async def classify_structured(
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        model: str,
+        ctx: RoutingContext,
+    ) -> tuple[dict[str, Any], int, int]:
+        """F-007 judge call: forced JSON via response_format=json_schema (R6).
+
+        Additive judge-only path — does NOT use proxy_non_stream (which strips
+        response_format via the closed allow-list). Reuses the shared, config-pinned
+        client (init_http_client) so the egress monitor and timeouts still apply.
+        Returns (verdict_dict, tokens_in, tokens_out). Raises
+        ProviderError(kind="parse") when the response is not valid JSON
+        (→ invocation_failed), kind="transient" on transport / non-200 (→ degraded).
+        """
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": _JUDGE_MAX_TOKENS,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "verdict", "schema": schema, "strict": True},
+            },
+        }
+        # Reuses the shared upstream client + base_url exactly as F-006's OpenAI
+        # user-traffic path (proxy_non_stream with upstream_api_key=None, Phase 0): the
+        # judge calls OpenAI identically to how Sentinel calls it for ALL traffic, so in
+        # any deployment where OpenAI user-traffic is authenticated the judge is too.
+        # Upstream key vaulting is the F-006 Phase-0 deferral — not F-007's to add. The
+        # Anthropic preset is independently authenticated (x-api-key on its adapter).
+        client = get_http_client()
+        try:
+            resp = await client.post(
+                "/v1/chat/completions",
+                json=payload,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                timeout=ctx.time_left(),
+            )
+        except (httpx.ConnectError, httpx.TimeoutException):
+            raise ProviderError(kind="transient") from None
+        except Exception:
+            raise ProviderError(kind="transient") from None
+
+        if resp.status_code != 200:
+            # Judge fail-safe: any non-200 is treated as transient → degraded → regex.
+            raise ProviderError(kind="transient", status=resp.status_code)
+
+        try:
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+        except Exception:
+            raise ProviderError(kind="parse") from None
+
+        usage = data.get("usage", {}) or {}
+        return (
+            parsed,
+            int(usage.get("prompt_tokens", 0) or 0),
+            int(usage.get("completion_tokens", 0) or 0),
+        )
