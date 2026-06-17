@@ -56,3 +56,9 @@ Anoryx-Sentinel/.claude-fleet/policy-limits.json
 Anoryx-Sentinel/.claude-fleet/projects/
 Anoryx-Sentinel/.claude-fleet/remote-settings.json
 Anoryx-Sentinel/orchestrator/scorecard.jsonl.preisolation
+
+# Coverage artifacts (pytest runtime outputs)
+.coverage
+coverage.json
+*.coverage
+htmlcov/
