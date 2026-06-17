@@ -19,7 +19,14 @@
     { "$ref": "#/$defs/PolicyIntakeRejectedReplayEvent" },
     { "$ref": "#/$defs/PolicyIntakeRejectedSchemaEvent" },
     { "$ref": "#/$defs/PolicyDecisionAllowEvent" },
-    { "$ref": "#/$defs/PolicyDecisionDenyEvent" }
+    { "$ref": "#/$defs/PolicyDecisionDenyEvent" },
+    { "$ref": "#/$defs/PromptInjectionDetectedMlEvent" },
+    { "$ref": "#/$defs/ClassifierUnconfiguredEvent" },
+    { "$ref": "#/$defs/ClassifierDegradedEvent" },
+    { "$ref": "#/$defs/ClassifierInvocationFailedEvent" },
+    { "$ref": "#/$defs/ShadowAiDetectedOutboundEvent" },
+    { "$ref": "#/$defs/RecursiveInjectionAttemptEvent" },
+    { "$ref": "#/$defs/JudgeBillingEvent" }
   ],
 
   "$comment": "Dispatch is normative via oneOf + the event_type const on each variant under JSON Schema Draft 2020-12. The 'discriminator' keyword below is a NON-NORMATIVE hint for OpenAPI tooling ONLY; it is not a 2020-12 keyword and has NO validation effect under this dialect. Do not rely on it for correctness.",
@@ -596,6 +603,377 @@
         "policy_id": { "type": "string", "format": "uuid", "maxLength": 64, "description": "Identifier of the policy that denied the request; joins to contracts/policy.schema.json policy_id." },
         "requested_model": { "type": "string", "maxLength": 256, "description": "The model the client requested (echo). Never a secret." },
         "violation_type": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$", "maxLength": 128, "description": "Reason slug (e.g. 'model_denied', 'model_not_in_allowlist', 'budget_tokens_exceeded', 'budget_cost_exceeded')." }
+      }
+    },
+    "PromptInjectionDetectedMlEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-007 (ADR-0010) when the LLM-as-judge injection classifier produced a usable verdict for a prompt. final_score is the fused score = max(classifier_score regex component, judge_score). agent_id is the emitting component slug 'gateway-core'; judge_model is the judge's model name, NEVER a credential. No raw prompt text is carried: rule_matched is a stable rule id and the offending input is never emitted.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "classifier_score",
+        "judge_score",
+        "judge_confidence",
+        "judge_model",
+        "final_score",
+        "audit_mode",
+        "action_taken"
+      ],
+      "properties": {
+        "event_type": { "const": "prompt_injection_detected_ml" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "classifier_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Normalized injection-likelihood score in [0,1] from the regex/heuristic component."
+        },
+        "judge_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Normalized injection-likelihood score in [0,1] from the LLM judge verdict."
+        },
+        "judge_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Judge-reported confidence in its verdict, normalized to [0,1]."
+        },
+        "judge_model": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Judge model name (e.g. 'claude-haiku-4-5'). Never a credential."
+        },
+        "final_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Fused decision score in [0,1] = max(classifier_score, judge_score)."
+        },
+        "audit_mode": {
+          "type": "string",
+          "enum": ["full", "redacted"],
+          "description": "Audit-evidence mode in effect when this verdict was recorded."
+        },
+        "rule_matched": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "OPTIONAL stable identifier of the detection rule that contributed. Never the offending input text."
+        },
+        "action_taken": {
+          "type": "string",
+          "enum": ["blocked", "logged"],
+          "description": "Mitigation the gateway applied."
+        }
+      }
+    },
+    "ClassifierUnconfiguredEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-007 (ADR-0010) when the LLM-as-judge classifier is not configured (e.g. no preset/model wired) and therefore could not be invoked for a prompt. Detect-and-audit only: the gateway records the gap; it is NOT an injection verdict. agent_id is 'gateway-core'. No raw prompt text or credential is carried.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "action_taken"
+      ],
+      "properties": {
+        "event_type": { "const": "classifier_unconfigured" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "classifier_reason": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$",
+          "description": "OPTIONAL lowercase slug for why the classifier was unconfigured (e.g. 'no_preset'). Charset restricted to forbid control characters and whitespace (log-injection defense)."
+        },
+        "action_taken": {
+          "type": "string",
+          "enum": ["logged"],
+          "description": "Disposition: 'logged' (detect-and-audit only)."
+        }
+      }
+    },
+    "ClassifierDegradedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-007 (ADR-0010) when the LLM-as-judge classifier ran in a degraded mode (e.g. partial/timed-out verdict that could not be fused into a usable score). Detect-and-audit only: it is NOT an injection verdict. agent_id is 'gateway-core'. No raw prompt text or credential is carried.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "action_taken"
+      ],
+      "properties": {
+        "event_type": { "const": "classifier_degraded" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "classifier_reason": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$",
+          "description": "OPTIONAL lowercase slug for why the classifier was degraded (e.g. 'partial_verdict'). Charset restricted to forbid control characters and whitespace (log-injection defense)."
+        },
+        "action_taken": {
+          "type": "string",
+          "enum": ["logged"],
+          "description": "Disposition: 'logged' (detect-and-audit only)."
+        }
+      }
+    },
+    "ClassifierInvocationFailedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-007 (ADR-0010) when invoking the LLM-as-judge classifier failed outright (e.g. transport error, upstream error, no response). Detect-and-audit only: it is NOT an injection verdict. agent_id is 'gateway-core'. No raw prompt text or credential is carried.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "action_taken"
+      ],
+      "properties": {
+        "event_type": { "const": "classifier_invocation_failed" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "classifier_reason": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$",
+          "description": "OPTIONAL lowercase slug for why invocation failed (e.g. 'upstream_error', 'timeout'). Charset restricted to forbid control characters and whitespace (log-injection defense)."
+        },
+        "action_taken": {
+          "type": "string",
+          "enum": ["logged"],
+          "description": "Disposition: 'logged' (detect-and-audit only)."
+        }
+      }
+    },
+    "ShadowAiDetectedOutboundEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by the F-007 (ADR-0010) egress monitor when outbound traffic targets a disallowed AI provider endpoint (shadow-AI egress). Detect-and-audit only: the monitor does NOT block. agent_id is 'gateway-core'; selected_provider is the disallowed provider the egress targeted, never a credential.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "detected_endpoint",
+        "traffic_volume",
+        "first_seen_at",
+        "selected_provider",
+        "action_taken"
+      ],
+      "properties": {
+        "event_type": { "const": "shadow_ai_detected_outbound" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "detected_endpoint": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^[^?#@\\s]+$",
+          "description": "PII-SAFETY: host (and optionally path) of the detected shadow AI endpoint ONLY. Emitters MUST NOT log full URLs: query strings and fragments may carry API keys, tokens, or PII. Strip query params, fragments, and userinfo before emission. Structurally enforced: the value MUST NOT contain '?', '#', '@', or whitespace, so query strings, fragments, and userinfo cannot ride along. Bounded to 256 chars to cap inspection cost."
+        },
+        "traffic_volume": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000,
+          "description": "Observed request count to the shadow endpoint over the detection window."
+        },
+        "first_seen_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64,
+          "description": "When traffic to this endpoint was first observed (RFC 3339 / ISO 8601 date-time, UTC)."
+        },
+        "selected_provider": {
+          "type": "string",
+          "enum": ["openai", "anthropic", "bedrock"],
+          "description": "The disallowed upstream provider the egress targeted. Never a model name; never a credential."
+        },
+        "action_taken": {
+          "type": "string",
+          "enum": ["logged"],
+          "description": "Disposition: 'logged' (detect-and-audit only; the monitor does not block)."
+        }
+      }
+    },
+    "RecursiveInjectionAttemptEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-007 (ADR-0010) when a prompt is detected to target the classifier surface itself (a recursive/meta injection aimed at the judge). agent_id is 'gateway-core'. No raw prompt text is carried: rule_matched is a stable rule id and the offending input is never emitted.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "classifier_score",
+        "action_taken"
+      ],
+      "properties": {
+        "event_type": { "const": "recursive_injection_attempt" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "classifier_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Normalized injection-likelihood score in [0,1]."
+        },
+        "rule_matched": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "OPTIONAL stable identifier of the detection rule that matched. Never the offending input text."
+        },
+        "action_taken": {
+          "type": "string",
+          "enum": ["blocked", "logged"],
+          "description": "Mitigation the gateway applied."
+        }
+      }
+    },
+    "JudgeBillingEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-007 (ADR-0010) as a cost-audit trail of a single LLM-as-judge invocation. cost_estimate_cents is a CLIENT-SIDE COST ESTIMATE, not an authoritative bill. agent_id is 'gateway-core'; selected_provider/judge_model/judge_preset are the judge provider and model, never credentials. No raw prompt text is carried.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "judge_preset",
+        "judge_model",
+        "selected_provider",
+        "tokens_in",
+        "tokens_out",
+        "cost_estimate_cents",
+        "latency_ms",
+        "judge_outcome",
+        "action_taken"
+      ],
+      "properties": {
+        "event_type": { "const": "judge_billing_event" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "judge_preset": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Judge preset identifier (e.g. 'anthropic:claude-haiku-4-5'). Never a credential."
+        },
+        "judge_model": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Judge model name. Never a credential."
+        },
+        "selected_provider": {
+          "type": "string",
+          "enum": ["openai", "anthropic", "bedrock"],
+          "description": "The judge upstream provider. Never a model name; never a credential."
+        },
+        "tokens_in": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000000,
+          "description": "Judge prompt/input token count."
+        },
+        "tokens_out": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000000,
+          "description": "Judge completion/output token count."
+        },
+        "cost_estimate_cents": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100000000,
+          "description": "Client-side cost estimate in cents for this judge invocation. Estimate only; not an authoritative bill."
+        },
+        "latency_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600000,
+          "description": "Judge invocation latency in milliseconds."
+        },
+        "judge_outcome": {
+          "type": "string",
+          "enum": ["verdict", "degraded", "failed", "policy_denied"],
+          "description": "Outcome of the judge invocation being billed."
+        },
+        "action_taken": {
+          "type": "string",
+          "enum": ["logged"],
+          "description": "Disposition: 'logged' (cost-audit trail)."
+        }
       }
     }
   }

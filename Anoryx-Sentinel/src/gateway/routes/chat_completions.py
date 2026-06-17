@@ -52,7 +52,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 
 from gateway.config import get_settings
-from gateway.context import TenantContext
+from gateway.context import TenantContext, current_egress_context
 from gateway.exceptions import ERROR_TABLE, GatewayError
 from gateway.middleware.audit import emit_terminal_record
 from gateway.middleware.rate_limit import check_rate_limit, stream_slot
@@ -236,7 +236,21 @@ async def create_chat_completion(
                 raise GatewayError("internal_error") from None
 
         # --- Step 5: ID cross-check + tenant context resolution ---
+        # F-007: clear any prior egress binding BEFORE tenant resolution so a request
+        # that fails before bind_egress_context (e.g. 401/403/rate-limit) can never
+        # inherit a stale binding (defensive — the contextvar is task-local anyway).
+        current_egress_context.set(None)
         tenant_context = resolve_tenant_context(request)
+
+        # F-007 (ADR-0010 §5): bind the per-request egress context so the outbound
+        # httpx hook can flag disallowed-provider egress. Best-effort — the monitor
+        # is defense-in-depth and must NEVER block the request on a bind failure.
+        try:
+            from gateway.middleware.egress_monitor import bind_egress_context
+
+            await bind_egress_context(tenant_context, request_id)
+        except Exception:
+            log.error("egress_context_bind_failed", request_id=request_id)
 
         # --- Step 6: Rate limit (keyed on resolved IDs, never IP) ---
         is_stream_request = _peek_stream_flag(request)
@@ -272,6 +286,11 @@ async def create_chat_completion(
         ):
             raise GatewayError("invalid_request")
 
+        # F-007: resolve the provider registry up-front so the injection detector's
+        # LLM-as-judge step can route through the F-006 provider layer (R5). Resolved
+        # once here and reused by the Step 8 router dispatch below.
+        provider_registry = _get_provider_registry(request, settings)
+
         # --- Step 7b: F-005 PreRequestHooks (after body validation, before proxy) ---
         # Build HookContext and run the pre-request chain (ADR-0007 D6 integration).
         hook_context = None
@@ -289,6 +308,8 @@ async def create_chat_completion(
                 validated_messages=validated.messages,
                 phase="pre_request",
                 events_per_detector_cap=orch_settings.events_per_detector_cap,
+                provider_registry=provider_registry,  # F-007: judge routes via F-006
+                gateway_settings=settings,
             )
 
             # Snapshot of user content for forwarding (may be mutated by PII masking).
@@ -314,7 +335,8 @@ async def create_chat_completion(
         # keeps the unchanged OpenAI surface. Behavior is identical to today when
         # the tenant resolves to OpenAI with no fallback.
         upstream_api_key: str | None = None  # Phase 0: no upstream key vaulting yet
-        provider_registry = _get_provider_registry(request, settings)
+        # provider_registry was resolved before the pre-request hooks (F-007) and is
+        # reused here for the Step 8 router dispatch.
 
         if validated.stream:
             # Streaming path (ADR-0006 Decision 7).

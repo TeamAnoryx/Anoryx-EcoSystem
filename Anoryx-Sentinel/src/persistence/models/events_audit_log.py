@@ -55,6 +55,14 @@ VALID_EVENT_TYPES = frozenset(
         "policy_intake_rejected_schema",
         "policy_decision_allow",
         "policy_decision_deny",
+        # F-007 (ADR-0010 §8) — ML classifier + shadow-AI egress variants.
+        "prompt_injection_detected_ml",
+        "classifier_unconfigured",
+        "classifier_degraded",
+        "classifier_invocation_failed",
+        "shadow_ai_detected_outbound",
+        "recursive_injection_attempt",
+        "judge_billing_event",
     }
 )
 
@@ -80,6 +88,15 @@ ACTION_TAKEN_BY_EVENT_TYPE: dict[str, frozenset[str]] = {
     "policy_intake_rejected_schema": frozenset({"blocked"}),
     "policy_decision_allow": frozenset({"logged"}),
     "policy_decision_deny": frozenset({"blocked"}),
+    # F-007 (ADR-0010 §8): reuse the existing 'blocked'/'logged' action values
+    # only, so ck_eal_action_taken is UNCHANGED.
+    "prompt_injection_detected_ml": frozenset({"blocked", "logged"}),
+    "classifier_unconfigured": frozenset({"logged"}),
+    "classifier_degraded": frozenset({"logged"}),
+    "classifier_invocation_failed": frozenset({"logged"}),
+    "shadow_ai_detected_outbound": frozenset({"logged"}),
+    "recursive_injection_attempt": frozenset({"blocked", "logged"}),
+    "judge_billing_event": frozenset({"logged"}),
 }
 
 
@@ -163,6 +180,20 @@ class EventsAuditLog(Base):
     attempt_index: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     requested_model: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
+    # F-007 (ADR-0010 §8): ML classifier + judge-billing + classifier-status
+    # variant columns. judge_provider reuses selected_provider; prompt/completion
+    # tokens reuse tokens_in/tokens_out; cost/latency reuse the usage columns.
+    judge_score: Mapped[float | None] = mapped_column(Numeric(precision=4, scale=3), nullable=True)
+    judge_confidence: Mapped[float | None] = mapped_column(
+        Numeric(precision=4, scale=3), nullable=True
+    )
+    final_score: Mapped[float | None] = mapped_column(Numeric(precision=4, scale=3), nullable=True)
+    judge_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    judge_preset: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    judge_outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    audit_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    classifier_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     # -----------------------------------------------------------------------
     # Hash-chain columns
     # -----------------------------------------------------------------------
@@ -184,7 +215,11 @@ class EventsAuditLog(Base):
             # F-008 (ADR-0009 §7) — kept in sync with migration 0008.
             "'policy_intake_accepted','policy_intake_rejected_signature',"
             "'policy_intake_rejected_scope_mismatch','policy_intake_rejected_replay',"
-            "'policy_intake_rejected_schema','policy_decision_allow','policy_decision_deny')",
+            "'policy_intake_rejected_schema','policy_decision_allow','policy_decision_deny',"
+            # F-007 (ADR-0010 §8) — kept in sync with migration 0010.
+            "'prompt_injection_detected_ml','classifier_unconfigured','classifier_degraded',"
+            "'classifier_invocation_failed','shadow_ai_detected_outbound',"
+            "'recursive_injection_attempt','judge_billing_event')",
             name="ck_eal_event_type",
         ),
         CheckConstraint(
@@ -249,6 +284,28 @@ class EventsAuditLog(Base):
         CheckConstraint(
             "attempt_index IS NULL OR (attempt_index >= 0 AND attempt_index <= 16)",
             name="ck_eal_attempt_index",
+        ),
+        # F-007 (ADR-0010 §8) — ML classifier variant bounds (kept in sync with 0010).
+        CheckConstraint(
+            "judge_score IS NULL OR (judge_score >= 0 AND judge_score <= 1)",
+            name="ck_eal_judge_score",
+        ),
+        CheckConstraint(
+            "judge_confidence IS NULL OR (judge_confidence >= 0 AND judge_confidence <= 1)",
+            name="ck_eal_judge_confidence",
+        ),
+        CheckConstraint(
+            "final_score IS NULL OR (final_score >= 0 AND final_score <= 1)",
+            name="ck_eal_final_score",
+        ),
+        CheckConstraint(
+            "audit_mode IS NULL OR audit_mode IN ('full','redacted')",
+            name="ck_eal_audit_mode",
+        ),
+        CheckConstraint(
+            "judge_outcome IS NULL OR "
+            "judge_outcome IN ('verdict','degraded','failed','policy_denied')",
+            name="ck_eal_judge_outcome",
         ),
         # row_hash and prev_hash must be 64-char hex strings.
         CheckConstraint("length(row_hash) = 64", name="ck_eal_row_hash_len"),

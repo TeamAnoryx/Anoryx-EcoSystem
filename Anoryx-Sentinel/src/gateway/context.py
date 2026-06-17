@@ -10,6 +10,7 @@ cross-checked but never become the source of truth.
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass
 
 
@@ -31,3 +32,28 @@ class TenantContext:
     agent_id: str
     virtual_key_id: str
     # Model is not part of context; it comes from the request body.
+
+
+@dataclass(frozen=True, slots=True)
+class EgressContext:
+    """Per-request egress-monitoring binding (F-007, ADR-0010 §5).
+
+    Carries the tenant identity needed to attribute a shadow_ai_detected_outbound
+    audit event PLUS the tenant's allowed providers — Affu's "current_allowed_providers"
+    binding, extended with identity so the outbound httpx hook can emit a properly
+    attributed, RLS-correct, hash-chained event. Bound by the chat-completions handler
+    once the tenant context + routing policy are resolved.
+    """
+
+    tenant_context: TenantContext
+    request_id: str
+    allowed_providers: tuple[str, ...]
+
+
+# Set by the chat-completions handler (request task) so the outbound httpx event
+# hook can read the current tenant's allowed providers + identity. Task-local:
+# a fresh request task sees the default (None); Starlette iterates the streaming
+# response body in the same request task, so the binding covers both paths.
+current_egress_context: ContextVar[EgressContext | None] = ContextVar(
+    "current_egress_context", default=None
+)

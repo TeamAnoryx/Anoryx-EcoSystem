@@ -63,6 +63,22 @@ class OrchestrationSettings(BaseSettings):
     injection_score_threshold: float = 0.75
 
     # -------------------------------------------------------------------------
+    # F-007 LLM-as-judge classifier (ADR-0010 §2-§4)
+    # -------------------------------------------------------------------------
+
+    #: Master toggle for the LLM-as-judge step. Default OFF so the F-005 regex-only
+    #: behavior is byte-identical until an operator enables it (R4). Per-tenant
+    #: classifier_model_id gates whether a configured judge actually runs.
+    classifier_enabled: bool = False
+
+    #: Hot-path ceiling (seconds) for a single judge call (R: F-006 latency budget).
+    #: The judge RoutingContext budget is min(this, the request's remaining budget).
+    judge_timeout_seconds: float = 5.0
+
+    #: Pre-filter (R7): skip the judge when regex_score >= this (obvious attack).
+    judge_skip_score: float = 0.9
+
+    # -------------------------------------------------------------------------
     # Secret detection (ADR-0007 §19)
     # -------------------------------------------------------------------------
 
@@ -81,12 +97,11 @@ class OrchestrationSettings(BaseSettings):
     min_token_length_for_entropy: int = 20
 
     # -------------------------------------------------------------------------
-    # Shadow-AI emission (ADR-0007 §13, §19)
+    # Shadow-AI emission (ADR-0010 §5)
     # -------------------------------------------------------------------------
-
-    #: Gates the shadow-AI event-emission primitive.  Default false: F-005 ships
-    #: only the emission seam.  Real detection is deferred to F-007.
-    shadow_ai_emission_enabled: bool = False
+    # NOTE: the F-005 `shadow_ai_emission_enabled` opt-in gate was REMOVED in F-007.
+    # Detection is wired via the egress monitor (gateway/middleware/egress_monitor.py)
+    # and is production-ready — no opt-in flag.
 
     # -------------------------------------------------------------------------
     # Event / stream limits (ADR-0007 §19, D4, D2)
