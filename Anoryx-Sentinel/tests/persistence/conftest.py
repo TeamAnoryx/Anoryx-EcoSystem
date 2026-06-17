@@ -97,6 +97,119 @@ _SENTINEL_ROOT = Path(__file__).parent.parent.parent
 _ENV_FILE = str(_SENTINEL_ROOT.parent / ".env")
 
 
+async def _provision_sentinel_app_password(app_url: str, db_url: str) -> None:
+    """Provision the sentinel_app role's password from APP_DATABASE_URL (idempotent).
+
+    Extracts the plaintext password from ``app_url``, computes a SCRAM-SHA-256
+    verifier client-side, applies it to the sentinel_app role via ALTER ROLE over
+    the privileged ``db_url`` connection, then self-verifies by logging in as
+    sentinel_app with that plaintext. Idempotent and cheap (~50ms ALTER ROLE):
+    a fresh salt each call yields a different-but-always-valid verifier, so
+    repeated invocations are safe.
+
+    After `alembic upgrade head` the sentinel_app role always exists (migration
+    0006) and the privileged admin connection can always ALTER ROLE, so any
+    exception here is a genuine harness defect and MUST stop the session
+    (pytest.fail) rather than let tests run against a broken auth state. The
+    plaintext password value is never included in any failure message.
+
+    f-003b-harness-fix: loud failure on every provisioning error (no
+    warnings.warn swallow). Extracted to module scope from ensure_schema_at_head
+    so it can also run per-test — test_migration_downgrade_and_reapply and
+    test_incremental_downgrade drop and recreate sentinel_app (passwordless)
+    mid-session. See ensure_schema_at_head and _provision_app_role_for_each_test.
+    """
+
+    def _extract_password(url: str) -> str | None:
+        m = re.match(r"postgresql(?:\+asyncpg)?://[^:]+:([^@]+)@", url)
+        return m.group(1) if m else None
+
+    app_password = _extract_password(app_url)
+    if not app_password:
+        # f-003b-harness-fix: do NOT silently skip when the password cannot be
+        # extracted. The caller gated on SENTINEL_PROVISION_APP_ROLE with both
+        # URLs present, so it expects provisioning — a missing password in
+        # APP_DATABASE_URL is a setup error, not a reason to leave sentinel_app
+        # passwordless and fail with a cryptic SCRAM error later.
+        pytest.fail(
+            "SENTINEL_PROVISION_APP_ROLE is set but no password could be "
+            "extracted from APP_DATABASE_URL. Provisioning requires a password "
+            "in the URL (postgresql://sentinel_app:<password>@host:port/db)."
+        )
+
+    try:
+        import asyncpg
+
+        m = re.match(
+            r"postgresql(?:\+asyncpg)?://([^:]+):([^@]+)@([^:]+):(\d+)/(.+)",
+            db_url,
+        )
+        if m:
+            conn = await asyncpg.connect(
+                user=m.group(1),
+                password=m.group(2),
+                host=m.group(3),
+                port=int(m.group(4)),
+                database=m.group(5),
+            )
+            # PostgreSQL DDL (ALTER ROLE … PASSWORD) does not accept
+            # protocol-level bind parameters — the server refuses $1 for all
+            # DDL.  To avoid putting the plaintext credential into any SQL
+            # string literal (and thus out of pg_stat_activity / pg_log), we
+            # compute the SCRAM-SHA-256 verifier client-side in Python.  Only
+            # the opaque verifier string — never the plaintext password — is
+            # interpolated into the SQL statement.  PostgreSQL accepts
+            # pre-computed SCRAM verifiers in ALTER ROLE … PASSWORD.
+            salt = os.urandom(16)
+            iters = 4096
+            salted_pw = hashlib.pbkdf2_hmac(
+                "sha256",
+                app_password.encode("utf-8"),
+                salt,
+                iters,
+            )
+            client_key = hmac.new(salted_pw, b"Client Key", hashlib.sha256).digest()
+            stored_key = hashlib.sha256(client_key).digest()
+            server_key = hmac.new(salted_pw, b"Server Key", hashlib.sha256).digest()
+            verifier = (
+                f"SCRAM-SHA-256${iters}"
+                f":{base64.b64encode(salt).decode()}"
+                f"${base64.b64encode(stored_key).decode()}"
+                f":{base64.b64encode(server_key).decode()}"
+            )
+            # Only the verifier (opaque hash) is in the SQL — the plaintext
+            # app_password is never a SQL literal.
+            await conn.execute(f"ALTER ROLE sentinel_app WITH PASSWORD '{verifier}'")
+            await conn.close()
+
+            # Self-check (loud guarantee, f-003b-harness-fix): prove that
+            # sentinel_app actually authenticates with the plaintext from
+            # APP_DATABASE_URL now that the verifier has been applied. The
+            # original defect left sentinel_app passwordless while the failure
+            # was swallowed, surfacing only as a cryptic SCRAM auth error in
+            # unrelated tests. Verifying the live login here converts that
+            # entire silent class into an immediate, legible failure. A login
+            # attempt is read-only — it mutates no database state.
+            verify_conn = await asyncpg.connect(
+                user="sentinel_app",
+                password=app_password,
+                host=m.group(3),
+                port=int(m.group(4)),
+                database=m.group(5),
+            )
+            await verify_conn.close()
+    except Exception as e:
+        # LOUD failure (f-003b-harness-fix). The previous handler swallowed
+        # every provisioning error with warnings.warn, which hid an empty/stale
+        # sentinel_app verifier and surfaced only as a cryptic SCRAM auth error
+        # in unrelated tests. After `alembic upgrade head` the sentinel_app role
+        # always exists (migration 0006) and the privileged admin connection can
+        # always ALTER ROLE, so any exception here is a genuine harness defect
+        # and MUST stop the session rather than let tests run against a broken
+        # auth state. The plaintext password value is never included.
+        pytest.fail(f"sentinel_app password provisioning failed: {e}")
+
+
 @pytest.fixture(scope="session", autouse=True)
 def ensure_schema_at_head() -> None:
     """Autouse session fixture: run alembic upgrade head before any tests.
@@ -130,132 +243,46 @@ def ensure_schema_at_head() -> None:
     if result.returncode != 0:
         pytest.fail(f"ensure_schema_at_head: alembic upgrade head failed:\n{result.stderr}")
 
-    # Out-of-band password provisioning for local dev (mirrors Vault in production).
-    # GATED BEHIND opt-in env var SENTINEL_PROVISION_APP_ROLE (MED-2, ADR-0005).
-    # Only provision the sentinel_app password when SENTINEL_PROVISION_APP_ROLE is
-    # truthy ("1", "true", "yes", etc.).  Default: skip provisioning silently.
-    # In CI, the ephemeral DB uses a fresh role and provisioning is needed —
-    # set SENTINEL_PROVISION_APP_ROLE=1 in the CI environment / workflow.
-    # Local dev: keep SENTINEL_PROVISION_APP_ROLE=1 in the root .env; provisioning
-    # then runs on every persistence session (idempotent — same plaintext, fresh
-    # salt, always-valid verifier) and self-heals a passwordless role.
-    # See tests/README.md for the full setup guide.
-    #
-    # f-003b-harness-fix: the gate is read from the SAME merged `env` dict that
-    # supplies app_url/db_url below (built from os.environ + dotenv_values(root
-    # .env) above). The previous code read this flag from os.environ directly,
-    # which — because load_dotenv(override=False) does not overwrite an existing/
-    # absent shell value — could evaluate falsy while the .env-sourced data was
-    # present, silently skipping provisioning (notably under Windows PowerShell,
-    # where bash-style `VAR=1 pytest` does not export the var). Reading from `env`
-    # makes the gate consistent with the data and honors the root .env regardless
-    # of shell.
+
+@pytest.fixture(autouse=True)
+def _provision_app_role_for_each_test() -> None:
+    """Re-provision sentinel_app's password before every persistence test.
+
+    test_migration_downgrade_and_reapply and test_incremental_downgrade drop
+    sentinel_app and recreate it without a password mid-session (the migration
+    creates the role passwordless). The session-scoped ensure_schema_at_head ran
+    provisioning only once at session start, so any test ordered alphabetically
+    after test_migrations.py that connects as sentinel_app (e.g. F-006's
+    test_tenant_routing_policy_isolation.py) then failed on SCRAM auth.
+
+    Function-scope provisioning is idempotent and cheap (~50ms ALTER ROLE) and
+    honors the same SENTINEL_PROVISION_APP_ROLE gate, read from the merged env
+    (os.environ + root .env) exactly as ensure_schema_at_head does — so the gate
+    is consistent with the data regardless of shell (Windows PowerShell does not
+    export bash-style `VAR=1 pytest`).
+
+    f-003b-harness-fix v2 — catches mid-session sentinel_app drops that v1
+    (session-scope-only provisioning) did not.
+    """
+    import asyncio
+
+    from dotenv import dotenv_values
+
+    env = os.environ.copy()
+    vals = dotenv_values(_ENV_FILE)
+    env.update({k: v for k, v in vals.items() if v is not None})
+
     _provision = env.get("SENTINEL_PROVISION_APP_ROLE", "").lower().strip()
-    _should_provision = _provision in ("1", "true", "yes", "on")
+    if _provision not in ("1", "true", "yes", "on"):
+        return
+
     app_url = env.get("APP_DATABASE_URL", "")
     db_url = env.get("DATABASE_URL", "")
-    if _should_provision and app_url and db_url:
-        import asyncio
-        import re as _re
-
-        def _extract_password(url: str) -> str | None:
-            m = _re.match(r"postgresql(?:\+asyncpg)?://[^:]+:([^@]+)@", url)
-            return m.group(1) if m else None
-
-        app_password = _extract_password(app_url)
-        if app_password:
-
-            async def _set_password() -> None:
-                try:
-                    import asyncpg
-
-                    m = _re.match(
-                        r"postgresql(?:\+asyncpg)?://([^:]+):([^@]+)@([^:]+):(\d+)/(.+)",
-                        db_url,
-                    )
-                    if m:
-                        conn = await asyncpg.connect(
-                            user=m.group(1),
-                            password=m.group(2),
-                            host=m.group(3),
-                            port=int(m.group(4)),
-                            database=m.group(5),
-                        )
-                        # PostgreSQL DDL (ALTER ROLE … PASSWORD) does not
-                        # accept protocol-level bind parameters — the server
-                        # refuses $1 for all DDL.  To avoid putting the
-                        # plaintext credential into any SQL string literal
-                        # (and thus out of pg_stat_activity / pg_log), we
-                        # compute the SCRAM-SHA-256 verifier client-side in
-                        # Python.  Only the opaque verifier string — never
-                        # the plaintext password — is interpolated into the
-                        # SQL statement.  PostgreSQL accepts pre-computed
-                        # SCRAM verifiers in ALTER ROLE … PASSWORD.
-                        salt = os.urandom(16)
-                        iters = 4096
-                        salted_pw = hashlib.pbkdf2_hmac(
-                            "sha256",
-                            app_password.encode("utf-8"),
-                            salt,
-                            iters,
-                        )
-                        client_key = hmac.new(salted_pw, b"Client Key", hashlib.sha256).digest()
-                        stored_key = hashlib.sha256(client_key).digest()
-                        server_key = hmac.new(salted_pw, b"Server Key", hashlib.sha256).digest()
-                        verifier = (
-                            f"SCRAM-SHA-256${iters}"
-                            f":{base64.b64encode(salt).decode()}"
-                            f"${base64.b64encode(stored_key).decode()}"
-                            f":{base64.b64encode(server_key).decode()}"
-                        )
-                        # Only the verifier (opaque hash) is in the SQL —
-                        # the plaintext app_password is never a SQL literal.
-                        await conn.execute(f"ALTER ROLE sentinel_app WITH PASSWORD '{verifier}'")
-                        await conn.close()
-
-                        # Self-check (loud guarantee, f-003b-harness-fix): prove
-                        # that sentinel_app actually authenticates with the
-                        # plaintext from APP_DATABASE_URL now that the verifier
-                        # has been applied. The original defect left sentinel_app
-                        # passwordless while the failure was swallowed (see the
-                        # except below), surfacing only as a cryptic SCRAM auth
-                        # error in unrelated tests. Verifying the live login here
-                        # converts that entire silent class into an immediate,
-                        # legible failure before any test runs. A login attempt
-                        # is read-only — it mutates no database state.
-                        verify_conn = await asyncpg.connect(
-                            user="sentinel_app",
-                            password=app_password,
-                            host=m.group(3),
-                            port=int(m.group(4)),
-                            database=m.group(5),
-                        )
-                        await verify_conn.close()
-                except Exception as e:
-                    # LOUD failure (f-003b-harness-fix). The previous handler
-                    # swallowed every provisioning error with warnings.warn,
-                    # which hid an empty/stale sentinel_app verifier and surfaced
-                    # only as a cryptic SCRAM auth error in unrelated tests.
-                    # After `alembic upgrade head` the sentinel_app role always
-                    # exists (migration 0006) and the privileged admin connection
-                    # can always ALTER ROLE, so any exception here is a genuine
-                    # harness defect and MUST stop the session rather than let
-                    # tests run against a broken auth state. The plaintext
-                    # password value is never included in the message.
-                    pytest.fail(f"sentinel_app password provisioning failed: {e}")
-
-            asyncio.run(_set_password())
-        else:
-            # f-003b-harness-fix: do NOT silently skip when the password cannot
-            # be extracted. SENTINEL_PROVISION_APP_ROLE was set and both URLs were
-            # present, so the caller expects provisioning — a missing password in
-            # APP_DATABASE_URL is a setup error, not a reason to leave sentinel_app
-            # passwordless and fail with a cryptic SCRAM error later.
-            pytest.fail(
-                "SENTINEL_PROVISION_APP_ROLE is set but no password could be "
-                "extracted from APP_DATABASE_URL. Provisioning requires a password "
-                "in the URL (postgresql://sentinel_app:<password>@host:port/db)."
-            )
+    if app_url and db_url:
+        try:
+            asyncio.run(_provision_sentinel_app_password(app_url, db_url))
+        except Exception as e:
+            pytest.fail(f"sentinel_app password provisioning failed: {e}")
 
 
 # ---------------------------------------------------------------------------
