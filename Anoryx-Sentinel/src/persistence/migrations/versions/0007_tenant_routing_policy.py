@@ -118,27 +118,20 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     # 3. GRANT SELECT, INSERT, UPDATE to sentinel_app (no DELETE).
     # ------------------------------------------------------------------
-    conn.execute(
-        sa.text("GRANT SELECT, INSERT, UPDATE ON tenant_routing_policy TO sentinel_app")
-    )
+    conn.execute(sa.text("GRANT SELECT, INSERT, UPDATE ON tenant_routing_policy TO sentinel_app"))
 
     # ------------------------------------------------------------------
     # 4. events_audit_log routing_decision columns (nullable) + CHECKs.
     # ------------------------------------------------------------------
-    op.add_column(
-        "events_audit_log", sa.Column("selected_provider", sa.String(16), nullable=True)
-    )
+    op.add_column("events_audit_log", sa.Column("selected_provider", sa.String(16), nullable=True))
     op.add_column("events_audit_log", sa.Column("routing_reason", sa.String(64), nullable=True))
     op.add_column("events_audit_log", sa.Column("outcome", sa.String(32), nullable=True))
     op.add_column("events_audit_log", sa.Column("attempt_index", sa.BigInteger(), nullable=True))
-    op.add_column(
-        "events_audit_log", sa.Column("requested_model", sa.String(256), nullable=True)
-    )
+    op.add_column("events_audit_log", sa.Column("requested_model", sa.String(256), nullable=True))
     op.create_check_constraint(
         "ck_eal_selected_provider",
         "events_audit_log",
-        "selected_provider IS NULL OR "
-        "selected_provider IN ('openai','anthropic','bedrock')",
+        "selected_provider IS NULL OR " "selected_provider IN ('openai','anthropic','bedrock')",
     )
     op.create_check_constraint(
         "ck_eal_outcome",

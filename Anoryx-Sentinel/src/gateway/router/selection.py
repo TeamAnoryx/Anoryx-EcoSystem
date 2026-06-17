@@ -90,11 +90,7 @@ def _effective_chain(
     Capped at 1 + router_max_fallbacks total attempts (§6).
     """
     allowed = set(policy.allowed_providers)
-    chain = [
-        p
-        for p in policy.fallback_order
-        if p in allowed and p in available
-    ]
+    chain = [p for p in policy.fallback_order if p in allowed and p in available]
     # Defensive: ensure we never exceed the configured attempt cap.
     max_attempts = 1 + settings.router_max_fallbacks
     return chain[:max_attempts]

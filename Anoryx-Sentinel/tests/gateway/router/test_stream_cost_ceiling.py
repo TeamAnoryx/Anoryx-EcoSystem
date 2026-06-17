@@ -23,8 +23,8 @@ import pytest
 from gateway.config import get_settings
 from gateway.context import TenantContext
 from gateway.models import CreateChatCompletionRequest
-from gateway.routes.chat_completions import _handle_stream
 from gateway.router.selection import StreamRouteResult
+from gateway.routes.chat_completions import _handle_stream
 
 _TENANT = TenantContext(
     tenant_id="t-1",

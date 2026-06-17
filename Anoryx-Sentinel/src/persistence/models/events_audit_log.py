@@ -216,8 +216,7 @@ class EventsAuditLog(Base):
         ),
         # routing_decision variant bounds (F-006, ADR-0008 §5.6).
         CheckConstraint(
-            "selected_provider IS NULL OR "
-            "selected_provider IN ('openai','anthropic','bedrock')",
+            "selected_provider IS NULL OR " "selected_provider IN ('openai','anthropic','bedrock')",
             name="ck_eal_selected_provider",
         ),
         CheckConstraint(
