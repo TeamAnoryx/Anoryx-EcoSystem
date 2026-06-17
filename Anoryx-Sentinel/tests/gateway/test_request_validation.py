@@ -52,10 +52,36 @@ def _build_patches():
 
     proxy_mod._http_client = None
 
+    # F-006: stub the router's tenant-policy read + routing_decision emit so the
+    # request can traverse the router without a live DB (default policy -> OpenAI).
+    from persistence.repositories.tenant_routing_policy_repository import default_policy
+
+    @asynccontextmanager
+    async def _tenant_cm(tenant_id):
+        session = MagicMock()
+
+        @asynccontextmanager
+        async def _begin():
+            yield MagicMock()
+
+        session.begin = _begin
+        yield session
+
+    async def _fake_get_for_tenant(self, tenant_id, caller_tenant_id):
+        return default_policy(tenant_id)
+
     return [
         patch("gateway.middleware.auth.get_privileged_session", _priv_cm),
         patch("gateway.middleware.auth.VirtualApiKeyRepository", return_value=auth_repo),
         patch("gateway.routes.chat_completions.emit_terminal_record", new=AsyncMock()),
+        # Router DB touchpoints (F-006).
+        patch("gateway.router.selection.emit_routing_decision", new=AsyncMock()),
+        patch("persistence.database.get_tenant_session", _tenant_cm),
+        patch(
+            "persistence.repositories.tenant_routing_policy_repository."
+            "TenantRoutingPolicyRepository.get_for_tenant",
+            new=_fake_get_for_tenant,
+        ),
     ]
 
 
@@ -121,12 +147,13 @@ async def test_body_exact_limit_passes(settings_env, monkeypatch):
 
     from gateway.exceptions import GatewayError
 
-    with patches[0], patches[1], patches[2]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
         from gateway.main import create_app
 
         app = create_app()
+        # The OpenAI adapter calls proxy_non_stream at its source module.
         with patch(
-            "gateway.routes.chat_completions.proxy_non_stream",
+            "gateway.router.providers.openai_provider.proxy_non_stream",
             new=AsyncMock(side_effect=GatewayError("internal_error")),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
@@ -232,12 +259,13 @@ async def test_valid_body_passes_to_upstream(settings_env):
     from gateway.exceptions import GatewayError
 
     patches = _build_patches()
-    with patches[0], patches[1], patches[2]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
         from gateway.main import create_app
 
         app = create_app()
+        # The OpenAI adapter calls proxy_non_stream at its source module.
         with patch(
-            "gateway.routes.chat_completions.proxy_non_stream",
+            "gateway.router.providers.openai_provider.proxy_non_stream",
             new=AsyncMock(side_effect=GatewayError("internal_error")),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:

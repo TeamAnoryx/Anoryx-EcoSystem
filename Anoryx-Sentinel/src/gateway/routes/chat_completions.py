@@ -61,9 +61,12 @@ from gateway.models import (
     CreateChatCompletionRequest,
     ErrorResponse,
 )
+from gateway.router import cost as _cost
+from gateway.router.registry import ProviderRegistry
+from gateway.router.selection import StreamRouteResult, route_non_stream, route_stream
 from gateway.upstream.openai_proxy import (
-    _proxy_stream_generator,
-    proxy_non_stream,
+    _proxy_stream_generator,  # noqa: F401 — retained for compatibility/tests
+    proxy_non_stream,  # noqa: F401 — retained for compatibility/tests
 )
 
 log = structlog.get_logger(__name__)
@@ -303,8 +306,14 @@ async def create_chat_completion(
             if forwarded_content is not None and forwarded_content != user_content_snapshot:
                 validated = _apply_masked_user_content(validated, forwarded_content)
 
-        # --- Step 8: Upstream proxy ---
+        # --- Step 8: Upstream dispatch via the F-006 multi-provider router ---
+        # The router wraps BOTH call sites. It returns a TRANSLATED OpenAI-shape
+        # response (non-stream) / OpenAI-shape SSE lines (stream) so the F-005
+        # post-hook below inspects translated bytes (threat #8) and the client
+        # keeps the unchanged OpenAI surface. Behavior is identical to today when
+        # the tenant resolves to OpenAI with no fallback.
         upstream_api_key: str | None = None  # Phase 0: no upstream key vaulting yet
+        provider_registry = _get_provider_registry(request, settings)
 
         if validated.stream:
             # Streaming path (ADR-0006 Decision 7).
@@ -322,14 +331,16 @@ async def create_chat_completion(
                 settings=settings,
                 hook_registry=hook_registry,
                 hook_context=hook_context,
+                provider_registry=provider_registry,
             )
         else:
-            # Non-streaming path.
-            completion, tokens_in, tokens_out = await proxy_non_stream(
+            # Non-streaming path — router returns a TRANSLATED OpenAI-shape resp.
+            completion, tokens_in, tokens_out = await route_non_stream(
                 validated_body=validated,
                 request_id=request_id,
-                upstream_api_key=upstream_api_key,
-                overall_timeout=settings.request_timeout_seconds,
+                tenant_context=tenant_context,
+                registry=provider_registry,
+                settings=settings,
             )
 
             # --- Step 8b: F-005 PostResponseHooks (non-stream, before Response) ---
@@ -485,6 +496,7 @@ async def _handle_stream(
     settings,
     hook_registry=None,
     hook_context=None,
+    provider_registry: ProviderRegistry | None = None,
 ) -> StreamingResponse:
     """Build and return a StreamingResponse for stream: true requests.
 
@@ -524,6 +536,18 @@ async def _handle_stream(
     if hook_context is not None:
         post_hook_ctx = _make_post_context(hook_context, is_stream=True)
 
+    # HIGH-1: holder the router populates with the COMMITTED (provider, model)
+    # and the tenant cost_ceiling_cents once the first byte is established. The
+    # chunk loop uses these to enforce the §7.4 stream-time cost ceiling on the
+    # accumulating output tokens (the pre-request check alone cannot catch a
+    # stream that overruns its estimate at generation time — threat #3).
+    route_result = StreamRouteResult()
+
+    # tokens_in proxy is stable for the whole stream (prompt is fixed). Compute
+    # once so the running cost estimate has both sides of the ledger.
+    prompt_words = sum(len(m.content.split()) for m in validated.messages)
+    token_state["tokens_in"] = prompt_words
+
     async def _generate():
         """Async generator: upstream stream with F-005 windowed inspection + audit."""
         # MED-1: stream_slot() only DECREMENTS now. Counter was already incremented
@@ -533,12 +557,19 @@ async def _handle_stream(
             stream_blocked = False
 
             try:
-                async for chunk in _proxy_stream_generator(
+                # F-006: the router yields already-TRANSLATED OpenAI-shape SSE
+                # lines, so the F-005 8 KiB window below operates on the same
+                # bytes it does for the OpenAI path (threat #8). All fallback /
+                # terminal decisions happen inside route_stream before the first
+                # byte (ADR-0008 §6 streaming caveat).
+                _registry = provider_registry or _get_provider_registry(None, settings)
+                async for chunk in route_stream(
                     validated_body=validated,
                     request_id=request_id,
-                    upstream_api_key=upstream_api_key,
-                    idle_timeout=settings.stream_timeout_seconds,
-                    overall_timeout=settings.request_timeout_seconds,
+                    tenant_context=tenant_context,
+                    registry=_registry,
+                    settings=settings,
+                    result=route_result,
                 ):
                     # Accumulate output tokens from content chunks.
                     if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
@@ -552,6 +583,52 @@ async def _handle_stream(
                                     token_state["tokens_out"] += len(content.split())
                             except (json.JSONDecodeError, KeyError, AttributeError):
                                 pass
+
+                    # HIGH-1 (threat #3, ADR §7.4): stream-time cost ceiling.
+                    # Once the router has committed a provider+model and the
+                    # tenant has a ceiling, recompute a running client-side cost
+                    # ESTIMATE from accumulated tokens. On breach: emit the
+                    # policy_blocked SSE error frame, a best-effort cost_blocked
+                    # routing_decision audit event, and close WITHOUT [DONE] —
+                    # mirroring the F-005 streaming-block fail-safe shape.
+                    if (
+                        not stream_blocked
+                        and route_result.cost_ceiling_cents is not None
+                        and route_result.resolved_provider is not None
+                        and route_result.resolved_model is not None
+                    ):
+                        running_estimate = _cost.estimate_from_tokens(
+                            route_result.resolved_provider,
+                            route_result.resolved_model,
+                            token_state["tokens_in"],
+                            token_state["tokens_out"],
+                        )
+                        if running_estimate > route_result.cost_ceiling_cents:
+                            stream_blocked = True
+                            error_msg, _ = ERROR_TABLE["policy_blocked"]
+                            yield _build_sse_error_event(
+                                error_code="policy_blocked",
+                                message=error_msg,
+                                request_id=request_id,
+                            )
+                            # Best-effort cost_blocked audit (observability only;
+                            # never converts the outcome — swallowed on failure).
+                            try:
+                                from gateway.middleware.audit import emit_routing_decision
+
+                                await emit_routing_decision(
+                                    request_id=request_id,
+                                    tenant_context=tenant_context,
+                                    selected_provider=route_result.resolved_provider,
+                                    routing_reason="cost-routing",
+                                    outcome="cost_blocked",
+                                    action_taken="blocked",
+                                    attempt_index=0,
+                                    requested_model=route_result.resolved_model,
+                                )
+                            except Exception:
+                                log.error("stream_cost_block_audit_failed", request_id=request_id)
+                            return  # Close WITHOUT [DONE].
 
                     # F-005 PostResponseHook: bounded sliding-window inspection (D2).
                     if (
@@ -595,8 +672,7 @@ async def _handle_stream(
                 # HIGH-3 honest scope: if this emit fails after 200 headers are
                 # sent, we CANNOT force 500. Log at ERROR level as out-of-band.
                 try:
-                    prompt_words = sum(len(m.content.split()) for m in validated.messages)
-                    token_state["tokens_in"] = prompt_words
+                    # tokens_in proxy was computed up front (HIGH-1) and is stable.
                     await emit_terminal_record(
                         request_id=request_id,
                         tenant_context=tenant_context,
@@ -715,6 +791,37 @@ def _build_sse_error_event(*, error_code: str, message: str, request_id: str) ->
         }
     )
     return f"event: error\ndata: {payload}\n\n"
+
+
+# ---------------------------------------------------------------------------
+# F-006: provider registry resolution.
+# Production builds the registry in _lifespan and stores it on app.state.
+# A module-level fallback covers code paths without app.state (the stream
+# generator, certain test configs) so the router always has a registry. The
+# fallback is built once per process and reused.
+# ---------------------------------------------------------------------------
+
+_fallback_registry: ProviderRegistry | None = None
+
+
+def _get_provider_registry(request: Request | None, settings) -> ProviderRegistry:
+    """Return the per-app ProviderRegistry (from app.state), or a process fallback.
+
+    Reusing app.state.provider_registry keeps the per-provider clients shared and
+    torn down by _lifespan. The fallback is for paths/tests without a running
+    lifespan; it is initialised lazily and cached at module scope.
+    """
+    if request is not None:
+        reg = getattr(getattr(request, "app", None), "state", None)
+        candidate = getattr(reg, "provider_registry", None) if reg is not None else None
+        if isinstance(candidate, ProviderRegistry):
+            return candidate
+
+    global _fallback_registry
+    if _fallback_registry is None:
+        _fallback_registry = ProviderRegistry()
+        _fallback_registry.init(settings)
+    return _fallback_registry
 
 
 def _peek_stream_flag(request: Request) -> bool:

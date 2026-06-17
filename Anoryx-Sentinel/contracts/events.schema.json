@@ -11,7 +11,8 @@
     { "$ref": "#/$defs/SecretLeakedEvent" },
     { "$ref": "#/$defs/PolicyViolatedEvent" },
     { "$ref": "#/$defs/ComplianceCheckedEvent" },
-    { "$ref": "#/$defs/ShadowAiDetectedEvent" }
+    { "$ref": "#/$defs/ShadowAiDetectedEvent" },
+    { "$ref": "#/$defs/RoutingDecisionEvent" }
   ],
 
   "$comment": "Dispatch is normative via oneOf + the event_type const on each variant under JSON Schema Draft 2020-12. The 'discriminator' keyword below is a NON-NORMATIVE hint for OpenAPI tooling ONLY; it is not a 2020-12 keyword and has NO validation effect under this dialect. Do not rely on it for correctness.",
@@ -394,6 +395,67 @@
           "format": "date-time",
           "maxLength": 64,
           "description": "When traffic to this endpoint was first observed (RFC 3339 / ISO 8601 date-time, UTC)."
+        }
+      }
+    },
+    "RoutingDecisionEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by the multi-provider model router (F-006, ADR-0008) when it makes a routing decision: provider selection, allow-list denial, cost-ceiling block, a fallback attempt, or chain exhaustion. NOT a Delta policy violation (that is policy_violated, reserved per ADR-0007). agent_id is the emitting component slug 'gateway-core' (the router runs inside the gateway), NEVER a provider or model name; the provider is carried in selected_provider. No provider credential, API key, or upstream body text is EVER carried on this event.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "routing_reason",
+        "selected_provider",
+        "outcome",
+        "action_taken"
+      ],
+      "properties": {
+        "event_type": { "const": "routing_decision" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "routing_reason": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "maxLength": 64,
+          "description": "Lowercase slug for why this decision was made (e.g. 'tenant-allowlist', 'cost-routing', 'fallback-transient', 'fallback-rate-limit'). Charset restricted to a slug to forbid control characters and whitespace (log-injection defense)."
+        },
+        "selected_provider": {
+          "type": "string",
+          "enum": ["openai", "anthropic", "bedrock"],
+          "description": "The upstream provider chosen for THIS routing decision. Never a model name; never a credential."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": ["selected", "allowlist_denied", "cost_blocked", "fallback_attempted", "exhausted"],
+          "description": "The routing outcome for this decision."
+        },
+        "attempt_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16,
+          "description": "Zero-based index of this attempt in the fallback chain (0 = primary). Bounded to 16 to cap inspection cost (DoS-via-inspection defense)."
+        },
+        "requested_model": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "The model the client requested (echo for correlation). Never a secret."
+        },
+        "action_taken": {
+          "type": "string",
+          "enum": ["routed", "blocked", "failed_over"],
+          "description": "Disposition the router applied: 'routed' (served by selected_provider), 'blocked' (allow-list/cost terminal), 'failed_over' (retryable failure, advancing the fallback chain)."
         }
       }
     }

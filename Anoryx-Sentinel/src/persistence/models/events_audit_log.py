@@ -46,6 +46,7 @@ VALID_EVENT_TYPES = frozenset(
         "policy_violated",
         "compliance_checked",
         "shadow_ai_detected",
+        "routing_decision",  # F-006 (ADR-0008 §5)
     }
 )
 
@@ -59,6 +60,8 @@ ACTION_TAKEN_BY_EVENT_TYPE: dict[str, frozenset[str]] = {
     "injection_detected": frozenset({"blocked", "logged"}),
     "secret_leaked": frozenset({"masked", "tokenized", "blocked"}),
     "policy_violated": frozenset({"blocked", "throttled", "warned"}),
+    # F-006 (ADR-0008 §5.4): routing_decision carries action_taken.
+    "routing_decision": frozenset({"routed", "blocked", "failed_over"}),
 }
 
 
@@ -135,6 +138,13 @@ class EventsAuditLog(Base):
     traffic_volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     first_seen_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # routing_decision variant (F-006, ADR-0008 §5.6). action_taken (above) reused.
+    selected_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    routing_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    attempt_index: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    requested_model: Mapped[str | None] = mapped_column(String(256), nullable=True)
+
     # -----------------------------------------------------------------------
     # Hash-chain columns
     # -----------------------------------------------------------------------
@@ -152,7 +162,7 @@ class EventsAuditLog(Base):
             "event_type IN ("
             "'usage','pii_blocked','injection_detected',"
             "'secret_leaked','policy_violated','compliance_checked',"
-            "'shadow_ai_detected')",
+            "'shadow_ai_detected','routing_decision')",
             name="ck_eal_event_type",
         ),
         CheckConstraint(
@@ -197,10 +207,26 @@ class EventsAuditLog(Base):
             name="ck_eal_status",
         ),
         # action_taken: union of valid values across all event variants.
+        # F-006 adds 'routed','failed_over' (routing_decision); 'blocked' already present.
         CheckConstraint(
             "action_taken IS NULL OR action_taken IN ("
-            "'masked','tokenized','blocked','logged','throttled','warned')",
+            "'masked','tokenized','blocked','logged','throttled','warned',"
+            "'routed','failed_over')",
             name="ck_eal_action_taken",
+        ),
+        # routing_decision variant bounds (F-006, ADR-0008 §5.6).
+        CheckConstraint(
+            "selected_provider IS NULL OR " "selected_provider IN ('openai','anthropic','bedrock')",
+            name="ck_eal_selected_provider",
+        ),
+        CheckConstraint(
+            "outcome IS NULL OR outcome IN ("
+            "'selected','allowlist_denied','cost_blocked','fallback_attempted','exhausted')",
+            name="ck_eal_outcome",
+        ),
+        CheckConstraint(
+            "attempt_index IS NULL OR (attempt_index >= 0 AND attempt_index <= 16)",
+            name="ck_eal_attempt_index",
         ),
         # row_hash and prev_hash must be 64-char hex strings.
         CheckConstraint("length(row_hash) = 64", name="ck_eal_row_hash_len"),

@@ -136,6 +136,103 @@ def build_usage_event(
     }
 
 
+def build_routing_decision_event(
+    *,
+    request_id: str,
+    tenant_context: TenantContext | None,
+    selected_provider: str,
+    routing_reason: str,
+    outcome: str,
+    action_taken: str,
+    attempt_index: int,
+    requested_model: str,
+) -> dict[str, Any]:
+    """Build a routing_decision event dict (F-006, ADR-0008 §5).
+
+    agent_id is the EMITTING COMPONENT slug 'gateway-core' (the router runs
+    inside the gateway), never a provider/model name — the provider is carried
+    in selected_provider. Carries NO provider credential or upstream body text
+    (threat #1 / #10). All strings are bounded by the schema; attempt_index is
+    capped at 16.
+    """
+    now_utc = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    if tenant_context is not None:
+        tenant_id = tenant_context.tenant_id
+        team_id = tenant_context.team_id
+        project_id = tenant_context.project_id
+    else:
+        tenant_id = "00000000-0000-0000-0000-000000000000"
+        team_id = "00000000-0000-0000-0000-000000000000"
+        project_id = "00000000-0000-0000-0000-000000000000"
+
+    return {
+        "event_type": "routing_decision",
+        "tenant_id": tenant_id,
+        "team_id": team_id,
+        "project_id": project_id,
+        # agent_id is the component slug, NOT the provider (ADR §5.3).
+        "agent_id": "gateway-core",
+        "event_id": str(uuid.uuid4()),
+        "event_timestamp": now_utc,
+        "request_id": request_id,
+        "selected_provider": selected_provider,
+        "routing_reason": routing_reason[:64],
+        "outcome": outcome,
+        "action_taken": action_taken,
+        "attempt_index": _clamp(attempt_index, 0, 16),
+        "requested_model": (requested_model or "unknown")[:256],
+    }
+
+
+async def emit_routing_decision(
+    *,
+    request_id: str,
+    tenant_context: TenantContext | None,
+    selected_provider: str,
+    routing_reason: str,
+    outcome: str,
+    action_taken: str,
+    attempt_index: int,
+    requested_model: str,
+) -> None:
+    """Append a routing_decision event via the privileged-session audit path.
+
+    BEST-EFFORT OBSERVABILITY: a routing_decision is observability, not the
+    terminal usage record. If the append fails it is logged at ERROR level
+    out-of-band and SWALLOWED — a failed routing-decision emit must NOT convert
+    a successful (or already-failing) request into a different outcome. The
+    terminal usage event (emit_terminal_record) remains the fail-safe gate.
+    """
+    event_data = build_routing_decision_event(
+        request_id=request_id,
+        tenant_context=tenant_context,
+        selected_provider=selected_provider,
+        routing_reason=routing_reason,
+        outcome=outcome,
+        action_taken=action_taken,
+        attempt_index=attempt_index,
+        requested_model=requested_model,
+    )
+    try:
+        async with get_privileged_session() as session:
+            async with session.begin():
+                repo = AuditLogRepository(session)
+                await repo.append(event_data)
+        log.info(
+            "routing_decision_appended",
+            request_id=request_id,
+            outcome=outcome,
+            selected_provider=selected_provider,
+            attempt_index=event_data["attempt_index"],
+        )
+    except Exception:
+        log.error(
+            "routing_decision_append_failed",
+            request_id=request_id,
+            outcome=outcome,
+        )
+
+
 async def emit_terminal_record(
     *,
     request_id: str,
