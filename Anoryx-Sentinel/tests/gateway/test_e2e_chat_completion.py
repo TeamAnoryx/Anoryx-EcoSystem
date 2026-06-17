@@ -24,6 +24,7 @@ from httpx import ASGITransport, AsyncClient
 
 from gateway.config import _reset_settings
 from gateway.exceptions import ERROR_TABLE
+from policy.enforcement import BudgetOk, ModelAllow
 from tests.gateway.conftest import (
     TEST_AGENT_ID,
     TEST_PLAINTEXT_KEY,
@@ -115,6 +116,12 @@ def _build_patches(key_row=None, audit_mock=None):
     async def _fake_get_for_tenant(self, tenant_id, caller_tenant_id):
         return default_policy(tenant_id)
 
+    # F-008 (ADR-0009 §6): stub the model/budget gate to "allow, no budgets" so the
+    # F-004/F-006 pipeline tests exercise the route without a live policy DB. The
+    # gate's own behavior is covered in tests/policy/.
+    async def _allow_enforce(tenant_context, body):
+        return ModelAllow(None), BudgetOk(), []
+
     import gateway.upstream.openai_proxy as proxy_mod
 
     proxy_mod._http_client = None
@@ -131,6 +138,7 @@ def _build_patches(key_row=None, audit_mock=None):
             "TenantRoutingPolicyRepository.get_for_tenant",
             new=_fake_get_for_tenant,
         ),
+        patch("gateway.router.selection._enforce_policies_pre_request", new=_allow_enforce),
     ]
     return patches, _audit
 
@@ -149,7 +157,7 @@ async def test_e2e_happy_path_non_stream(settings_env):
     mock_client = MagicMock()
     mock_client.post = AsyncMock(return_value=upstream_resp)
 
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
         from gateway.main import create_app
 
         app = create_app()
@@ -184,7 +192,7 @@ async def test_e2e_audit_emitted_on_success(settings_env):
     mock_client = MagicMock()
     mock_client.post = AsyncMock(return_value=upstream_resp)
 
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
         from gateway.main import create_app
 
         app = create_app()
@@ -205,7 +213,7 @@ async def test_e2e_audit_emitted_on_invalid_request(settings_env):
     audit_mock = AsyncMock()
     patches, _ = _build_patches(audit_mock=audit_mock)
 
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
         from gateway.main import create_app
 
         app = create_app()
@@ -230,7 +238,7 @@ async def test_e2e_upstream_failure_returns_500_not_502(settings_env):
     mock_client = MagicMock()
     mock_client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
 
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
         from gateway.main import create_app
 
         app = create_app()
@@ -296,7 +304,7 @@ async def test_e2e_rate_limit_returns_429_with_retry_after(settings_env, monkeyp
     mock_client = MagicMock()
     mock_client.post = AsyncMock(return_value=upstream_resp)
 
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
         from gateway.main import create_app
 
         app = create_app()
@@ -322,7 +330,7 @@ async def test_e2e_413_on_oversized_body(settings_env, monkeypatch):
     _reset_settings()
     patches, _ = _build_patches()
 
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
         from gateway.main import create_app
 
         app = create_app()

@@ -40,6 +40,16 @@ from gateway.router.context import RoutingContext
 from gateway.router.cost import estimate_pre_request
 from gateway.router.exceptions import ProviderError, RoutingBlockedError
 from gateway.router.registry import ProviderRegistry
+from policy.audit_events import emit_policy_decision
+from policy.enforcement import (
+    BudgetExceeded,
+    ModelAllow,
+    ModelDeny,
+    evaluate_budget_against,
+    evaluate_model_policies,
+    load_active_budgets,
+    scope_from_context,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -59,6 +69,84 @@ class StreamRouteResult:
     resolved_provider: str | None = None
     resolved_model: str | None = None
     cost_ceiling_cents: float | None = None
+    # F-008 (ADR-0009 §6): active BudgetLimitPolicy views + their period-used
+    # baselines (tokens, cost), set at commit so the stream chunk loop can enforce
+    # the budget ceiling on accumulating output (same primitive as cost_ceiling_cents).
+    budgets: list | None = None
+
+
+# --------------------------------------------------------------------------- #
+# F-008 (ADR-0009 §6): model + budget enforcement, applied BEFORE the F-006
+# tenant_routing_policy is consulted. Reads on a tenant session (RLS). Deny is
+# terminal (no fallback), mirroring the allow-list terminal below.
+# --------------------------------------------------------------------------- #
+
+
+def _prompt_token_proxy(body: CreateChatCompletionRequest) -> int:
+    """Pre-request token estimate (prompt word proxy + max_tokens|proxy).
+
+    Mirrors the gateway's existing word-count proxy; not a tokenizer count.
+    """
+    prompt = sum(len(m.content.split()) for m in body.messages)
+    out = body.max_tokens if body.max_tokens is not None else max(prompt, 1)
+    # n parallel completions each produce output (request model n in [1,8]); scale the
+    # output proxy so an n>1 request cannot under-count its way past the budget gate.
+    n = max(getattr(body, "n", 1) or 1, 1)
+    return prompt + out * n
+
+
+def _guess_provider(model: str) -> str:
+    """Best-effort provider for the pre-request cost ESTIMATE only.
+
+    F-008 enforcement runs BEFORE the F-006 router resolves the real provider, so
+    the pre-request cost figure is an estimate against a guessed provider (a wrong
+    guess can over- or under-state cost). The deterministic, provider-agnostic
+    TOKEN ceiling is the primary pre-request budget gate; the COST ceiling is
+    authoritatively enforced at the RESOLVED provider/model at stream chunk
+    boundaries (chat_completions._generate) and per attempt. Honest-language: this
+    is a client-side cost estimate (CLAUDE.md), never an authoritative bill.
+    """
+    m = model.lower()
+    if m.startswith("claude") or "anthropic" in m:
+        return "anthropic"
+    if m.startswith(("amazon.", "meta.", "bedrock")):
+        return "bedrock"
+    return "openai"
+
+
+async def _enforce_policies_pre_request(tenant_context: TenantContext, body):
+    """Evaluate F-008 model + budget policies for the request scope.
+
+    Returns (model_decision, budget_decision, budgets). Raises on infra error so
+    the caller can fail-safe BLOCK (R8). Reads on a tenant session (RLS + explicit
+    tenant predicate inside the repository).
+    """
+    from persistence.database import get_tenant_session
+
+    scope = scope_from_context(tenant_context)
+    async with get_tenant_session(tenant_context.tenant_id) as session:
+        async with session.begin():
+            model_decision = await evaluate_model_policies(session, scope, body.model)
+            budgets = await load_active_budgets(session, scope)
+    # Scale the cost estimate by n too (conservative — slightly over-counts shared
+    # input cost, but the budget gate must not under-count n>1 parallel completions).
+    est_cost = estimate_pre_request(body, _guess_provider(body.model), body.model) * max(
+        getattr(body, "n", 1) or 1, 1
+    )
+    budget_decision = evaluate_budget_against(budgets, _prompt_token_proxy(body), est_cost)
+    return model_decision, budget_decision, budgets
+
+
+def _policy_deny(model_decision, budget_decision) -> tuple[str, str] | None:
+    """Return (policy_id, reason) if a model/budget policy terminally denies; else None.
+
+    DENY precedence: a model deny is reported before a budget breach.
+    """
+    if isinstance(model_decision, ModelDeny):
+        return (model_decision.policy_id, model_decision.reason)
+    if isinstance(budget_decision, BudgetExceeded):
+        return (budget_decision.policy_id, budget_decision.reason)
+    return None
 
 
 async def _resolve_policy(tenant_context: TenantContext):
@@ -168,6 +256,34 @@ async def route_non_stream(
       - internal_error (500) for auth / content_policy / bad_request / parse /
         exhaustion.
     """
+    # --- F-008: model + budget enforcement BEFORE tenant routing (ADR-0009 §6) ---
+    try:
+        _model_dec, _budget_dec, _ = await _enforce_policies_pre_request(
+            tenant_context, validated_body
+        )
+    except Exception:
+        log.error("policy_enforcement_error", request_id=request_id)
+        raise GatewayError("internal_error") from None  # fail-safe BLOCK (R8)
+    _deny = _policy_deny(_model_dec, _budget_dec)
+    if _deny is not None:
+        await emit_policy_decision(
+            tenant_context,
+            request_id=request_id,
+            allow=False,
+            policy_id=_deny[0],
+            requested_model=validated_body.model,
+            reason=_deny[1],
+        )
+        raise GatewayError("policy_blocked")
+    if isinstance(_model_dec, ModelAllow) and _model_dec.policy_id is not None:
+        await emit_policy_decision(
+            tenant_context,
+            request_id=request_id,
+            allow=True,
+            policy_id=_model_dec.policy_id,
+            requested_model=validated_body.model,
+        )
+
     policy = await _resolve_policy(tenant_context)
     available = registry.available_providers()
     chain = _effective_chain(policy, available, settings)
@@ -320,6 +436,36 @@ async def route_stream(
         message, _ = ERROR_TABLE[code]
         return _build_sse_error_event(error_code=code, message=message, request_id=request_id)
 
+    # --- F-008: model + budget enforcement BEFORE tenant routing (ADR-0009 §6) ---
+    try:
+        _model_dec, _budget_dec, _budgets = await _enforce_policies_pre_request(
+            tenant_context, validated_body
+        )
+    except Exception:
+        log.error("policy_enforcement_error", request_id=request_id)
+        yield _error_frame("internal_error")  # fail-safe BLOCK (R8)
+        return
+    _deny = _policy_deny(_model_dec, _budget_dec)
+    if _deny is not None:
+        await emit_policy_decision(
+            tenant_context,
+            request_id=request_id,
+            allow=False,
+            policy_id=_deny[0],
+            requested_model=validated_body.model,
+            reason=_deny[1],
+        )
+        yield _error_frame("policy_blocked")
+        return
+    if isinstance(_model_dec, ModelAllow) and _model_dec.policy_id is not None:
+        await emit_policy_decision(
+            tenant_context,
+            request_id=request_id,
+            allow=True,
+            policy_id=_model_dec.policy_id,
+            requested_model=validated_body.model,
+        )
+
     policy = await _resolve_policy(tenant_context)
     available = registry.available_providers()
     chain = _effective_chain(policy, available, settings)
@@ -412,6 +558,7 @@ async def route_stream(
             result.resolved_provider = provider
             result.resolved_model = validated_body.model
             result.cost_ceiling_cents = policy.cost_ceiling_cents
+            result.budgets = _budgets  # F-008: enforce budget ceiling at chunk boundary
         await emit_routing_decision(
             request_id=request_id,
             tenant_context=tenant_context,

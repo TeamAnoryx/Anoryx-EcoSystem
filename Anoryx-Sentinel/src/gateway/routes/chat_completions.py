@@ -68,6 +68,7 @@ from gateway.upstream.openai_proxy import (
     _proxy_stream_generator,  # noqa: F401 — retained for compatibility/tests
     proxy_non_stream,  # noqa: F401 — retained for compatibility/tests
 )
+from policy.enforcement import BudgetExceeded, evaluate_budget_against
 
 log = structlog.get_logger(__name__)
 
@@ -628,6 +629,50 @@ async def _handle_stream(
                                 )
                             except Exception:
                                 log.error("stream_cost_block_audit_failed", request_id=request_id)
+                            return  # Close WITHOUT [DONE].
+
+                    # F-008 (ADR-0009 §6, threat #14): stream-time BUDGET ceiling at
+                    # the chunk boundary — same primitive as the §7.4 cost ceiling.
+                    # Checks baseline (period-used at entry) + this request's running
+                    # tokens/cost against each active BudgetLimitPolicy. On breach:
+                    # emit policy_decision_deny (best-effort) and close WITHOUT [DONE].
+                    if (
+                        not stream_blocked
+                        and route_result.budgets
+                        and route_result.resolved_provider is not None
+                        and route_result.resolved_model is not None
+                    ):
+                        running_cost = _cost.estimate_from_tokens(
+                            route_result.resolved_provider,
+                            route_result.resolved_model,
+                            token_state["tokens_in"],
+                            token_state["tokens_out"],
+                        )
+                        running_tokens = token_state["tokens_in"] + token_state["tokens_out"]
+                        budget_decision = evaluate_budget_against(
+                            route_result.budgets, running_tokens, running_cost
+                        )
+                        if isinstance(budget_decision, BudgetExceeded):
+                            stream_blocked = True
+                            error_msg, _ = ERROR_TABLE["policy_blocked"]
+                            yield _build_sse_error_event(
+                                error_code="policy_blocked",
+                                message=error_msg,
+                                request_id=request_id,
+                            )
+                            try:
+                                from policy.audit_events import emit_policy_decision
+
+                                await emit_policy_decision(
+                                    tenant_context,
+                                    request_id=request_id,
+                                    allow=False,
+                                    policy_id=budget_decision.policy_id,
+                                    requested_model=route_result.resolved_model,
+                                    reason=budget_decision.reason,
+                                )
+                            except Exception:
+                                log.error("stream_budget_block_audit_failed", request_id=request_id)
                             return  # Close WITHOUT [DONE].
 
                     # F-005 PostResponseHook: bounded sliding-window inspection (D2).
