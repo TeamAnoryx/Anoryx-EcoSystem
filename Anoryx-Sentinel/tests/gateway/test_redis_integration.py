@@ -24,8 +24,6 @@ import uuid
 
 import pytest
 import redis.asyncio as aioredis
-from redis.exceptions import ConnectionError as RedisConnectionError
-from redis.exceptions import TimeoutError as RedisTimeoutError
 
 # ---------------------------------------------------------------------------
 # Module-level reachability check — skip the whole file if Redis is down
@@ -142,8 +140,8 @@ def _reset_rate_limit_state():
 
 async def _init_pool(redis_url: str) -> None:
     """Initialise the gateway redis_client pool against the live Redis."""
-    from gateway.config import get_settings
     import gateway.redis_client as rc
+    from gateway.config import get_settings
 
     settings = get_settings()
     await rc.init(settings)
@@ -199,7 +197,9 @@ async def test_rejection_over_limit(redis_url, unique_key_id, unique_tenant_id):
 # ---------------------------------------------------------------------------
 
 
-async def test_sorted_set_keys_exist_in_redis(redis_url, redis_client, unique_key_id, unique_tenant_id):
+async def test_sorted_set_keys_exist_in_redis(
+    redis_url, redis_client, unique_key_id, unique_tenant_id
+):
     """After admission, sentinel:rl:vk:* and sentinel:rl:tenant:* ZSETs exist in Redis."""
     await _init_pool(redis_url)
 
@@ -214,9 +214,9 @@ async def test_sorted_set_keys_exist_in_redis(redis_url, redis_client, unique_ke
     tenant_count = await redis_client.zcard(tenant_key)
 
     assert vk_count >= 1, f"Expected ZSET {vk_key} to exist with at least 1 member, got {vk_count}"
-    assert tenant_count >= 1, (
-        f"Expected ZSET {tenant_key} to exist with at least 1 member, got {tenant_count}"
-    )
+    assert (
+        tenant_count >= 1
+    ), f"Expected ZSET {tenant_key} to exist with at least 1 member, got {tenant_count}"
 
     # Members use the {timestamp_ms}:{uuid4hex} format (D1).
     members = await redis_client.zrange(vk_key, 0, -1)
@@ -260,9 +260,9 @@ async def test_degraded_then_recovered(redis_url, unique_key_id, unique_tenant_i
     # Verify the Redis primary ZSETs were NOT written (legacy path bypasses Redis).
     async with aioredis.from_url(redis_url, decode_responses=True) as probe:
         vk_count = await probe.zcard(f"sentinel:rl:vk:{unique_key_id}")
-        assert vk_count == 0, (
-            f"Legacy path must not write to Redis; found {vk_count} entries in vk ZSET"
-        )
+        assert (
+            vk_count == 0
+        ), f"Legacy path must not write to Redis; found {vk_count} entries in vk ZSET"
 
     # --- Phase 2: heal (restore Redis primary path) ---
     rc._set_degraded(False)
