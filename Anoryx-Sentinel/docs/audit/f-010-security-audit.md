@@ -68,3 +68,73 @@ No High/Critical → the PASS does not block the PR. Three Low findings were res
 | L5 | **Accepted (TODO F-010.2)** — `debug` `verbosity: normal` latent only; R9 span-hygiene keeps secrets off spans. TODO comment added. | — |
 
 **Re-verification:** `helm lint` 0 failed, `helm template` valid (bundled + external), `actionlint` clean, 18 deploy tests pass. No src changes in this resolution (Helm/docs/workflow only).
+
+---
+
+## Fix-up addendum — PR #14 fix-up commit `ccf6113` (independent adversarial re-review)
+
+Scope: review of the fix-up delta ONLY (image-variant split, dependency extras,
+`COPY --chown`, release matrix, test-credential docs). Base commit `05a03fc` already
+PASSED audit (0C/0H). Read-only; auditor did not write this code.
+
+**Fix-up verdict: PASS — Critical: 0, High: 0, Med: 0, Low: 2 (accepted/pre-existing).**
+No High/Critical findings in this pass — the fix-up does not block the PR merge.
+
+### Threat model of the delta
+New input/trust surface introduced = the optional-extras pattern, which adds three
+runtime guarded-import paths (`bedrock _session`, `pii_detector _get_analyzer`, tracing
+gRPC selector) plus a build-arg (`INSTALL_EXTRAS`) and a release-matrix tag scheme.
+Verified each new boundary below.
+
+### Probe results
+1. **ImportError honesty / fail-safe (R3) — PASS.**
+   - PII (`src/orchestration/detectors/pii_detector.py:139-160`): when Presidio is
+     absent the `ImportError` is caught, `_analyzer_failed` latches, and a `RuntimeError`
+     is raised. `PIIHook.inspect` (line 232-236) re-raises it; `HookRegistry._run_hook`
+     (`src/orchestration/registry.py:176-184`) wraps any non-terminal exception as
+     `HookFailSafeError` → 500, request NOT forwarded. **Fail-CLOSED confirmed — no
+     silent pass.** The added `hint` is a static string; the existing comment-enforced
+     rule "Never log exc message — may contain path info" is preserved (only
+     `type(exc).__name__` + static hint are logged). No path/secret leak.
+   - Bedrock (`src/gateway/router/providers/bedrock_provider.py:156-163`): absent
+     `aioboto3` raises a `RuntimeError` with a static install hint (no path/secret). Lazy
+     import preserved (module import / test collection never requires the extra).
+   - Tracing (`src/gateway/observability/tracing.py:124-135`): gRPC-extra-absent
+     `ImportError` is swallowed → degrades to the no-op span sink (R8); startup never
+     crashes. This is correct fail-safe for telemetry (NOT a security control); the
+     warning logs only a static hint + `type(exc).__name__`. No endpoint hardcoded —
+     `OTLPSpanExporter()` reads `OTEL_EXPORTER_OTLP_ENDPOINT` itself.
+2. **Slim image posture — PASS.** `Dockerfile` still `USER 1000`, `nologin` shell, no
+   secrets baked (R4/R9 intact). `COPY --chown=sentinel:sentinel` grants ownership to
+   the non-root uid only — NOT root, NOT world-write. The replaced `chown -R` is gone;
+   no new write surface for root/other. (See Low-1 re: entrypoint ownership.)
+3. **Release matrix — PASS.** Both matrix variants (`slim`,`full`) `cosign sign` and
+   `cosign attest` by **immutable digest** (`@${{ steps.build.outputs.digest }}`), not by
+   tag — so no unsigned/wrong image can occupy a signed tag. Tag namespaces are disjoint
+   (slim → `-slim` only; full → `-full` + unsuffixed `:latest`/`:VERSION`), so slim cannot
+   hijack `:latest`. OIDC identity-regexp unchanged + correct
+   (`sentinel-release.yml@refs/tags/v`). Per-variant SBOMs named distinctly (no overwrite).
+4. **OTLP HTTP default — PASS.** No new exposure vs gRPC: same span hygiene (R9), endpoint
+   strictly env-driven, exporter only attached when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+   Helm/compose default endpoints moved `:4317`→`:4318` (transport change only).
+5. **`claude-agent-sdk` removal — PASS.** Grep confirms zero imports under `src/`
+   (only `orchestrator/` fleet harness + docs). Moving it to the `dev` extra is safe —
+   no hidden runtime break.
+6. **Docs / fixtures — PASS.** `.env.example` carries only placeholders
+   (`REPLACE_ME_WITH_REAL_KEY`, empty `OTEL_EXPORTER_OTLP_ENDPOINT=`); the prior
+   hardcoded `POSTGRES_PASSWORD=secret` example was REMOVED from `tests/README.md`
+   (improvement). New tests use obvious dummies (`"ak"`,`"sk"`); no PII, no real secrets.
+
+**Semgrep** (`p/python` + `p/security-audit` + `p/secrets`, `--severity=ERROR`) on the
+three changed source files: **0 findings, 0 errors.**
+
+### Findings (both Low — non-blocking)
+
+| # | Sev | File:line | Issue | Fix |
+|---|-----|-----------|-------|-----|
+| FU-L1 | Low | `Anoryx-Sentinel/Dockerfile:93` | `COPY --chown=sentinel:sentinel docker-entrypoint.sh /usr/local/bin/...` makes the entrypoint owned by the runtime uid 1000, so a compromised process running as that uid could rewrite its own entrypoint (persistence across restart if the layer is writable). No privilege escalation (cannot gain root). Container is intended read-only-root-fs (mitigates). | Leave the entrypoint root-owned (`chmod +x` only, no `--chown` on that COPY), or document/enforce `readOnlyRootFilesystem: true`. Minor hardening. |
+| FU-L2 | Low | `Anoryx-Sentinel/docs/adr/0012-deployment-and-release.md:211` | ADR text "`SENTINEL_PROVISION_APP_ROLE` is a local/CI test switch only (`0` in production)" is slightly imprecise: the Helm `migration-job.yaml:42` still sets it to `"1"` when the opt-in `.Values.migrations.provisionAppRole` is true (pre-existing, not changed by this fix-up). Not a regression; the role-provisioning path is gated + documented (`provisionAppRole=false` for managed PG). | Soften the ADR wording to "default `0`; opt-in for self-host first-run migrations via `migrations.provisionAppRole`" for accuracy. |
+
+**Re-verification:** Semgrep clean (3 src files); `helm template` renders valid images for
+slim (`0.10.0-slim`) and full (`0.10.0-full`); no top-level imports of the extracted heavy
+deps in `src/` (slim collection safe); fail-safe BLOCK path traced end-to-end.
