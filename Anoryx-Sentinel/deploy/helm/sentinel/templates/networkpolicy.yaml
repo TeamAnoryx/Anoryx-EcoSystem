@@ -1,0 +1,101 @@
+{{- if .Values.networkPolicy.enabled -}}
+# Restrictive-by-default NetworkPolicy (ADR-0012 §8, R8). policyTypes lists both
+# Ingress and Egress, so anything NOT explicitly allowed below is DENIED.
+#
+# Honest limitation (ADR-0012 §10): plain Kubernetes NetworkPolicy cannot match
+# egress by hostname, so provider egress (*.openai.com / *.anthropic.com) is
+# expressed as :443 — restrict by IP via networkPolicy.providerEgressCIDRs, or
+# use a FQDN-aware CNI (Cilium/Calico) for true hostname rules.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sentinel.fullname" . }}
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "sentinel.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Same-namespace traffic (e.g. an ingress controller) — gateway HTTP port only
+    # (L4-scoped; code-review Low L1).
+    - from:
+        - podSelector: {}
+      ports:
+        - port: http
+          protocol: TCP
+    # Prometheus scrape of /metrics + probes from the monitoring namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.monitoringNamespace }}
+      ports:
+        - port: http
+          protocol: TCP
+  egress:
+    # DNS resolution.
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- if .Values.postgres.bundled }}
+    # Bundled Postgres (same namespace) — port 5432 only.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "sentinel.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+    {{- end }}
+    {{- if .Values.redis.bundled }}
+    # Bundled Redis (same namespace) — port 6379 only.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "sentinel.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: redis
+      ports:
+        - port: 6379
+          protocol: TCP
+    {{- end }}
+    {{- if .Values.otelCollector.enabled }}
+    # Bundled OTel Collector (same namespace) — OTLP ports only.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "sentinel.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: otel-collector
+      ports:
+        - port: 4317
+          protocol: TCP
+        - port: 4318
+          protocol: TCP
+    {{- end }}
+    # Provider API egress over HTTPS (:443). FQDN restriction needs a FQDN-aware
+    # CNI; set providerEgressCIDRs to restrict by IP block.
+    {{- if .Values.networkPolicy.providerEgressCIDRs }}
+    - to:
+        {{- range .Values.networkPolicy.providerEgressCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - port: 443
+          protocol: TCP
+    {{- else }}
+    - ports:
+        - port: 443
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    # Operator-supplied egress rules — REQUIRED for external managed Postgres/
+    # Redis (bundled=false) and for AWS Bedrock. See deploy/SELF_HOST.md.
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

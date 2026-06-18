@@ -1,0 +1,4 @@
+# Shell scripts MUST stay LF even on Windows checkouts — a CRLF shebang breaks
+# the container entrypoint (F-010 docker-entrypoint.sh) on Linux.
+*.sh text eol=lf
+docker-entrypoint.sh text eol=lf

@@ -82,7 +82,9 @@ _SENTINEL_AGENT_ID = "gateway-core"
 _SSE_CONTENT_TYPE = b"text/event-stream"
 
 # Paths exempt from audit emit (operational probes — no tenant data, no usage).
-_AUDIT_EXEMPT_PATHS = frozenset({"/health", "/ready"})
+# F-010 (ADR-0012 §6/§11, Affu-authorized R1 deviation): /livez /readyz /healthz
+# join /health /ready so k8s probes (hit every few seconds) never spam the audit log.
+_AUDIT_EXEMPT_PATHS = frozenset({"/health", "/ready", "/livez", "/readyz", "/healthz"})
 
 
 def _generate_request_id() -> str:

@@ -1,0 +1,50 @@
+# Anoryx Sentinel — Docker build context exclusions (F-010, ADR-0012 D1).
+#
+# Keep the build context small AND ensure no secrets, tests, or local cruft are
+# ever copied into an image layer (R4 — no secrets baked).
+
+# Version control
+.git
+.gitignore
+.github
+
+# Tests + docs + deploy artifacts (not needed at runtime; reduces image size)
+tests
+docs
+deploy
+infra
+frontend
+orchestrator
+contracts
+
+# Python caches / build outputs
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+**/*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+build
+dist
+*.so
+
+# Secrets + local env (MUST never enter an image layer — R4)
+.env
+.env.*
+!.env.example
+secrets
+**/secrets
+*.pem
+*.key
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+*.swp

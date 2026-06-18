@@ -1,0 +1,154 @@
+# Anoryx Sentinel Helm values (F-010, ADR-0012).
+#
+# Production checklist (see deploy/SELF_HOST.md):
+#   - Set postgres.bundled=false / redis.bundled=false → point at managed services.
+#   - Pre-create the envSecret (DATABASE_URL, APP_DATABASE_URL, REDIS_URL,
+#     SENTINEL_KEY_SECRET, UPSTREAM_BASE_URL, provider keys) and set envSecret below.
+#   - Wire ingress + TLS (cert-manager) at your edge.
+
+image:
+  repository: ghcr.io/teamanoryx/anoryx-sentinel
+  tag: ""                      # defaults to .Chart.AppVersion when empty
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: false               # operators wire their own (nginx + cert-manager example in README)
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+# --- Sensitive config -------------------------------------------------------- #
+# Name of a PRE-EXISTING Kubernetes Secret holding the gateway's sensitive env
+# (DATABASE_URL, APP_DATABASE_URL, REDIS_URL, SENTINEL_KEY_SECRET,
+# UPSTREAM_BASE_URL, provider keys). Surfaced via envFrom: secretRef.
+envSecret: ""
+# Set true ONLY to have the chart render the Secret from secretData below (not
+# recommended for production — prefer an externally-managed Secret / ESO).
+createEnvSecret: false
+secretData: {}                 # map of KEY: value, used only when createEnvSecret=true
+
+# --- Non-secret config (plain env vars) -------------------------------------- #
+env: []                        # list of {name, value}
+extraEnv: []
+
+# --- Workers / probes -------------------------------------------------------- #
+workers: 1                     # SENTINEL_WORKERS
+
+# --- Bundled Postgres (γ: bundled by default; escape hatch below) ------------ #
+postgres:
+  bundled: true
+  image: postgres:16-alpine
+  storage: 8Gi
+  storageClassName: ""
+  # Used when bundled=true to seed the bundled instance + assemble URLs.
+  auth:
+    username: sentinel
+    database: sentinel_dev
+    # Dev-grade default password for the BUNDLED instance (ADR-0012 §4: bundled
+    # stores are demo-grade). Production uses bundled=false + an external secret.
+    password: sentinel
+    existingSecret: ""         # Secret with POSTGRES_PASSWORD (else password above is used)
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+  # Escape hatch — set bundled=false and fill these to use managed Postgres.
+  external:
+    host: ""
+    port: 5432
+    database: sentinel
+    secretName: ""             # Secret providing DATABASE_URL / APP_DATABASE_URL
+
+# --- Bundled Redis (γ) ------------------------------------------------------- #
+redis:
+  bundled: true
+  image: redis:7-alpine
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 320Mi }
+  external:
+    host: ""
+    port: 6379
+    secretName: ""             # Secret providing REDIS_URL
+
+# --- OpenTelemetry Collector (bundled interop; logging exporter only) -------- #
+otelCollector:
+  enabled: true
+  image: otel/opentelemetry-collector-contrib:0.104.0
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+# --- Schema migrations (pre-upgrade Alembic Job; ADR-0012 §4) ---------------- #
+migrations:
+  enabled: true
+  # provision the sentinel_app role on first run (F-003b).
+  provisionAppRole: true
+
+resources:
+  requests: { cpu: 250m, memory: 512Mi }
+  limits: { cpu: 500m, memory: 1Gi }
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# --- NetworkPolicy (restrictive by default — R8) ----------------------------- #
+networkPolicy:
+  enabled: true
+  # Plain k8s NetworkPolicy cannot match egress by hostname. The chart scopes
+  # in-cluster egress to the bundled Postgres/Redis/OTel pods on their specific
+  # ports, plus DNS + provider :443. To RESTRICT provider egress by IP set CIDRs
+  # here (FQDN rules need a Cilium/Calico CNI). Empty = :443 to any IP (ADR-0012 §10).
+  providerEgressCIDRs: []      # e.g. ["203.0.113.0/24"]
+  # Extra raw egress rules. REQUIRED for EXTERNAL managed Postgres/Redis
+  # (bundled=false — the in-cluster pod rules won't match them) and for AWS
+  # Bedrock (F-007 carryover). Example:
+  #   - to: [{ ipBlock: { cidr: 10.20.0.0/16 } }]
+  #     ports: [{ port: 5432, protocol: TCP }]
+  extraEgress: []
+  # Namespace allowed to scrape /metrics + probes (Prometheus).
+  monitoringNamespace: monitoring
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# --- Security contexts (R9) -------------------------------------------------- #
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}

@@ -1,0 +1,48 @@
+{{- if .Values.redis.bundled -}}
+# Bundled Redis — DEV/DEMO-GRADE (ADR-0012 §4), password-less (matches the
+# F-009 compose posture). For production set redis.bundled=false → managed
+# Redis (ElastiCache/MemoryStore). Redis is non-fatal (F-009 γ): if it is down
+# the gateway falls back to in-process rate limiting.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sentinel.redisFullname" . }}
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "sentinel.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels:
+        {{- include "sentinel.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+    spec:
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image }}
+          args:
+            - "--save"
+            - "60"
+            - "1"
+            - "--loglevel"
+            - "warning"
+            - "--maxmemory"
+            - "256mb"
+            - "--maxmemory-policy"
+            - "allkeys-lru"
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "PING"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+{{- end }}

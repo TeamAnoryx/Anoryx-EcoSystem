@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "anoryx-sentinel"
-version = "0.1.0"
+version = "0.10.0"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115,<1",
@@ -49,6 +49,10 @@ dependencies = [
     "jsonschema[format]>=4.22,<5",
     # prometheus-client: F-009 /metrics exposition endpoint (ADR-0011 D4).
     "prometheus-client>=0.20,<1",
+    # opentelemetry OTLP exporter: F-010 (ADR-0012 §5, R1 Deviation 1) wires the
+    # app→collector OTLP span export, env-gated on OTEL_EXPORTER_OTLP_ENDPOINT.
+    # Upper-bounded to match the F-009 opentelemetry pins (api/sdk <2).
+    "opentelemetry-exporter-otlp-proto-grpc>=1.24,<2",
 ]
 
 [project.optional-dependencies]

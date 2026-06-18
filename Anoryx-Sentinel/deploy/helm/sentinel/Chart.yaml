@@ -1,0 +1,19 @@
+apiVersion: v2
+name: sentinel
+description: Anoryx Sentinel — zero-trust AI gateway (F-010, ADR-0012)
+type: application
+# Chart version is independent of the app version (SemVer for the chart itself).
+version: 0.1.0
+# appVersion tracks the Sentinel release (single source of truth: src/gateway/__init__.py).
+appVersion: "0.10.0"
+keywords:
+  - ai-gateway
+  - zero-trust
+  - llm
+  - security
+home: https://github.com/TeamAnoryx/anoryx-sentinel
+icon: https://raw.githubusercontent.com/TeamAnoryx/anoryx-sentinel/main/docs/assets/sentinel-icon.png
+sources:
+  - https://github.com/TeamAnoryx/anoryx-sentinel
+maintainers:
+  - name: Anoryx

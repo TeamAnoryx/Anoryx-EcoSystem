@@ -48,7 +48,9 @@ _UUID_RE = re.compile(
 )
 _AGENT_SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
-_AUTH_EXEMPT_PATHS = frozenset({"/health", "/ready"})
+# F-010 (ADR-0012 §6/§11, Affu-authorized R1 deviation): /livez /readyz /healthz
+# join /health /ready — operational probes, unauthenticated by design. Additive only.
+_AUTH_EXEMPT_PATHS = frozenset({"/health", "/ready", "/livez", "/readyz", "/healthz"})
 
 
 def _get_auth_exempt_paths() -> frozenset[str]:

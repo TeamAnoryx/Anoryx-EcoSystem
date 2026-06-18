@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -83,18 +84,39 @@ def init_tracing(app: "FastAPI", settings: "GatewaySettings") -> None:
 
 
 def _configure_provider() -> None:
-    """Set up a TracerProvider with no export backend (no-op sink for F-009).
+    """Set up the TracerProvider, wiring an OTLP exporter ONLY when configured.
 
-    F-010 replaces this with an OTLP exporter configured from env vars.
-    No SpanProcessor is added; the SDK's default NoOpSpanProcessor handles all
-    spans — they are created in-process for context propagation but not exported.
+    F-010 (ADR-0012 §5, R1 Deviation 1) completes the F-009 handoff: when the
+    OTel-standard env var OTEL_EXPORTER_OTLP_ENDPOINT is set, a BatchSpanProcessor
+    with an OTLP/gRPC exporter is attached so spans flow to the bundled OTel
+    Collector (or any OTLP backend). When the env var is UNSET, no SpanProcessor
+    is added — behavior is byte-identical to F-009 (spans exist in-process for
+    W3C context propagation but are never exported).
+
+    R8: any failure wiring the exporter (e.g. the exporter package missing, or a
+    malformed endpoint) is swallowed — tracing degrades to the no-op sink and the
+    request path is never affected.
     """
     from opentelemetry import trace
     from opentelemetry.sdk.trace import TracerProvider
 
     provider = TracerProvider()
-    # No span processor / exporter added. Spans exist in memory for context
-    # propagation (W3C traceparent injection) but are not exported (F-010).
+
+    if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+        try:
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+                OTLPSpanExporter,
+            )
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+            # OTLPSpanExporter() reads OTEL_EXPORTER_OTLP_ENDPOINT (+ standard OTEL_*
+            # env vars) itself — no endpoint is hardcoded here.
+            provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+            log.info("otel_otlp_exporter_wired")
+        except Exception as exc:
+            # R8: never let exporter wiring break startup; fall back to no-op sink.
+            log.warning("otel_otlp_exporter_wire_failed", error_class=type(exc).__name__)
+
     trace.set_tracer_provider(provider)
 
 

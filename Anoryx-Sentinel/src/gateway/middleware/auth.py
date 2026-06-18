@@ -64,7 +64,10 @@ log = structlog.get_logger(__name__)
 # /metrics is unauthenticated and read-only (ADR-0011 R5 / M1 fix).
 # metrics_path is read from settings so the path is consistent with the
 # registered route — never a hardcoded literal.
-_AUTH_EXEMPT_PATHS = frozenset({"/health", "/ready"})
+# F-010 (ADR-0012 §6/§11, Affu-authorized R1 deviation): the k8s-idiomatic
+# probes /livez /readyz /healthz join /health /ready — same category (operational,
+# no tenant data, unauthenticated by design). Additive only; no logic change.
+_AUTH_EXEMPT_PATHS = frozenset({"/health", "/ready", "/livez", "/readyz", "/healthz"})
 
 
 def _get_auth_exempt_paths() -> frozenset[str]:
