@@ -54,6 +54,68 @@ from policy.enforcement import (
 log = structlog.get_logger(__name__)
 
 
+async def _dispatch_with_span(adapter, provider: str, validated_body, ctx):
+    """Execute adapter.complete() inside a provider_call INTERNAL OTel span.
+
+    F-009 D5 (ADR-0011 §6): manual INTERNAL span at the provider dispatch boundary.
+    R9: only provider + request_id attributes are set — no key, prompt, or PII.
+    R8: span failure (span setup / instrumentation error) never propagates.
+        Exceptions from the adapter itself propagate normally to the caller.
+
+    The two failure modes are:
+      1. OTel span setup fails (import error, provider not configured) → run untraced.
+      2. adapter.complete() raises (ProviderError, etc.) → always propagates.
+    """
+    # Try to get a tracer. On failure, run untraced.
+    try:
+        from opentelemetry.trace import SpanKind
+
+        from gateway.observability.tracing import get_tracer
+
+        tracer = get_tracer("sentinel.provider_call")
+    except Exception:
+        # R8: OTel machinery broken — call the adapter directly (no double-call).
+        return await adapter.complete(validated_body, ctx)
+
+    # Try to start a span. On failure, call untraced.
+    try:
+        span_cm = tracer.start_as_current_span("provider_call", kind=SpanKind.INTERNAL)
+    except Exception:
+        return await adapter.complete(validated_body, ctx)
+
+    # Execute inside the span. Adapter exceptions propagate normally.
+    try:
+        with span_cm as span:
+            try:
+                span.set_attribute("provider", provider)
+                span.set_attribute("request_id", getattr(ctx, "request_id", "unknown"))
+            except Exception:
+                pass  # R8: attribute set failure must not affect the call.
+            try:
+                result = await adapter.complete(validated_body, ctx)
+                try:
+                    span.set_attribute("result", "success")
+                except Exception:
+                    pass
+                return result
+            except Exception as exc:
+                try:
+                    span.set_attribute("result", "error")
+                    span.record_exception(exc)
+                except Exception:
+                    pass
+                raise  # propagate ProviderError, GatewayError, etc. unchanged.
+    except Exception:
+        # Only reached if the span context-manager itself raised (very unlikely).
+        # In that case, attempt the call once more untraced. If the span correctly
+        # re-raised the adapter exception, this branch would catch it and re-raise
+        # as a double-call — so we must only re-call if the span CM itself failed.
+        # We distinguish by checking if we already started the call (no clean way
+        # without a flag). Instead: do not re-call here at all; let the exception
+        # propagate. The call inside the `with` block already happened.
+        raise
+
+
 @dataclass
 class StreamRouteResult:
     """Mutable holder threaded into route_stream so the streaming handler can
@@ -337,7 +399,11 @@ async def route_non_stream(
         )
 
         try:
-            completion, tokens_in, tokens_out = await adapter.complete(validated_body, ctx)
+            # F-009 D5: provider_call INTERNAL span wraps the adapter round-trip
+            # (ADR-0011 §6). R8: span failure never propagates.
+            completion, tokens_in, tokens_out = await _dispatch_with_span(
+                adapter, provider, validated_body, ctx
+            )
         except ProviderError as exc:
             last_kind = exc.kind
             if exc.is_retryable and attempt_index < len(chain) - 1:

@@ -26,7 +26,10 @@
     { "$ref": "#/$defs/ClassifierInvocationFailedEvent" },
     { "$ref": "#/$defs/ShadowAiDetectedOutboundEvent" },
     { "$ref": "#/$defs/RecursiveInjectionAttemptEvent" },
-    { "$ref": "#/$defs/JudgeBillingEvent" }
+    { "$ref": "#/$defs/JudgeBillingEvent" },
+    { "$ref": "#/$defs/RateLimitDegradedEvent" },
+    { "$ref": "#/$defs/RateLimitRecoveredEvent" },
+    { "$ref": "#/$defs/RateLimitRedisErrorEvent" }
   ],
 
   "$comment": "Dispatch is normative via oneOf + the event_type const on each variant under JSON Schema Draft 2020-12. The 'discriminator' keyword below is a NON-NORMATIVE hint for OpenAPI tooling ONLY; it is not a 2020-12 keyword and has NO validation effect under this dialect. Do not rely on it for correctness.",
@@ -973,6 +976,119 @@
           "type": "string",
           "enum": ["logged"],
           "description": "Disposition: 'logged' (cost-audit trail)."
+        }
+      }
+    },
+    "RateLimitDegradedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-009 (ADR-0011 §7) when the Redis-backed rate limiter falls back to the in-process limiter on a Redis connection/timeout failure (failure mode γ). Detect-and-audit only: enforcement continues per-worker on the legacy path; this event records the degradation transition. Emitted with the triggering request's REAL four IDs when raised on the admission path; emitted with the reserved system IDs (tenant/team/project = WILDCARD_UUID, agent_id = 'rate-limiter') when raised by the background health loop (see contracts/ids.md, third documented WILDCARD_UUID use). Carries ONLY the Redis error class/module for forensics — NEVER the exception message, which may contain a host, port, or credential.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "action_taken"
+      ],
+      "properties": {
+        "event_type": { "const": "rate_limit_degraded" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "redis_error_class": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "OPTIONAL Redis exception class name (e.g. 'ConnectionError', 'TimeoutError') from type(exc).__name__. Forensic only. NEVER the exception message (it may leak a host/port/credential)."
+        },
+        "redis_error_module": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "OPTIONAL module of the Redis exception class (e.g. 'redis.exceptions') from type(exc).__module__. Forensic only. NEVER the exception message."
+        },
+        "action_taken": {
+          "type": "string",
+          "enum": ["logged"],
+          "description": "Disposition: 'logged' (detect-and-audit only; the limiter continues enforcing on the in-process fallback path)."
+        }
+      }
+    },
+    "RateLimitRecoveredEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-009 (ADR-0011 §7) when the background health loop observes Redis returning to health and the limiter resumes the Redis-backed primary path (failure mode γ recovery). Detect-and-audit only. Always a system-emitted event with no request context, so it carries the reserved system IDs (tenant/team/project = WILDCARD_UUID, agent_id = 'rate-limiter'); see contracts/ids.md (third documented WILDCARD_UUID use). tenant_id = WILDCARD_UUID here denotes 'the Sentinel system itself', never a cross-tenant grant.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "action_taken"
+      ],
+      "properties": {
+        "event_type": { "const": "rate_limit_recovered" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": {
+          "type": "string",
+          "enum": ["logged"],
+          "description": "Disposition: 'logged' (detect-and-audit only; the Redis-backed primary path has resumed)."
+        }
+      }
+    },
+    "RateLimitRedisErrorEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-009 (ADR-0011 §7) on the admission path per distinct Redis error encountered by the rate limiter (forensic trail, distinct from the once-per-outage rate_limit_degraded transition). Detect-and-audit only: enforcement continues per-worker on the legacy path. Carries the triggering request's REAL four IDs. Carries ONLY the Redis error class/module for forensics — NEVER the exception message, which may contain a host, port, or credential.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "action_taken"
+      ],
+      "properties": {
+        "event_type": { "const": "rate_limit_redis_error" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "redis_error_class": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "OPTIONAL Redis exception class name (e.g. 'ConnectionError', 'TimeoutError') from type(exc).__name__. Forensic only. NEVER the exception message (it may leak a host/port/credential)."
+        },
+        "redis_error_module": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "OPTIONAL module of the Redis exception class (e.g. 'redis.exceptions') from type(exc).__module__. Forensic only. NEVER the exception message."
+        },
+        "action_taken": {
+          "type": "string",
+          "enum": ["logged"],
+          "description": "Disposition: 'logged' (detect-and-audit only; the limiter continues enforcing on the in-process fallback path)."
         }
       }
     }

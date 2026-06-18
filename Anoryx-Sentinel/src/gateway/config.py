@@ -44,6 +44,23 @@ class GatewaySettings(BaseSettings):
     # CORS: default-deny. Explicit allowlist only. Never "*" with credentials.
     cors_allowed_origins: list[str] = []
 
+    # --- F-009 Redis-backed rate limiting (ADR-0011) ---
+    # redis_url keeps its default so γ (fallback to in-process) works without
+    # Redis configured. A required field would contradict failure mode γ.
+    redis_url: str = "redis://localhost:6379/0"
+    # R10: connect timeout 2.0 s; socket read/write timeout 1.0 s (hardcoded in redis_client.py).
+    redis_connection_timeout: float = 2.0
+    redis_pool_size: int = 10
+
+    # --- F-009 Observability (ADR-0011 §4-§5) ---
+    # Per-tenant metrics gate: default False to avoid linear cardinality growth
+    # with tenant count. Enable only when operationally needed.
+    # WARNING: setting this to True increases Prometheus storage cost linearly
+    # with tenant count; enable only when operationally needed.
+    enable_per_tenant_metrics: bool = False
+    metrics_path: str = "/metrics"
+    enable_otel: bool = True
+
     # --- F-006 multi-provider router (ADR-0008 §10) ---
     # Provider keys are SECRETS — never logged (see module docstring + logging.py).
     # OpenAI uses the existing required upstream_base_url; Anthropic + Bedrock are

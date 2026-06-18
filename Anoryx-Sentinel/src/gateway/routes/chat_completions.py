@@ -61,6 +61,7 @@ from gateway.models import (
     CreateChatCompletionRequest,
     ErrorResponse,
 )
+from gateway.observability.metrics import observe_request_duration, record_request
 from gateway.router import cost as _cost
 from gateway.router.registry import ProviderRegistry
 from gateway.router.selection import StreamRouteResult, route_non_stream, route_stream
@@ -253,11 +254,17 @@ async def create_chat_completion(
             log.error("egress_context_bind_failed", request_id=request_id)
 
         # --- Step 6: Rate limit (keyed on resolved IDs, never IP) ---
+        # HIGH-2: pass team_id so the D3 team tier is active in production.
+        # TenantContext.team_id is the server-resolved team UUID from the
+        # virtual_api_keys row — never a client-supplied value.
+        # LOW-2: pass request_id for real attribution in degraded-event payloads.
         is_stream_request = _peek_stream_flag(request)
         rl_limit, rl_remaining, rl_reset = await check_rate_limit(
             virtual_key_id=tenant_context.virtual_key_id,
             tenant_id=tenant_context.tenant_id,
             is_stream=is_stream_request,
+            team_id=tenant_context.team_id,
+            request_id=request_id,
         )
 
         # --- Step 7: Body validation ---
@@ -446,6 +453,16 @@ async def create_chat_completion(
                 )
                 request.state.audit_emitted = True
 
+                # F-009: record metrics (pure addition, no semantic change — R2).
+                # Non-stream path has no StreamRouteResult; provider is 'none' until
+                # STEP 3b wires the resolved provider through the response context.
+                record_request("none", "2xx")
+                observe_request_duration(
+                    "/v1/chat/completions",
+                    "none",
+                    time.monotonic() - start_time,
+                )
+
                 headers = _success_headers(request_id, rl_limit, rl_remaining, rl_reset)
                 return Response(
                     content=redacted_text,
@@ -465,6 +482,16 @@ async def create_chat_completion(
             )
             # Signal TerminalAuditMiddleware to skip double-emission.
             request.state.audit_emitted = True
+
+            # F-009: record metrics (pure addition, no semantic change — R2).
+            # Non-stream path has no StreamRouteResult; provider is 'none' until
+            # STEP 3b wires the resolved provider through the response context.
+            record_request("none", "2xx")
+            observe_request_duration(
+                "/v1/chat/completions",
+                "none",
+                time.monotonic() - start_time,
+            )
 
             headers = _success_headers(request_id, rl_limit, rl_remaining, rl_reset)
             return JSONResponse(
@@ -496,6 +523,16 @@ async def create_chat_completion(
         except Exception:
             active_exc = GatewayError("internal_error")
             request.state.audit_emitted = True
+
+        # F-009: record error metrics (pure addition — R2).
+        _, _status_code = ERROR_TABLE.get(active_exc.error_code, ("", 500))
+        _err_class = f"{_status_code // 100}xx"
+        record_request("none", _err_class)
+        observe_request_duration(
+            "/v1/chat/completions",
+            "none",
+            time.monotonic() - start_time,
+        )
 
         resp = _error_response(
             active_exc.error_code, request_id, retry_after=active_exc.retry_after

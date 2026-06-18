@@ -131,6 +131,24 @@ class HookContext:
         NEVER raises: any append failure is logged at ERROR level and swallowed
         so a DB hiccup does not convert a detection into a pass-through.
         """
+        # Metrics increment happens BEFORE the budget check so that every
+        # security occurrence is counted even when audit is budget-coalesced or
+        # the DB append later fails (R8 spirit — instrumentation never blocks).
+        # Lazy import avoids a gateway<->orchestration circular import at module
+        # load time.
+        try:
+            from gateway.observability import metrics as _metrics  # noqa: PLC0415
+
+            _metrics.record_event(
+                event.get("event_type"),
+                tenant_id=self.tenant_context.tenant_id,
+                policy_type=event.get("violation_type"),
+                preset=event.get("judge_preset"),
+                outcome=event.get("judge_outcome") or event.get("outcome"),
+            )
+        except Exception:
+            pass  # metrics MUST NEVER affect emit semantics
+
         if self.budget_exhausted(detector_slug):
             log.warning(
                 "orchestration.event_cap_reached",
@@ -161,6 +179,15 @@ class HookContext:
                 request_id=self.request_id,
                 # Never log event content — may contain tenant context.
             )
+            # Record the audit write failure in metrics. Isolated in its own
+            # try/except so a metrics error never masks the original failure or
+            # changes the return value.
+            try:
+                from gateway.observability import metrics as _metrics  # noqa: PLC0415
+
+                _metrics.record_audit_write_failure(component=detector_slug)
+            except Exception:
+                pass
             return False
 
 

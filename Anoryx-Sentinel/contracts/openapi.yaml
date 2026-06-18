@@ -85,6 +85,11 @@ tags:
     description: OpenAI-compatible legacy text completions.
   - name: models
     description: Model discovery.
+  - name: observability
+    description: |
+      Operational observability surface (metrics, health). NOT part of the
+      OpenAI-compatible client surface. Operated/scraped by infrastructure, not
+      by AI SDK clients.
 
 paths:
   /chat/completions:
@@ -239,6 +244,61 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/InternalError" }
+
+  /metrics:
+    get:
+      tags: [observability]
+      operationId: getMetrics
+      summary: Prometheus metrics exposition (operational)
+      description: |
+        Operational metrics in Prometheus text exposition format, for the
+        Prometheus pull/scrape model. This is NOT part of the OpenAI-compatible
+        client surface — it is operated by infrastructure, not called by AI SDK
+        clients. It is the ONLY new HTTP endpoint added for observability (see
+        docs/adr/0011-rate-limiting-observability.md §5).
+
+        UNAUTHENTICATED BY DESIGN. Prometheus scrapes this endpoint anonymously
+        (pull model), so the global bearerAuth requirement is overridden to empty
+        for this path. Because it carries no auth, this endpoint MUST be
+        network-isolated / firewalled in production and never bound to a
+        public-facing listener. This is an operational control, not a substitute
+        for authentication.
+
+        CONTENT (audit-ready, honest framing): exposes AGGREGATE operational
+        metrics only — request counts, latencies, rate-limit decision counts,
+        detection/policy counters, and a Redis-health gauge. It contains NO
+        secrets, NO virtual API keys, NO prompt or completion content, and NO PII
+        (per ADR-0011 §5 / R9). Default label sets are bounded and do NOT grow
+        with tenant count. A `tenant_id` label is added to tenant-scoped series
+        ONLY when `ENABLE_PER_TENANT_METRICS=true`, and only ever uses the
+        server-resolved tenant_id (never a client-supplied header value).
+      security: []
+      responses:
+        "200":
+          description: |
+            Metrics in Prometheus text exposition format. The body is a sequence
+            of `# HELP` / `# TYPE` comment lines followed by sample lines. The
+            exact metric set is operational and may evolve; clients MUST parse it
+            as Prometheus exposition text, not as a fixed schema.
+
+            CONTENT-TYPE: the response `Content-Type` is the value of
+            `prometheus_client.CONTENT_TYPE_LATEST` for the installed client
+            version (pinned `prometheus-client>=0.20,<1`) — currently
+            `text/plain; version=1.0.0; charset=utf-8`; older clients in range
+            emit `version=0.0.4`. The media type below is keyed generically as
+            `text/plain` so the contract stays true across the pinned range; rely
+            on the actual response header for the exact exposition version rather
+            than hard-coding it.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            text/plain:
+              schema:
+                type: string
+                description: |
+                  Prometheus text exposition payload (the concrete `version=` is
+                  reported in the response Content-Type header). Aggregate
+                  operational metrics only; no secrets, keys, content, or PII.
 
 components:
 

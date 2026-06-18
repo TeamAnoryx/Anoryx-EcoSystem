@@ -50,6 +50,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import Response
 
+from gateway.config import get_settings
 from gateway.exceptions import ERROR_TABLE
 from persistence.database import get_privileged_session
 from persistence.repositories.virtual_api_key_repository import (
@@ -60,7 +61,22 @@ from persistence.repositories.virtual_api_key_repository import (
 log = structlog.get_logger(__name__)
 
 # Paths exempt from auth (operational probes only, outside /v1 surface).
+# /metrics is unauthenticated and read-only (ADR-0011 R5 / M1 fix).
+# metrics_path is read from settings so the path is consistent with the
+# registered route — never a hardcoded literal.
 _AUTH_EXEMPT_PATHS = frozenset({"/health", "/ready"})
+
+
+def _get_auth_exempt_paths() -> frozenset[str]:
+    """Return the full set of auth-exempt paths including the configured metrics path.
+
+    Reading settings here (rather than at module import) ensures the path is
+    correct even when tests override METRICS_PATH via monkeypatch + _reset_settings().
+    """
+    try:
+        return _AUTH_EXEMPT_PATHS | frozenset({get_settings().metrics_path})
+    except Exception:
+        return _AUTH_EXEMPT_PATHS
 
 
 def _get_request_id(request: Request) -> str:
@@ -98,7 +114,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        if request.url.path in _AUTH_EXEMPT_PATHS:
+        if request.url.path in _get_auth_exempt_paths():
             return await call_next(request)
 
         # MED-3: use the single canonical request_id from the outermost wrapper.

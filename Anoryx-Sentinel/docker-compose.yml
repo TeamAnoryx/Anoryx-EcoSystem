@@ -1,0 +1,71 @@
+# docker-compose.yml — Anoryx Sentinel local dev stack (F-009, ADR-0011)
+#
+# Secrets / passwords:
+#   Local-dev defaults are supplied via ${VAR:-default} substitution.
+#   Production MUST inject REDIS_URL with password from Vault or cloud KMS.
+#   Never commit a .env file with real credentials.
+#
+# Redis AUTH:
+#   Not configured here (local dev, no network exposure beyond host loopback).
+#   Production: set REDIS_URL=redis://:password@host:6379/0 in Vault/KMS and
+#   inject at pod startup. Do not add requirepass to this file.
+#
+# Bring up full stack:        docker compose up -d
+# Bring up redis only:        docker compose up -d redis
+#   (use when sentinel-postgres already runs standalone on host port 5432)
+#
+# Teardown:                   docker compose down
+# Teardown + remove volumes:  docker compose down -v
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: sentinel-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: >
+      redis-server
+      --save 60 1
+      --loglevel warning
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "PING"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    networks:
+      - sentinel-net
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: sentinel-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sentinel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sentinel}
+      POSTGRES_DB: ${POSTGRES_DB:-sentinel_dev}
+    volumes:
+      - sentinel-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sentinel} -d ${POSTGRES_DB:-sentinel_dev}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - sentinel-net
+
+networks:
+  sentinel-net:
+    driver: bridge
+
+volumes:
+  redis-data:
+  sentinel-postgres-data:

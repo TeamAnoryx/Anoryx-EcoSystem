@@ -30,6 +30,8 @@ from typing import Any
 
 import structlog
 
+from gateway.observability.tracing import add_trace_context
+
 # Compiled, case-insensitive. A key is dropped if ANY pattern matches.
 _SECRET_KEY_PATTERNS = (
     re.compile(r".*_API_KEY$", re.IGNORECASE),
@@ -73,6 +75,7 @@ def configure_logging() -> None:
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
+            add_trace_context,  # F-009 D5: inject trace_id/span_id from active OTel span.
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso", utc=True),
             redact_secrets_processor,  # threat #1: drop secret-shaped keys.
