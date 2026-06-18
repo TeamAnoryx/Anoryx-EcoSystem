@@ -45,8 +45,10 @@ spec:
             - name: ENABLE_OTEL
               value: {{ .Values.otelCollector.enabled | quote }}
             {{- if .Values.otelCollector.enabled }}
+            # OTLP/HTTP (:4318) is the core default; gRPC (:4317) needs the
+            # [otlp-grpc] extra (full image) + OTEL_EXPORTER_OTLP_PROTOCOL=grpc.
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://{{ include "sentinel.otelCollectorFullname" . }}:4317"
+              value: "http://{{ include "sentinel.otelCollectorFullname" . }}:4318"
             {{- end }}
             {{- if .Values.postgres.bundled }}
             # Bundled Postgres: connection PARTS + password via secretKeyRef (kept

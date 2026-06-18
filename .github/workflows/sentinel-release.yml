@@ -1,12 +1,11 @@
 name: Anoryx-Sentinel Release
 
-# F-010 (ADR-0012 §7). Triggered by a semver tag (v*). Builds + pushes a
-# multi-arch image to GHCR, signs it with cosign (keyless OIDC / Sigstore),
-# generates an SBOM with syft, publishes the Helm chart to GitHub Pages, and
-# creates a GitHub Release with auto-generated notes.
+# F-010 (ADR-0012 §7). Triggered by a semver tag (v*). Builds + pushes BOTH image
+# variants (slim = core only; full = all extras) to GHCR, signs each with cosign
+# (keyless OIDC / Sigstore), generates a per-variant SBOM with syft, publishes the
+# Helm chart, and creates a GitHub Release with auto-generated notes.
 #
-# This workflow is ADDED ALONGSIDE sentinel-ci.yml (R2 — the CI workflow is not
-# modified).
+# Added ALONGSIDE sentinel-ci.yml (R2 — the CI workflow is not modified).
 
 on:
   push:
@@ -15,7 +14,7 @@ on:
 
 permissions:
   contents: write       # create the GitHub Release + push gh-pages (chart)
-  packages: write       # push the image to GHCR
+  packages: write       # push images to GHCR
   id-token: write       # OIDC token for cosign keyless signing
   pages: write          # Helm chart publish
 
@@ -25,18 +24,31 @@ env:
 
 jobs:
   docker-build:
-    name: Build · push · sign · SBOM
+    name: Build · push · sign · SBOM (${{ matrix.variant }})
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.meta.outputs.version }}
-      digest: ${{ steps.build.outputs.digest }}
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [slim, full]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Derive version from tag
+      - name: Derive version + variant tags
         id: meta
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if [ "${{ matrix.variant }}" = "full" ]; then
+            # Full keeps the unsuffixed vX / latest tags (default pull).
+            echo "extras=all" >> "$GITHUB_OUTPUT"
+            {
+              echo "tags=${REGISTRY}/${IMAGE_NAME}:${version}-full,${REGISTRY}/${IMAGE_NAME}:latest-full,${REGISTRY}/${IMAGE_NAME}:${version},${REGISTRY}/${IMAGE_NAME}:latest"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "extras=" >> "$GITHUB_OUTPUT"
+            echo "tags=${REGISTRY}/${IMAGE_NAME}:${version}-slim,${REGISTRY}/${IMAGE_NAME}:latest-slim" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up QEMU (multi-arch emulation)
         uses: docker/setup-qemu-action@v3
@@ -61,9 +73,8 @@ jobs:
           push: true
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            INSTALL_EXTRAS=${{ steps.meta.outputs.extras }}
+          tags: ${{ steps.meta.outputs.tags }}
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -78,18 +89,18 @@ jobs:
         with:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
           format: spdx-json
-          output-file: sbom.spdx.json
+          output-file: sbom-${{ matrix.variant }}.spdx.json
 
       - name: Attest SBOM to the image (cosign)
         env:
           IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
-        run: cosign attest --yes --type spdxjson --predicate sbom.spdx.json "$IMAGE_REF"
+        run: cosign attest --yes --type spdxjson --predicate "sbom-${{ matrix.variant }}.spdx.json" "$IMAGE_REF"
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sbom-spdx-json
-          path: sbom.spdx.json
+          name: sbom-${{ matrix.variant }}-spdx-json
+          path: sbom-${{ matrix.variant }}.spdx.json
 
   helm-publish:
     name: Publish Helm chart (gh-pages)
@@ -126,19 +137,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Derive version
+        id: meta
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Create release with generated notes
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           body: |
-            ## Anoryx Sentinel ${{ needs.docker-build.outputs.version }}
+            ## Anoryx Sentinel ${{ steps.meta.outputs.version }}
 
-            Container image: `ghcr.io/teamanoryx/anoryx-sentinel:${{ needs.docker-build.outputs.version }}`
+            Image variants (ADR-0012 §Image variants):
+            - `ghcr.io/teamanoryx/anoryx-sentinel:${{ steps.meta.outputs.version }}-slim` — core only (no Bedrock/PII/gRPC).
+            - `ghcr.io/teamanoryx/anoryx-sentinel:${{ steps.meta.outputs.version }}` (== `-full`) — all extras.
 
             Verify the cosign keyless signature (depends on Sigstore availability — ADR-0012 §10):
 
             ```
-            cosign verify ghcr.io/teamanoryx/anoryx-sentinel:${{ needs.docker-build.outputs.version }} \
+            cosign verify ghcr.io/teamanoryx/anoryx-sentinel:${{ steps.meta.outputs.version }}-slim \
               --certificate-identity-regexp '^https://github.com/TeamAnoryx/anoryx-sentinel/.github/workflows/sentinel-release.yml@refs/tags/v' \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com
             ```

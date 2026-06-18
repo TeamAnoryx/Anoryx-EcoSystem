@@ -85,5 +85,5 @@ def test_otel_collector_and_caddy_present():
 def test_sentinel_app_wires_otel_and_depends_on_db():
     c = _compose()
     app = c["services"]["sentinel-app"]
-    assert app["environment"]["OTEL_EXPORTER_OTLP_ENDPOINT"].endswith(":4317")
+    assert app["environment"]["OTEL_EXPORTER_OTLP_ENDPOINT"].endswith(":4318")
     assert "postgres" in app["depends_on"] and "redis" in app["depends_on"]

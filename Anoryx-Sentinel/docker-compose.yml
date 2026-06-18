@@ -91,8 +91,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-sentinel_dev}
       REDIS_HOST: redis
       REDIS_PORT: "6379"
-      # Wire app spans to the bundled OTel Collector (ADR-0012 §5).
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      # Wire app spans to the bundled OTel Collector via OTLP/HTTP (ADR-0012 §5).
+      # HTTP (:4318) is the core default; gRPC (:4317) needs the [otlp-grpc] extra
+      # + OTEL_EXPORTER_OTLP_PROTOCOL=grpc.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       ENABLE_OTEL: "true"
       SENTINEL_WORKERS: ${SENTINEL_WORKERS:-1}
       # Compose convenience: run alembic upgrade head + provision the app role on

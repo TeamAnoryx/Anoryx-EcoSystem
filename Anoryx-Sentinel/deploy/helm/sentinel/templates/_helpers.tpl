@@ -29,7 +29,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{- define "sentinel.image" -}}
-{{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
+{{- $variant := .Values.image.variant | default "slim" -}}
+{{- $tag := .Values.image.tag | default (printf "%s-%s" .Chart.AppVersion $variant) -}}
 {{- printf "%s:%s" .Values.image.repository $tag -}}
 {{- end -}}
 

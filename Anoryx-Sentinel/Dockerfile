@@ -35,6 +35,12 @@ RUN apt-get update \
 
 WORKDIR /build
 
+# Optional feature extras to bake in (F-010, ADR-0012 §Image variants):
+#   ""        → slim image (core only; default) — no boto3/spaCy/Presidio/gRPC.
+#   "all"     → full image (Bedrock + PII + gRPC OTLP).
+#   "bedrock" / "pii-spacy" / "otlp-grpc" → a single feature.
+ARG INSTALL_EXTRAS=""
+
 # Copy metadata + source. pyproject uses src-layout auto-discovery (the same
 # mechanism CI's `pip install -e .` relies on), so installing "." pulls in the
 # pinned dependency set and the Sentinel packages.
@@ -43,7 +49,11 @@ COPY src ./src
 
 # Install into the per-user prefix (/root/.local) so the runtime stage can copy
 # a single self-contained tree (packages + console scripts: uvicorn, alembic).
-RUN pip install --user --no-warn-script-location .
+RUN if [ -n "$INSTALL_EXTRAS" ]; then \
+        pip install --user --no-warn-script-location ".[$INSTALL_EXTRAS]"; \
+    else \
+        pip install --user --no-warn-script-location .; \
+    fi
 
 # --------------------------------------------------------------------------- #
 # Stage 2 — runtime                                                           #
@@ -72,16 +82,17 @@ RUN groupadd --gid 1000 sentinel \
 WORKDIR /app
 
 # Installed Python packages (+ console scripts) from the builder's --user tree.
-COPY --from=builder /root/.local /home/sentinel/.local
+# --chown sets ownership AT COPY TIME — a `chown -R` afterward would duplicate this
+# (large) layer and roughly double the image size.
+COPY --from=builder --chown=sentinel:sentinel /root/.local /home/sentinel/.local
 
 # Application source + Alembic config (migrations live under src/persistence/
 # migrations; alembic.ini's script_location points there, prepend_sys_path=.).
-COPY src ./src
-COPY alembic.ini ./alembic.ini
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY --chown=sentinel:sentinel src ./src
+COPY --chown=sentinel:sentinel alembic.ini ./alembic.ini
+COPY --chown=sentinel:sentinel docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
-    && chown -R sentinel:sentinel /app /home/sentinel/.local
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 USER 1000
 

@@ -15,6 +15,7 @@ connects lazily on first export, not at construction).
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -45,12 +46,21 @@ def test_no_exporter_when_endpoint_unset(monkeypatch):
     assert not add_proc.called, "no exporter must be wired when endpoint is unset"
 
 
-def test_exporter_wire_failure_is_swallowed(monkeypatch):
-    """R8: a failure constructing the exporter must not propagate (no-op fallback)."""
+def test_grpc_protocol_swallows_exporter_failure(monkeypatch):
+    """R8: grpc transport selected + exporter construction fails → swallowed (no-op)."""
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
     with patch(
         "opentelemetry.exporter.otlp.proto.grpc.trace_exporter.OTLPSpanExporter",
         side_effect=RuntimeError("boom"),
     ):
-        # Must not raise — the except branch logs and falls back to the no-op sink.
-        tracing._configure_provider()
+        tracing._configure_provider()  # must not raise
+
+
+def test_grpc_protocol_missing_extra_is_swallowed(monkeypatch):
+    """R8: grpc selected but the [otlp-grpc] extra absent → ImportError swallowed."""
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+    # Force the grpc exporter import to fail even if the extra is installed locally.
+    monkeypatch.setitem(sys.modules, "opentelemetry.exporter.otlp.proto.grpc.trace_exporter", None)
+    tracing._configure_provider()  # must not raise; degrades to the no-op sink

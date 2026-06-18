@@ -144,9 +144,17 @@ def _get_analyzer() -> Any:
     except Exception as exc:
         _analyzer_failed = True
         _analyzer_error = exc
+        # F-010: presidio ships in the optional [pii-spacy] extra (the slim image
+        # omits it). When the dependency is simply absent, surface a clear hint.
+        _hint = (
+            "install 'anoryx-sentinel[pii-spacy]' for PII detection"
+            if isinstance(exc, ImportError)
+            else None
+        )
         log.error(
             "orchestration.pii_detector.analyzer_load_failed",
             exc_type=type(exc).__name__,
+            hint=_hint,
             # Never log exc message — may contain path info.
         )
         raise RuntimeError(f"Presidio AnalyzerEngine failed to load: {type(exc).__name__}") from exc

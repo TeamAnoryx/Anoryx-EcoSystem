@@ -103,16 +103,33 @@ def _configure_provider() -> None:
     provider = TracerProvider()
 
     if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+        # Transport is chosen by the OTel-standard OTEL_EXPORTER_OTLP_PROTOCOL:
+        #   "http/protobuf" (default) → the lightweight HTTP exporter, a CORE dep.
+        #   "grpc"                    → the heavier gRPC exporter, the [otlp-grpc] extra.
+        # The exporter reads OTEL_EXPORTER_OTLP_ENDPOINT itself — nothing hardcoded.
+        protocol = os.environ.get("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf").lower()
         try:
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
-                OTLPSpanExporter,
-            )
             from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-            # OTLPSpanExporter() reads OTEL_EXPORTER_OTLP_ENDPOINT (+ standard OTEL_*
-            # env vars) itself — no endpoint is hardcoded here.
+            if protocol == "grpc":
+                from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+                    OTLPSpanExporter,
+                )
+            else:
+                from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                    OTLPSpanExporter,
+                )
             provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
-            log.info("otel_otlp_exporter_wired")
+            log.info("otel_otlp_exporter_wired", protocol=protocol)
+        except ImportError as exc:
+            # grpc transport requested but the [otlp-grpc] extra is not installed.
+            # R8: degrade to the no-op sink; never break startup.
+            log.warning(
+                "otel_otlp_exporter_unavailable",
+                protocol=protocol,
+                hint="install 'anoryx-sentinel[otlp-grpc]' for gRPC OTLP transport",
+                error_class=type(exc).__name__,
+            )
         except Exception as exc:
             # R8: never let exporter wiring break startup; fall back to no-op sink.
             log.warning("otel_otlp_exporter_wire_failed", error_class=type(exc).__name__)

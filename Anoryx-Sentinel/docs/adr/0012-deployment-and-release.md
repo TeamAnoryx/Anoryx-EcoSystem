@@ -162,3 +162,52 @@ The deployment layer **MUST NOT contradict** F-009's γ design. ADR-0011 §3/§1
 - **OTel export:** unset `OTEL_EXPORTER_OTLP_ENDPOINT` → app reverts to the F-009 no-op sink immediately.
 - **Health endpoints:** the new z-endpoints are additive; `/health`+`/ready` are byte-identical, so existing probes are unaffected.
 - **Whole feature:** revert `task/F-010-deployment-release-native`; the Dockerfile, compose additions, Helm chart, and release workflow are all inert if unused, and the version bump is cosmetic. The single tracing.py line reverts to the F-009 no-op provider.
+
+---
+
+## 15. Image variants & optional dependency boundaries (PR-#14 fix-up)
+
+The first build was **2.28 GB** — far over the ≤350 MB target. Root cause: heavy
+dependencies were installed for everyone though only a subset of customers use each,
+plus an unused bundled CLI and a layer-duplicating `chown`.
+
+**Optional-dependency extras** (`pyproject.toml`). The deps below move from core to
+opt-in extras; every use site already imports them lazily, so a core-only install
+collects + runs (the feature raises a clear `pip install …[extra]` hint when invoked):
+
+| Extra | Packages | Used by |
+|---|---|---|
+| `bedrock` | boto3, aioboto3 | `router/providers/bedrock_provider.py` (lazy) |
+| `pii-spacy` | spaCy, presidio-analyzer, presidio-anonymizer | `orchestration/detectors/pii_detector.py` (lazy) |
+| `otlp-grpc` | opentelemetry-exporter-otlp-proto-grpc | gRPC OTLP transport (HTTP is core) |
+| `all` | the three above | the **full** image |
+
+`opentelemetry-exporter-otlp-proto-http` is now the **core** OTLP transport
+(`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, endpoint `:4318`); gRPC (`:4317`) is opt-in.
+`claude-agent-sdk` (a ~220 MB bundled Claude CLI used **only** by the build-fleet
+harness in `orchestrator/`, never imported by `src/`) moved to the `dev` extra — out
+of both images.
+
+**Two image variants** (built/signed/SBOM'd by the release matrix):
+- **slim** (default) — core only; tags `:VERSION-slim`, `:latest-slim`.
+- **full** — core + `all`; tags `:VERSION`, `:latest`, `:VERSION-full` (unsuffixed = default pull).
+
+**Dockerfile** gains `ARG INSTALL_EXTRAS` (empty = slim; `all` = full) and uses
+`COPY --chown` instead of `COPY` + `chown -R` (the latter duplicated the large
+site-packages layer, ~doubling the image).
+
+**Honest gap:** the inherent core (Python base + asyncpg + cryptography + psycopg
+binary + SQLAlchemy + OTel) sets a floor; the slim size is reported at the PR gate.
+A musl/alpine base was **not** pursued (asyncpg/cryptography wheel-compat risk).
+
+## 16. Local development gates (DB-integration tests)
+
+`tests/persistence/**` and `tests/policy/**` are DB-integration suites whose conftests
+`pytest.fail()` at module import when DB env vars are absent — a deliberate **F-003b**
+safety (prevents the isolation/RLS suite running against an unprovisioned DB and passing
+spuriously). This is **not a defect**: those tests are CI-validated against a freshly
+provisioned Postgres and require credentials (`DATABASE_URL`, `APP_DATABASE_URL`,
+`SENTINEL_KEY_SECRET`, `SENTINEL_PROVISION_APP_ROLE=1`) to run locally — documented in
+`tests/README.md` + `.env.example`. `SENTINEL_PROVISION_APP_ROLE` is a local/CI test
+switch only (`0` in production). The DB-free suites (`tests/gateway`, `tests/deploy`,
+`tests/orchestration`) run without any of this.

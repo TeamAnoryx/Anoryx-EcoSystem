@@ -75,6 +75,25 @@ postgres.bundled=false ...` flags and supply only `SENTINEL_KEY_SECRET` +
 
 ---
 
+## 2b. Image variants (slim / full)
+
+Two image variants are published (ADR-0012 §Image variants):
+
+| Variant | Tag | Contents | Use when |
+|---------|-----|----------|----------|
+| **slim** (default) | `:VERSION-slim`, `:latest-slim` | core only — **no** Bedrock, PII (spaCy/Presidio), or gRPC OTLP | OpenAI/Anthropic routing, OTLP/HTTP traces (the common case) |
+| **full** | `:VERSION`, `:latest`, `:VERSION-full` | core **+ all extras** | you need AWS Bedrock, Presidio PII detection, or gRPC OTLP export |
+
+Build a variant locally:
+```bash
+docker build -t sentinel:slim .                                  # slim (default)
+docker build --build-arg INSTALL_EXTRAS=all -t sentinel:full .   # full
+docker build --build-arg INSTALL_EXTRAS=bedrock -t sentinel:bedrock .   # one feature
+```
+Helm: `--set image.variant=full` (default `slim`). The tag defaults to
+`{appVersion}-{variant}`. OTLP defaults to HTTP (:4318); for gRPC use the full
+image (or `[otlp-grpc]` extra) + `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` and the :4317 endpoint.
+
 ## 3. Secrets management
 
 | Target | Mechanism |

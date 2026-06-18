@@ -8,7 +8,12 @@
 
 image:
   repository: ghcr.io/teamanoryx/anoryx-sentinel
-  tag: ""                      # defaults to .Chart.AppVersion when empty
+  # Image variant (F-010, ADR-0012 §Image variants): "slim" (default — core only,
+  # no Bedrock/PII/gRPC; ≤350MB) or "full" (all extras, ~2.3GB). Use "full" if you
+  # need AWS Bedrock, Presidio PII detection, or gRPC OTLP export.
+  variant: slim
+  # Defaults to "{AppVersion}-{variant}" (e.g. 0.10.0-slim). Set to pin an explicit tag.
+  tag: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
