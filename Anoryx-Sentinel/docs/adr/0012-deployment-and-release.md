@@ -208,6 +208,8 @@ safety (prevents the isolation/RLS suite running against an unprovisioned DB and
 spuriously). This is **not a defect**: those tests are CI-validated against a freshly
 provisioned Postgres and require credentials (`DATABASE_URL`, `APP_DATABASE_URL`,
 `SENTINEL_KEY_SECRET`, `SENTINEL_PROVISION_APP_ROLE=1`) to run locally — documented in
-`tests/README.md` + `.env.example`. `SENTINEL_PROVISION_APP_ROLE` is a local/CI test
-switch only (`0` in production). The DB-free suites (`tests/gateway`, `tests/deploy`,
+`tests/README.md` + `.env.example`. `SENTINEL_PROVISION_APP_ROLE` is a provisioning
+switch: the production gateway **runtime** sets `0`, while the Helm pre-upgrade
+migration Job sets `1` only when the opt-in `migrations.provisionAppRole` value is
+enabled (to provision the bundled-Postgres app role) — security-review FU-L2. The DB-free suites (`tests/gateway`, `tests/deploy`,
 `tests/orchestration`) run without any of this.

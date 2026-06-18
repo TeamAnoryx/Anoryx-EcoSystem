@@ -90,9 +90,11 @@ COPY --from=builder --chown=sentinel:sentinel /root/.local /home/sentinel/.local
 # migrations; alembic.ini's script_location points there, prepend_sys_path=.).
 COPY --chown=sentinel:sentinel src ./src
 COPY --chown=sentinel:sentinel alembic.ini ./alembic.ini
-COPY --chown=sentinel:sentinel docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+# Entrypoint stays ROOT-owned (world-readable + executable) so the unprivileged
+# runtime user cannot rewrite its own entrypoint (security-review FU-L1).
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
 
 USER 1000
 
