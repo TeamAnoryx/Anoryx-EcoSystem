@@ -161,7 +161,7 @@ The zero-trust AI gateway. Foundation for the entire ecosystem.
 
 **v1 vs v2:** v1 placed multi-provider routing inside F-004 with LiteLLM. v2 reflects the actual decision to build native and ship as its own F-006.
 
-### F-007 — ML injection classifier 🔄 NEXT (after F-009, F-010)
+### F-007 — ML injection classifier + shadow-AI egress ✅ SHIPPED 2026-06-18 (Path Y bundled)
 **Status:** Planned, slim scope per Option A
 **Description:** Add LLM-as-judge classification step to the existing F-005 injection detector. Two preset adapters (Anthropic Haiku, OpenAI gpt-4o-mini), tenant-configurable via routing_policy field. Regex pre-filter (skip judge if obvious attack) + structured output forcing + system prompt hardening + advisory threshold (low confidence falls back to regex). Final score = max(regex_score, judge_score).
 
@@ -230,7 +230,7 @@ The zero-trust AI gateway. Foundation for the entire ecosystem.
 **Builder agent:** compliance-engine
 **Risk:** Medium — honest-language discipline must be enforced throughout
 
-**Phase 1 totals remaining: F-007 + F-009 + F-010 + F-011 = ~6-8 days realistic.**
+**Phase 1 totals remaining: F-011 = ~2-3 days. (F-007, F-009, F-010 shipped 2026-06-18.)**
 
 ---
 
