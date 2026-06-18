@@ -63,6 +63,10 @@ VALID_EVENT_TYPES = frozenset(
         "shadow_ai_detected_outbound",
         "recursive_injection_attempt",
         "judge_billing_event",
+        # F-009 (ADR-0011 §7) — Redis rate-limit observability variants.
+        "rate_limit_degraded",
+        "rate_limit_recovered",
+        "rate_limit_redis_error",
     }
 )
 
@@ -97,6 +101,11 @@ ACTION_TAKEN_BY_EVENT_TYPE: dict[str, frozenset[str]] = {
     "shadow_ai_detected_outbound": frozenset({"logged"}),
     "recursive_injection_attempt": frozenset({"blocked", "logged"}),
     "judge_billing_event": frozenset({"logged"}),
+    # F-009 (ADR-0011 §7): all three rate-limit observability variants use
+    # action_taken='logged' only; ck_eal_action_taken is UNCHANGED.
+    "rate_limit_degraded": frozenset({"logged"}),
+    "rate_limit_recovered": frozenset({"logged"}),
+    "rate_limit_redis_error": frozenset({"logged"}),
 }
 
 
@@ -219,7 +228,9 @@ class EventsAuditLog(Base):
             # F-007 (ADR-0010 §8) — kept in sync with migration 0010.
             "'prompt_injection_detected_ml','classifier_unconfigured','classifier_degraded',"
             "'classifier_invocation_failed','shadow_ai_detected_outbound',"
-            "'recursive_injection_attempt','judge_billing_event')",
+            "'recursive_injection_attempt','judge_billing_event',"
+            # F-009 (ADR-0011 §7) — kept in sync with migration 0011.
+            "'rate_limit_degraded','rate_limit_recovered','rate_limit_redis_error')",
             name="ck_eal_event_type",
         ),
         CheckConstraint(

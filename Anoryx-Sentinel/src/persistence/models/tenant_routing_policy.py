@@ -27,6 +27,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     func,
@@ -69,6 +70,13 @@ class TenantRoutingPolicy(Base):
     # Audit privacy mode for ML classification events (R10). 'full' | 'redacted'.
     audit_mode: Mapped[str] = mapped_column(String(16), nullable=False, server_default="full")
 
+    # F-009 (ADR-0011 §4/§8): optional per-team RPM ceiling for the three-tier
+    # rate limiter. NULL = team tier disabled (default behavior = F-004 key+tenant
+    # enforcement, byte-identical). Must be > 0 when set (0 would silently block
+    # all team traffic). R7 deviation: Affu-authorized nullable column on existing
+    # table; no new table; fully reversible in downgrade().
+    team_rpm_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -94,6 +102,11 @@ class TenantRoutingPolicy(Base):
             "classifier_model_id IS NULL OR classifier_model_id IN "
             "('anthropic:claude-haiku-4-5','openai:gpt-4o-mini')",
             name="ck_trp_classifier_model_id",
+        ),
+        # F-009 (ADR-0011 §4/§8): team_rpm_limit must be positive when set.
+        CheckConstraint(
+            "team_rpm_limit IS NULL OR team_rpm_limit > 0",
+            name="ck_trp_team_rpm_limit",
         ),
         Index("ix_trp_tenant_id", "tenant_id"),
     )

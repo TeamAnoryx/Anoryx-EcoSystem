@@ -28,6 +28,8 @@ dependencies = [
     "structlog>=24,<26",
     "opentelemetry-api>=1.24,<2",
     "opentelemetry-sdk>=1.24,<2",
+    "opentelemetry-instrumentation-fastapi>=0.45b0,<1",
+    "opentelemetry-instrumentation-httpx>=0.45b0,<1",
     "pydantic>=2.7,<3",
     "pydantic-settings>=2.3,<3",
     "pyyaml>=6.0,<7",
@@ -45,6 +47,8 @@ dependencies = [
     # jsonschema: F-008 validates policy records with JSON Schema Draft 2020-12 at
     # RUNTIME (src/policy/schema_validator.py); also used by contract tests.
     "jsonschema[format]>=4.22,<5",
+    # prometheus-client: F-009 /metrics exposition endpoint (ADR-0011 D4).
+    "prometheus-client>=0.20,<1",
 ]
 
 [project.optional-dependencies]
@@ -80,7 +84,8 @@ ignore = ["S603", "S607", "S110"]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests use assert as their core assertion mechanism; S101 doesn't apply.
-"tests/**/*.py" = ["S101"]
+# S106: test fixtures use hardcoded sentinel values (fake credentials) — not production secrets.
+"tests/**/*.py" = ["S101", "S106"]
 
 [tool.black]
 target-version = ["py312"]
@@ -91,6 +96,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "integration: marks tests as integration tests (require live DB and migrations)",
+    "redis_integration: marks tests that require a live Redis instance (F-009)",
 ]
 
 [tool.coverage.run]

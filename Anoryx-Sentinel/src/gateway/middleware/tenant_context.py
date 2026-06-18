@@ -37,6 +37,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import Response
 
+from gateway.config import get_settings
 from gateway.context import TenantContext
 from gateway.exceptions import ERROR_TABLE, GatewayError
 
@@ -48,6 +49,19 @@ _UUID_RE = re.compile(
 _AGENT_SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 _AUTH_EXEMPT_PATHS = frozenset({"/health", "/ready"})
+
+
+def _get_auth_exempt_paths() -> frozenset[str]:
+    """Return the full set of header-gate exempt paths including the configured metrics path.
+
+    Reads settings at call time so tests can override METRICS_PATH via
+    monkeypatch + _reset_settings() and get consistent behaviour (M1 fix).
+    """
+    try:
+        return _AUTH_EXEMPT_PATHS | frozenset({get_settings().metrics_path})
+    except Exception:
+        return _AUTH_EXEMPT_PATHS
+
 
 _MAX_HEADER_LEN = 64
 
@@ -101,7 +115,7 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        if request.url.path in _AUTH_EXEMPT_PATHS:
+        if request.url.path in _get_auth_exempt_paths():
             return await call_next(request)
 
         # MED-3: use the single canonical request_id from the outermost wrapper.

@@ -52,8 +52,9 @@ from typing import AsyncIterator
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
+import gateway.redis_client as redis_client
 from gateway.config import get_settings
 from gateway.exceptions import ERROR_TABLE, GatewayError
 from gateway.logging import configure_logging
@@ -62,6 +63,8 @@ from gateway.middleware.request_validation import RequestValidationMiddleware
 from gateway.middleware.tenant_context import TenantContextMiddleware
 from gateway.middleware.terminal_audit_wrapper import TerminalAuditMiddleware
 from gateway.models import ErrorResponse
+from gateway.observability import metrics
+from gateway.observability.tracing import init_tracing
 from gateway.router.registry import ProviderRegistry
 from gateway.routes.chat_completions import router as chat_router
 from gateway.routes.health import router as health_router
@@ -97,9 +100,23 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     registry = ProviderRegistry()
     registry.init(settings)
     app.state.provider_registry = registry
+
+    # F-009: initialise Redis connection pool + start health-loop task (ADR-0011 D2).
+    # Failure mode γ: if Redis is unreachable at startup the pool init logs a warning
+    # and sets _redis_degraded=True — the gateway continues with in-process fallback.
+    await redis_client.init(settings)
+    app.state.redis_health_task = redis_client._health_task
+
+    # F-009: warn operators when per-tenant metric labels are enabled (ADR-0011 D4 γ).
+    # Linear cardinality growth with tenant count harms Prometheus / Grafana.
+    if settings.enable_per_tenant_metrics:
+        metrics.log_cardinality_warning()
+
     try:
         yield
     finally:
+        # F-009: shut down health loop + close pool before registry/httpx teardown.
+        await redis_client.shutdown()
         await registry.teardown()
         await close_http_client()
         log.info("gateway_shutdown")
@@ -217,5 +234,22 @@ def create_app() -> FastAPI:
     # --- Routers ---
     app.include_router(health_router)  # /health, /ready (no /v1 prefix)
     app.include_router(chat_router)  # /v1/chat/completions
+
+    # --- F-009: OTel tracing (ADR-0011 §6 Decision D5) ---
+    # init_tracing is called AFTER all middleware is added (instrumentor sits
+    # OUTSIDE the middleware stack — no order change, R2). No-op when enable_otel
+    # is False (R8: disable path is safe). Idempotent — safe to call once here.
+    init_tracing(app, settings)
+
+    # --- F-009: /metrics endpoint (ADR-0011 D4, R5) ---
+    # Unauthenticated, read-only. MUST be network-isolated (firewalled) by ops.
+    # R9: never exposes secrets, virtual keys, prompt content, or PII.
+    # R5: this is the ONLY new HTTP endpoint F-009 adds.
+    metrics_path = settings.metrics_path
+
+    @app.get(metrics_path, include_in_schema=False)
+    async def prometheus_metrics() -> Response:
+        body, content_type = metrics.render()
+        return Response(content=body, media_type=content_type)
 
     return app
