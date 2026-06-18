@@ -22,7 +22,7 @@ The v1 roadmap (2026-06-15) was written before F-002 through F-008 shipped. Sign
 | F-004 | Gateway core w/ multi-provider routing via LiteLLM | Gateway core (auth + rate limit + audit) | 🔀 Router split out to F-006 |
 | F-005 | Orchestration hooks (event emitter only) | Orchestration hooks + 4 detectors (PII/injection/secret/shadow-AI emission) | 🔀 Absorbed PII (was F-006), injection+secret (was F-007), shadow-AI seam (was F-018) |
 | F-006 | Data protection (PII detection) | Multi-provider model router (native — no LiteLLM) | 🔀 PII landed in F-005; F-006 became router |
-| F-007 | Defense (injection + secret leak) | **NOT YET** — most absorbed by F-005 | ⏳ Re-scoped (see below) |
+| F-007 | Defense (injection + secret leak) | ✅ SHIPPED 2026-06-18 — ML classifier + shadow-AI egress monitor (Path Y bundled) | ✅ Done |
 | F-008 | Policy engine (OPA) | Policy engine (ECDSA-signed intake, no OPA) | 🔀 Implementation completely different from plan |
 
 ### Drift summary
@@ -30,16 +30,16 @@ The v1 roadmap (2026-06-15) was written before F-002 through F-008 shipped. Sign
 - **5 tasks absorbed into F-005** (PII, injection regex, secret detection, shadow-AI emission primitive)
 - **1 task added** (F-003b — RLS tenant isolation surfaced as critical during F-003 development)
 - **2 tasks fundamentally re-scoped** (F-006 became router; F-008 became cryptographic intake)
-- **1 task drastically slimmed** (F-007 — now just ML classifier addition since regex+secrets already shipped)
+- **1 task scope-expanded mid-build** (F-007 — Path Y bundled ML classifier + shadow-AI egress per 2026-06-18 strategic decision; F-018 folded in)
 
 ### Strategic decisions baked into v2
 
-1. **F-007 = ML classifier only** (Option A from 2026-06-18 strategy review). Shadow-AI stays at F-018 per the original plan. Secret leak detection is already shipped in F-005, no separate task needed.
+1. **F-007 = ML classifier + shadow-AI egress (Path Y, locked 2026-06-18 mid-dispatch)**. Original plan was Option A (ML classifier only with shadow-AI deferred to F-018), but during F-007 STEP 0 the bundled scope was confirmed and F-018 was folded in. F-007 estimate revised from 12-16h → 20-28h (actual: ~28h fleet). Secret leak detection already shipped in F-005, no separate task needed.
 
 2. **Sequence after F-008 = demo-readiness first** (Option β from 2026-06-18 strategy review):
    - F-009 (rate limit + observability) → unblocks ops visibility
    - F-010 (deployment) → unblocks first design partner
-   - F-007 (ML classifier) → depth feature
+   - F-007 (ML classifier + shadow-AI egress) → depth feature ✅ SHIPPED
    - F-011 (compliance engine) → buyer enablement
    
    Rationale: getting to "a buyer can run Sentinel themselves and see what it's doing" is more valuable than depth features when there's no buyer yet.
@@ -166,7 +166,7 @@ The zero-trust AI gateway. Foundation for the entire ecosystem.
 **Description:** Add LLM-as-judge classification step to the existing F-005 injection detector. Two preset adapters (Anthropic Haiku, OpenAI gpt-4o-mini), tenant-configurable via routing_policy field. Regex pre-filter (skip judge if obvious attack) + structured output forcing + system prompt hardening + advisory threshold (low confidence falls back to regex). Final score = max(regex_score, judge_score).
 
 **Out of scope (deferred):**
-- Shadow-AI detection (was bundled in earlier v2 drafts; now correctly placed at F-018 per v1 plan)
+- Shadow-AI detection (folded into F-007 per Path Y decision 2026-06-18; was separate F-018 in v2.0)
 - Secret leak detection (already shipped in F-005)
 - B2C multi-tenant inheritance abstractions (deferred until first B2C customer)
 
@@ -247,7 +247,7 @@ The zero-trust AI gateway. Foundation for the entire ecosystem.
 **Risk:** Low — but frontends always run longer than expected
 
 ### F-013 — Dashboards (security + compliance + governance) 📋 PLANNED
-**Description:** Three dashboards in the admin frontend. Security: real-time event feed via WebSocket, per-team/per-model breakdowns, signature verification status. Compliance: readiness score, gap report, evidence pack download. Governance: model inventory, classifier model selection per tenant, shadow-AI detection feed (stub now, real in F-018).
+**Description:** Three dashboards in the admin frontend. Security: real-time event feed via WebSocket, per-team/per-model breakdowns, signature verification status. Compliance: readiness score, gap report, evidence pack download. Governance: model inventory, classifier model selection per tenant, shadow-AI detection feed (live via F-007 egress monitor).
 
 **Realistic:** 12-16h (Tricky) · **Optimistic:** 8h
 **Depends on:** F-005, F-011, F-012
@@ -292,7 +292,7 @@ The zero-trust AI gateway. Foundation for the entire ecosystem.
 **Builder agent:** policy-engine
 **Risk:** Medium
 
-### F-018 — Shadow-AI detection 📋 PLANNED
+### F-018 — Shadow-AI detection ✅ MERGED INTO F-007 (Path Y, 2026-06-18)
 **Description:** Real shadow-AI detection on top of F-005's emission primitive. Approach: outbound egress monitoring via httpx middleware (detects models that route through Sentinel but to disallowed endpoints) + DNS-based detection (optional, requires running Sentinel as DNS resolver in the corporate network). Heuristic + traffic-pattern analysis. Admin UI shows attributed teams.
 
 **Honest scope statement:** Detects traffic that flows THROUGH Sentinel to disallowed endpoints. Does NOT detect traffic that bypasses Sentinel entirely (that's a network-layer problem requiring CASB or firewall integration; out of scope).
@@ -844,7 +844,7 @@ After Phase 2, Sentinel is "enterprise procurement will buy this."
 - [ ] F-015 Bulk processing pipeline — Complex (22-30h)
 - [ ] F-016 Code scanning on LLM outputs — Tricky (12-16h)
 - [ ] F-017 JSON data-lock engine — Tricky (12-16h)
-- [ ] F-018 Shadow-AI detection — Complex (16-22h)
+- [x] F-018 Shadow-AI detection — MERGED INTO F-007 on 2026-06-18 (Path Y)
 - [ ] F-019 Custom model + fine-tune policies — Tricky (8-12h)
 - [ ] F-020 Integration suite (Slack/Jira/Splunk) — Tricky (8-12h)
 - [ ] F-021 Advanced governance UI — Tricky (12-16h)
