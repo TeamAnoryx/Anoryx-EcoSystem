@@ -1,10 +1,18 @@
-# Persistence Tests — Setup Guide
+# DB-Integration Tests (persistence + policy) — Setup Guide
+
+Both `tests/persistence/**` and `tests/policy/**` are **DB-integration** suites whose
+conftests call `pytest.fail()` at module import when the env vars below are absent — a
+deliberate F-003b safety so the isolation/RLS suite never runs against an unprovisioned
+database (which could pass spuriously). This is **not a defect**: these tests are
+CI-validated against a freshly-provisioned Postgres and simply require credentials to run
+locally. The DB-free suites (`tests/gateway`, `tests/deploy`, `tests/orchestration`) run
+without any of this.
 
 ## Required Environment Variables
 
-The following environment variables **must** be set before running persistence tests.
-Tests will call `pytest.fail()` immediately if any required variable is absent — there
-is no silent fallback.
+The following environment variables **must** be set before running the DB-integration
+tests (persistence + policy). The conftests call `pytest.fail()` immediately if any
+required variable is absent — there is no silent fallback.
 
 | Variable | Description | Example |
 |----------|-------------|---------|
@@ -111,14 +119,18 @@ error message showing the Alembic output.
 
 ## Docker Postgres (local dev)
 
-A Docker Compose file is planned for F-infra. For now, run Postgres manually:
+Use the Compose stack (see `deploy/README.md`):
 
 ```bash
-docker run -d \
-  --name sentinel-postgres \
-  -e POSTGRES_USER=sentinel \
-  -e POSTGRES_PASSWORD=secret \
-  -e POSTGRES_DB=sentinel_dev \
-  -p 5432:5432 \
-  postgres:16-alpine
+docker compose up -d postgres        # F-009/F-010 dev Postgres
 ```
+
+Point `DATABASE_URL` / `APP_DATABASE_URL` at it (user `sentinel`, db `sentinel_dev`,
+password = your `POSTGRES_PASSWORD`).
+
+## Optional-feature suites (slim/full — F-010)
+
+The default install (`pip install -e ".[dev]"`) is **slim** — it omits Bedrock
+(`boto3`), PII (`spaCy`/`Presidio`), and the gRPC OTLP exporter. The corresponding
+`tests/orchestration` (PII/Bedrock) cases **skip** cleanly when those extras are absent.
+To run them, install the extras: `pip install -e ".[all,dev]"`.

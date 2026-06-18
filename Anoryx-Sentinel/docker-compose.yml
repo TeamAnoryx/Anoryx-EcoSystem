@@ -62,6 +62,102 @@ services:
     networks:
       - sentinel-net
 
+  # ----------------------------------------------------------------------- #
+  # F-010 (ADR-0012) — Sentinel gateway. Builds from the repo Dockerfile.   #
+  # Reads file-based Docker secrets at /run/secrets/* (the entrypoint shim  #
+  # assembles DATABASE_URL / APP_DATABASE_URL / REDIS_URL). Passwords are   #
+  # NEVER set as environment variables here — only mounted as secret files  #
+  # (threat vector 8: `docker inspect` env must contain no *_PASSWORD).     #
+  # ----------------------------------------------------------------------- #
+  sentinel-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "0.10.0"
+    image: anoryx-sentinel:0.10.0
+    container_name: sentinel-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Non-secret config only.
+      UPSTREAM_BASE_URL: ${UPSTREAM_BASE_URL:-https://api.openai.com/v1}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-sentinel}
+      POSTGRES_DB: ${POSTGRES_DB:-sentinel_dev}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      # Wire app spans to the bundled OTel Collector via OTLP/HTTP (ADR-0012 §5).
+      # HTTP (:4318) is the core default; gRPC (:4317) needs the [otlp-grpc] extra
+      # + OTEL_EXPORTER_OTLP_PROTOCOL=grpc.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      ENABLE_OTEL: "true"
+      SENTINEL_WORKERS: ${SENTINEL_WORKERS:-1}
+      # Compose convenience: run alembic upgrade head + provision the app role on
+      # startup (Kubernetes uses a dedicated migration Job instead — ADR-0012 §4).
+      RUN_MIGRATIONS: "1"
+      SENTINEL_PROVISION_APP_ROLE: "1"
+    secrets:
+      - postgres_password
+      - redis_password
+      - sentinel_key_secret
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/readyz', timeout=3).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - sentinel-net
+
+  # ----------------------------------------------------------------------- #
+  # F-010 — bundled OpenTelemetry Collector (ADR-0012 §5, OTel export = β).  #
+  # Default config exports to `logging` only (no backend wired). Customers  #
+  # add Jaeger/Tempo/Honeycomb exporters in deploy/otel/collector-config.yaml.#
+  # ----------------------------------------------------------------------- #
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.104.0
+    container_name: sentinel-otel-collector
+    command: ["--config=/etc/otel/collector-config.yaml"]
+    volumes:
+      - ./deploy/otel/collector-config.yaml:/etc/otel/collector-config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    restart: unless-stopped
+    networks:
+      - sentinel-net
+
+  # ----------------------------------------------------------------------- #
+  # F-010 — optional Caddy reverse proxy with auto-TLS (compose profile      #
+  # "tls"; opt-in via `docker compose --profile tls up`). Auto-TLS assumes a #
+  # public-facing host with valid DNS (ADR-0012 §10 honest gap). Uses bind   #
+  # mounts (not named volumes) so the F-009 volumes section stays frozen (R3).#
+  # ----------------------------------------------------------------------- #
+  caddy:
+    image: caddy:2-alpine
+    container_name: sentinel-caddy
+    profiles: ["tls"]
+    depends_on:
+      - sentinel-app
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/caddy/data:/data
+      - ./deploy/caddy/config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    restart: unless-stopped
+    networks:
+      - sentinel-net
+
 networks:
   sentinel-net:
     driver: bridge
@@ -69,3 +165,16 @@ networks:
 volumes:
   redis-data:
   sentinel-postgres-data:
+
+# F-010 (ADR-0012 §3) — file-based Docker secrets (native secrets = β). The
+# sentinel-app entrypoint reads these at /run/secrets/* and assembles the
+# connection URLs. Generate the files first: see deploy/secrets/README.md.
+# (For the bundled passwordless Redis, leave redis_password EMPTY — the shim
+# then builds a password-less REDIS_URL. R3: the redis service is unchanged.)
+secrets:
+  postgres_password:
+    file: ./deploy/secrets/postgres_password
+  redis_password:
+    file: ./deploy/secrets/redis_password
+  sentinel_key_secret:
+    file: ./deploy/secrets/sentinel_key_secret

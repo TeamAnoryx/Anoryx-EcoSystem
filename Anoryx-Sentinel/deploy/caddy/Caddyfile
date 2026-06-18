@@ -1,0 +1,37 @@
+# Caddyfile — Anoryx Sentinel reverse proxy + auto-TLS (F-010, ADR-0012 §8).
+#
+# Opt-in via the compose `tls` profile: `docker compose --profile tls up -d`.
+#
+# Auto-TLS (Let's Encrypt) requires a PUBLIC hostname whose DNS A/AAAA record
+# points at this host, with ports 80 + 443 reachable from the internet
+# (ADR-0012 §10 honest gap: private/airgapped deployments must provision certs
+# manually — replace the site block with a `tls /path/cert /path/key` directive).
+#
+# Replace BOTH the email and the site address before going to production.
+
+{
+	# ACME account email for Let's Encrypt expiry notices.
+	email admin@example.com
+}
+
+# Public hostname → reverse-proxy to the gateway. Caddy obtains + renews the
+# certificate automatically.
+sentinel.example.com {
+	reverse_proxy sentinel-app:8000
+
+	# Operational probes are unauthenticated by design (ADR-0012 §6); restrict
+	# them to internal networks at the proxy if the host is internet-facing.
+	# Example (uncomment + set your CIDR):
+	# @probes path /livez /readyz /healthz /metrics
+	# handle @probes {
+	#     @external not remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+	#     respond @external 403
+	#     reverse_proxy sentinel-app:8000
+	# }
+
+	encode gzip
+	log {
+		output stdout
+		format console
+	}
+}

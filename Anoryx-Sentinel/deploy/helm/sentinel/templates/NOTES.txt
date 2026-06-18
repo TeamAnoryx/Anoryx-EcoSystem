@@ -1,0 +1,35 @@
+Anoryx Sentinel {{ .Chart.AppVersion }} has been deployed as release "{{ .Release.Name }}".
+
+1. Check rollout status:
+   kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "sentinel.fullname" . }}
+
+2. Watch the pods (a pre-upgrade migration Job runs first):
+   kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+
+3. Port-forward and probe locally:
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "sentinel.fullname" . }} 8000:{{ .Values.service.port }}
+   curl -fs http://localhost:8000/livez     # liveness  (no dependency checks)
+   curl -fs http://localhost:8000/readyz     # readiness (gates on Postgres only)
+
+4. Logs:
+   kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/instance={{ .Release.Name }} --tail=100
+
+{{- if not .Values.envSecret }}
+{{- if not .Values.createEnvSecret }}
+
+WARNING: no `envSecret` is set and `createEnvSecret` is false. The gateway needs
+SENTINEL_KEY_SECRET and UPSTREAM_BASE_URL (and, in external mode, the DB/Redis
+URLs). Create a Secret and set `envSecret`:
+   kubectl -n {{ .Release.Namespace }} create secret generic sentinel-env \
+     --from-literal=SENTINEL_KEY_SECRET=$(openssl rand -base64 48) \
+     --from-literal=UPSTREAM_BASE_URL=https://api.openai.com/v1
+   helm upgrade {{ .Release.Name }} ... --set envSecret=sentinel-env
+{{- end }}
+{{- end }}
+{{- if or .Values.postgres.bundled .Values.redis.bundled }}
+
+NOTE: bundled {{ if .Values.postgres.bundled }}Postgres{{ end }}{{ if and .Values.postgres.bundled .Values.redis.bundled }} + {{ end }}{{ if .Values.redis.bundled }}Redis{{ end }} {{ if and .Values.postgres.bundled .Values.redis.bundled }}are{{ else }}is{{ end }} DEV/DEMO-GRADE. For production, set
+postgres.bundled=false / redis.bundled=false and point at managed services
+(see deploy/SELF_HOST.md). OTel traces export to the bundled collector's log
+only — wire a backend in deploy/otel/README.md.
+{{- end }}

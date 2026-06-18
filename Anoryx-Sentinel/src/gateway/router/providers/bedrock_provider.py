@@ -151,7 +151,16 @@ class BedrockAdapter:
         if self._session_factory is not None:
             return self._session_factory()
         # LAZY import — module import must not require aioboto3 (HARD CONSTRAINT).
-        import aioboto3  # noqa: PLC0415
+        # F-010: aioboto3 ships in the optional [bedrock] extra (the slim image omits
+        # it); surface a clear install hint instead of a raw ImportError.
+        try:
+            import aioboto3  # noqa: PLC0415
+        except ImportError as exc:
+            raise RuntimeError(
+                "AWS Bedrock provider requires the 'bedrock' optional dependency. "
+                "Install it with: pip install 'anoryx-sentinel[bedrock]' "
+                "(or use the 'full' image variant)."
+            ) from exc
 
         return aioboto3.Session()
 

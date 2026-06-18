@@ -1,0 +1,71 @@
+{{- if .Values.migrations.enabled -}}
+# Pre-upgrade Alembic migration Job (ADR-0012 §4). Runs `alembic upgrade head`
+# before the app rolls out, so /readyz can pass. Overrides the image ENTRYPOINT
+# with `command`, so it reads connection URLs directly from the envSecret (the
+# entrypoint shim is bypassed — Helm uses k8s Secrets, not file secrets).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "sentinel.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  # Bound a hung migration so the hook-delete policy does not wait indefinitely
+  # and a slow migration cannot silently overlap a retry (code-review Low).
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        {{- include "sentinel.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "sentinel.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "sentinel.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          # Run via the entrypoint shim so it assembles the connection URLs from
+          # the password secretKeyRef (kept out of the pod spec), then execs alembic.
+          command: ["/usr/local/bin/docker-entrypoint.sh"]
+          args: ["alembic", "upgrade", "head"]
+          env:
+            {{- if .Values.migrations.provisionAppRole }}
+            - name: SENTINEL_PROVISION_APP_ROLE
+              value: "1"
+            {{- end }}
+            {{- if .Values.postgres.bundled }}
+            - name: POSTGRES_HOST
+              value: {{ include "sentinel.postgresFullname" . | quote }}
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.auth.username | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.auth.database | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.auth.existingSecret | default (include "sentinel.postgresFullname" .) }}
+                  key: POSTGRES_PASSWORD
+            {{- end }}
+          {{- if or .Values.envSecret .Values.createEnvSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.envSecret | default (printf "%s-env" (include "sentinel.fullname" .)) }}
+          {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

@@ -1,0 +1,3 @@
+# Caddy runtime state (certificates, ACME account, OCSP staples) — never commit.
+data/
+config/
