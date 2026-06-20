@@ -1,0 +1,170 @@
+# SOC 2 Trust Services Criteria — Sentinel control mapping (F-011, ADR-0013 §4 D3).
+#
+# Honesty rule (R8): sentinel_controls: [] means Sentinel provides NO evidence for this
+# criterion; it is reported as not_covered, never fabricated as coverage.
+# status_override: not_applicable means the criterion is explicitly out of scope for
+# a software AI gateway (e.g. physical/vendor risk management).
+#
+# Audit-ready framing: this mapping is evidence of audit preparation.
+# Certification requires an accredited auditor.
+
+framework: SOC2
+framework_version: "2017-TSC-rev2022"
+
+controls:
+  # ── CC6 — Logical and Physical Access Controls ──────────────────────────────
+
+  - control_id: CC6.1
+    title: "Logical access security measures — authentication and authorization"
+    sentinel_controls: [policy_enforcement, virtual_key_auth]
+    evidence_event_types:
+      - policy_decision_allow
+      - policy_decision_deny
+      - policy_violated
+      - usage
+    rationale: >
+      Sentinel authenticates every request via tenant Bearer virtual keys and enforces
+      access policy decisions (allow/deny) recorded in the append-only audit log.
+      policy_violated events capture enforcement actions at the gateway boundary.
+
+  - control_id: CC6.2
+    title: "Logical access — registration and de-registration of users/credentials"
+    sentinel_controls: [policy_intake]
+    evidence_event_types:
+      - policy_intake_accepted
+      - policy_intake_rejected_signature
+      - policy_intake_rejected_schema
+      - policy_intake_rejected_replay
+    rationale: >
+      Policy intake (F-008) provides a signed, schema-validated intake path for
+      registering and updating access-control policies.  Rejection events evidence
+      that malformed or replay submissions are refused at intake.
+
+  - control_id: CC6.3
+    title: "Logical access — role-based access and least privilege"
+    sentinel_controls: [tenant_isolation, rls_enforcement]
+    evidence_event_types:
+      - policy_decision_allow
+      - policy_decision_deny
+      - usage
+    rationale: >
+      Tenant isolation (F-003b RLS) enforces row-level separation at the database layer;
+      sentinel_app role (NOBYPASSRLS) ensures no cross-tenant access even under query
+      manipulation.  Policy decisions are logged per-tenant.
+
+  - control_id: CC6.7
+    title: "Logical access — transmission integrity and confidentiality"
+    sentinel_controls: []
+    evidence_event_types: []
+    rationale: ""
+    # Sentinel operates as an application-layer gateway; TLS termination and transport
+    # security are infrastructure concerns (load balancer / ingress controller) outside
+    # Sentinel's code boundary.  Sentinel provides no evidence for this criterion.
+
+  # ── CC7 — System Operations / Monitoring ────────────────────────────────────
+
+  - control_id: CC7.1
+    title: "Vulnerability and threat detection — monitoring for anomalies"
+    sentinel_controls: [injection_detection, shadow_ai_detection]
+    evidence_event_types:
+      - injection_detected
+      - prompt_injection_detected_ml
+      - recursive_injection_attempt
+      - shadow_ai_detected
+      - shadow_ai_detected_outbound
+    rationale: >
+      Sentinel's prompt-injection detection (rule-based + ML classifier, F-007) and
+      shadow-AI egress detection monitor the AI traffic stream for anomalous patterns.
+      Each detected event is logged with tamper-evident hash-chain integrity.
+      shadow_ai_detected is the pre-F007 detection path; may be absent in deployments
+      running only F-007 egress detection (see shadow_ai_detected_outbound).
+
+  - control_id: CC7.2
+    title: "System monitoring — anomaly identification and investigation"
+    sentinel_controls: [injection_detection, shadow_ai_egress, audit_log_chain]
+    evidence_event_types:
+      - injection_detected
+      - prompt_injection_detected_ml
+      - shadow_ai_detected_outbound
+      - usage
+    rationale: >
+      The append-only, hash-chained audit log (F-003) provides a tamper-evident record
+      of all gateway events enabling post-hoc investigation.  ML classifier (F-007)
+      and shadow-AI egress controls generate structured anomaly events.
+
+  - control_id: CC7.4
+    title: "Incident response — response to identified security events"
+    sentinel_controls: [policy_enforcement, injection_detection]
+    evidence_event_types:
+      - policy_violated
+      - injection_detected
+      - prompt_injection_detected_ml
+      - secret_leaked
+      - shadow_ai_detected_outbound
+    rationale: >
+      Gateway blocks or logs security events at detection time (action_taken=blocked/logged).
+      Structured events provide the forensic record for incident response procedures.
+      Note: Sentinel evidences the detection and blocking actions; process-level incident
+      response (ticketing, escalation, post-mortems) is a human-process control outside
+      Sentinel's scope.
+
+  # ── CC8 — Change Management ──────────────────────────────────────────────────
+
+  - control_id: CC8.1
+    title: "Change management — authorised, tested, and approved changes"
+    sentinel_controls: [policy_intake]
+    evidence_event_types:
+      - policy_intake_accepted
+      - policy_intake_rejected_signature
+      - policy_intake_rejected_schema
+    rationale: >
+      F-008 policy intake requires ECDSA ES256 signature verification for every policy
+      change, providing cryptographic proof of authorisation.  Rejected submissions
+      are logged with reason, evidencing that unauthorised changes are refused.
+
+  # ── A1 — Availability ───────────────────────────────────────────────────────
+
+  - control_id: A1.1
+    title: "Availability — capacity and performance management"
+    sentinel_controls: [rate_limiting]
+    evidence_event_types:
+      - rate_limit_degraded
+      - rate_limit_recovered
+      - rate_limit_redis_error
+    rationale: >
+      Redis-backed rate limiting (F-009) enforces per-tenant request quotas, protecting
+      downstream model capacity.  Degraded/recovered events provide operational evidence
+      of availability management and Redis backend health.
+
+  - control_id: A1.2
+    title: "Availability — environmental, software, and physical safeguards"
+    sentinel_controls: []
+    evidence_event_types: []
+    rationale: ""
+    # Physical and environmental safeguards (data-centre controls, hardware redundancy)
+    # are infrastructure-provider responsibilities.  Sentinel provides no evidence here.
+
+  # ── C1 — Confidentiality ────────────────────────────────────────────────────
+
+  - control_id: C1.1
+    title: "Confidentiality — identification and maintenance of confidential information"
+    sentinel_controls: [pii_protection, secret_detection]
+    evidence_event_types:
+      - pii_blocked
+      - secret_leaked
+    rationale: >
+      Sentinel's PII masking (F-005) and secret-leak detection intercept and redact
+      confidential data in AI traffic.  Each interception is logged with action_taken
+      (masked/blocked), providing evidence of active confidentiality controls.
+
+  # ── Vendor/physical — explicit not_applicable ────────────────────────────────
+
+  - control_id: CC9.2
+    title: "Risk mitigation — vendor and business partner risk management"
+    status_override: not_applicable
+    sentinel_controls: []
+    evidence_event_types: []
+    rationale: >
+      Vendor risk management is a procurement and legal process control.  Sentinel is
+      itself a software component in the AI supply chain; it does not manage vendor
+      contracts or perform third-party assessments.  Explicitly not applicable.

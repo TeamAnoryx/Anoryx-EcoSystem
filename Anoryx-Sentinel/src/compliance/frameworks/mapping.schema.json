@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anoryx.io/sentinel/compliance/mapping.schema.json",
+  "title": "FrameworkMapping",
+  "description": "Strict schema for Sentinel compliance framework control-mapping YAMLs (F-011 ADR-0013 §4 D3).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["framework", "framework_version", "controls"],
+  "properties": {
+    "framework": {
+      "type": "string",
+      "enum": ["SOC2", "ISO27001"],
+      "description": "Framework identifier — matches FRAMEWORKS constant."
+    },
+    "framework_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Pinned framework revision string (e.g. '2017-TSC-rev2022')."
+    },
+    "controls": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Ordered list of control entries. control_id must be unique across the array.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["control_id", "title"],
+        "properties": {
+          "control_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "description": "Framework-specific control identifier (e.g. 'CC7.2', 'A.8.15')."
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "Human-readable control title."
+          },
+          "sentinel_controls": {
+            "type": "array",
+            "description": "Sentinel capability identifiers that map to this control. Empty array => not_covered.",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "evidence_event_types": {
+            "type": "array",
+            "description": "event_type values (must be members of VALID_EVENT_TYPES) that constitute evidence for this control.",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "rationale": {
+            "type": "string",
+            "maxLength": 512,
+            "description": "Explanation of why the Sentinel control(s) satisfy this framework requirement."
+          },
+          "status_override": {
+            "type": "string",
+            "enum": ["not_applicable", "not_covered"],
+            "description": "Explicit override; 'not_applicable' means this control does not apply to Sentinel's scope."
+          }
+        }
+      }
+    }
+  }
+}

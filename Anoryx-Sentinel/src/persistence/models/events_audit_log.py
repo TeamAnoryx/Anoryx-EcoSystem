@@ -67,6 +67,9 @@ VALID_EVENT_TYPES = frozenset(
         "rate_limit_degraded",
         "rate_limit_recovered",
         "rate_limit_redis_error",
+        # F-011 (ADR-0013 §9 D8) — compliance evidence variants.
+        "compliance_evidence_generated",
+        "compliance_pack_exported",
     }
 )
 
@@ -106,6 +109,10 @@ ACTION_TAKEN_BY_EVENT_TYPE: dict[str, frozenset[str]] = {
     "rate_limit_degraded": frozenset({"logged"}),
     "rate_limit_recovered": frozenset({"logged"}),
     "rate_limit_redis_error": frozenset({"logged"}),
+    # F-011 (ADR-0013 §9 D8): compliance evidence variants use action_taken='logged'
+    # only; ck_eal_action_taken is UNCHANGED.
+    "compliance_evidence_generated": frozenset({"logged"}),
+    "compliance_pack_exported": frozenset({"logged"}),
 }
 
 

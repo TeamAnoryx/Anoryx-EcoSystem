@@ -1,0 +1,125 @@
+# ISO/IEC 27001:2022 Annex A — Sentinel control mapping (F-011, ADR-0013 §4 D3).
+#
+# Honesty rule (R8): sentinel_controls: [] means Sentinel provides NO evidence for this
+# Annex A control; it is reported as not_covered, never fabricated as coverage.
+# status_override: not_applicable is reserved for controls explicitly outside scope.
+#
+# Audit-ready framing: this mapping is evidence of audit preparation.
+# Certification requires an accredited auditor.
+
+framework: ISO27001
+framework_version: "ISO-IEC-27001-2022-AnnexA"
+
+controls:
+  # ── A.5 Organisational Controls ─────────────────────────────────────────────
+
+  - control_id: A.5.30
+    title: "ICT readiness for business continuity"
+    sentinel_controls: []
+    evidence_event_types: []
+    rationale: ""
+    # ICT continuity planning (DR sites, failover architecture, BCP procedures) is an
+    # organisational and infrastructure concern. Sentinel provides no evidence that
+    # business continuity plans exist or have been tested.
+
+  # ── A.8 Technological Controls ──────────────────────────────────────────────
+
+  - control_id: A.8.5
+    title: "Secure authentication"
+    sentinel_controls: [virtual_key_auth, policy_enforcement]
+    evidence_event_types:
+      - usage
+      - policy_decision_allow
+      - policy_decision_deny
+      - policy_violated
+    rationale: >
+      Every Sentinel request is authenticated via a tenant Bearer virtual key resolved
+      server-side (no client-supplied tenant override).  Authentication failures result
+      in 401 responses.  Authorisation decisions are logged per-request.
+
+  - control_id: A.8.12
+    title: "Data leakage prevention"
+    sentinel_controls: [pii_protection, secret_detection]
+    evidence_event_types:
+      - pii_blocked
+      - secret_leaked
+    rationale: >
+      Sentinel intercepts PII and credential material in AI traffic (F-005 masking,
+      F-007 secret-leak detection) and records each interception with the action taken
+      (masked / tokenized / blocked).  These events constitute DLP evidence for data
+      processed through the gateway.
+
+  - control_id: A.8.15
+    title: "Logging"
+    sentinel_controls: [audit_log_chain]
+    evidence_event_types:
+      - usage
+      - policy_decision_allow
+      - policy_decision_deny
+      - policy_violated
+      - injection_detected
+      - pii_blocked
+      - secret_leaked
+    rationale: >
+      Sentinel's append-only, SHA-256 hash-chained audit log (F-003) records all gateway
+      events with tenant_id, request_id, agent_id, session_id, action_taken, and
+      timestamps.  The chain provides tamper-evident proof that log records have not been
+      altered or deleted since they were appended.
+
+  - control_id: A.8.16
+    title: "Monitoring activities"
+    sentinel_controls: [injection_detection, shadow_ai_detection, rate_limiting]
+    evidence_event_types:
+      - injection_detected
+      - prompt_injection_detected_ml
+      - recursive_injection_attempt
+      - shadow_ai_detected
+      - shadow_ai_detected_outbound
+      - rate_limit_degraded
+      - rate_limit_recovered
+    rationale: >
+      Sentinel continuously monitors AI traffic for injection attacks (rule-based +
+      ML, F-007), shadow-AI egress (F-007), and rate-limit anomalies (F-009).
+      Each detection is logged as a structured event enabling real-time and
+      retrospective analysis.
+      shadow_ai_detected is the pre-F007 detection path; may be absent in deployments
+      running only F-007 egress detection (see shadow_ai_detected_outbound).
+
+  - control_id: A.8.23
+    title: "Web filtering / AI model access control"
+    sentinel_controls: [shadow_ai_detection, policy_enforcement]
+    evidence_event_types:
+      - shadow_ai_detected_outbound
+      - shadow_ai_detected
+      - policy_decision_deny
+      - policy_violated
+    rationale: >
+      Sentinel's shadow-AI egress detection (F-007) intercepts requests to
+      unauthorised AI model endpoints.  Policy deny decisions enforce the allow-listed
+      model set per tenant.  Together these controls satisfy the intent of web/service
+      filtering applied to AI model access.
+      shadow_ai_detected is the pre-F007 detection path; may be absent in deployments
+      running only F-007 egress detection (see shadow_ai_detected_outbound).
+
+  - control_id: A.8.28
+    title: "Secure coding"
+    status_override: not_applicable
+    sentinel_controls: []
+    evidence_event_types: []
+    rationale: >
+      Secure coding practices are a development-process control (SDLC, code review,
+      SAST/DAST tooling).  Sentinel's gateway does not emit runtime evidence of its own
+      development practices; this is evidenced by the SDLC artefacts in the repository
+      (PR gates, semgrep, ruff) rather than by gateway audit events.
+      Explicitly not applicable to the runtime evidence engine scope.
+
+  - control_id: A.8.34
+    title: "Privacy and protection of personally identifiable information"
+    sentinel_controls: [pii_protection]
+    evidence_event_types:
+      - pii_blocked
+    rationale: >
+      Sentinel's PII masking layer (F-005) detects and masks/tokenizes PII in AI
+      traffic at the gateway boundary.  pii_blocked events evidence active enforcement.
+      Note: Sentinel evidences gateway-layer PII interception only; data subject rights
+      (access, erasure, portability) are organisational processes outside this scope.
