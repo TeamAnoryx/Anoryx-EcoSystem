@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+tests
+playwright-report
+test-results
+coverage
+*.md
+.eslintrc.json

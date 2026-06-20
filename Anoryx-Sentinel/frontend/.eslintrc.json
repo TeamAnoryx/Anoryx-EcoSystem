@@ -1,0 +1,19 @@
+{
+  "extends": "next/core-web-vitals",
+  "rules": {
+    "no-restricted-properties": [
+      "error",
+      {
+        "object": "process",
+        "property": "env",
+        "message": "Read env only via src/lib/env.ts (server-only). Never reference a NEXT_PUBLIC_ admin token."
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": ["src/lib/env.ts", "src/middleware.ts", "scripts/**", "*.config.*", "playwright.config.ts"],
+      "rules": { "no-restricted-properties": "off" }
+    }
+  ]
+}
