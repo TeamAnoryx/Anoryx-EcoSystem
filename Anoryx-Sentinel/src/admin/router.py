@@ -1,0 +1,42 @@
+"""Admin API router (F-012a, ADR-0014).
+
+All /admin/* routes are mounted under a single APIRouter whose router-level
+dependency is require_admin — so EVERY admin route is auth-gated by construction
+(fail-closed). Tenant lifecycle, key management, audit read, and the operator
+control surface are added to this router in later steps.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends
+
+from admin.audit_log import audit_log_router
+from admin.auth import ADMIN_PRINCIPAL, require_admin
+from admin.control import control_router
+from admin.keys import keys_router
+from admin.tenants import tenants_router
+
+admin_router = APIRouter(
+    prefix="/admin",
+    tags=["admin"],
+    dependencies=[Depends(require_admin)],
+)
+
+
+@admin_router.get("/whoami")
+async def whoami() -> dict[str, str]:
+    """Return the authenticated admin principal.
+
+    Smoke route proving the auth primitive end-to-end: reachable only with a
+    valid SENTINEL_ADMIN_TOKEN, and only because the tenant middlewares skip the
+    /admin prefix (no tenant headers required).
+    """
+    return {"principal": ADMIN_PRINCIPAL}
+
+
+# Feature routers — each mounted under /admin with the require_admin dependency
+# applied at the parent (so every admin route is auth-gated by construction).
+admin_router.include_router(tenants_router)
+admin_router.include_router(keys_router)
+admin_router.include_router(audit_log_router)
+admin_router.include_router(control_router)

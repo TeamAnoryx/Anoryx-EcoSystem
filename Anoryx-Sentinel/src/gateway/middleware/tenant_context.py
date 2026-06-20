@@ -68,6 +68,14 @@ def _get_auth_exempt_paths() -> frozenset[str]:
 _MAX_HEADER_LEN = 64
 
 
+def _is_admin_path(path: str) -> bool:
+    """True for /admin and /admin/* — these carry no tenant ID headers and are
+    governed by admin.auth.require_admin (ADR-0014 D1), so the header-format gate
+    is skipped for them.
+    """
+    return path == "/admin" or path.startswith("/admin/")
+
+
 def _get_request_id(request: Request) -> str:
     """Return the canonical request_id from state, or generate a fallback."""
     rid = getattr(request.state, "request_id", None)
@@ -117,7 +125,7 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        if request.url.path in _get_auth_exempt_paths():
+        if request.url.path in _get_auth_exempt_paths() or _is_admin_path(request.url.path):
             return await call_next(request)
 
         # MED-3: use the single canonical request_id from the outermost wrapper.
