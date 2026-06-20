@@ -90,6 +90,17 @@ tags:
       Operational observability surface (metrics, health). NOT part of the
       OpenAI-compatible client surface. Operated/scraped by infrastructure, not
       by AI SDK clients.
+  - name: compliance
+    description: |
+      Audit-ready compliance evidence surface (F-011, see
+      docs/adr/0013-compliance-evidence-engine.md). NOT part of the
+      OpenAI-compatible client surface. Read-only over the tenant's own audit
+      trail; tenant-self-service under the existing tenant Bearer scheme (tenant
+      is SERVER-RESOLVED from the key — there is NO tenant_id parameter). v1
+      frameworks are SOC2 + ISO27001 ONLY. Evidence is metadata (control status,
+      event counts, hashes), never payloads/PII/secrets, and every artifact
+      carries a disclaimer: it is audit-ready evidence, NOT a certification
+      claim. Operator/cross-tenant evidence is out of scope (deferred to F-012).
 
 paths:
   /chat/completions:
@@ -299,6 +310,150 @@ paths:
                   Prometheus text exposition payload (the concrete `version=` is
                   reported in the response Content-Type header). Aggregate
                   operational metrics only; no secrets, keys, content, or PII.
+
+  /compliance/evidence:
+    get:
+      tags: [compliance]
+      operationId: getComplianceEvidence
+      summary: Get an audit-ready compliance evidence summary (tenant self-service)
+      description: |
+        Returns an audit-ready compliance evidence summary for the AUTHENTICATED
+        tenant over the window [t0, t1] (F-011, see
+        docs/adr/0013-compliance-evidence-engine.md). The summary reports, per
+        framework control, a status (passed / gap / not_applicable / not_covered),
+        the full gap list, and a readiness score (a transparent ratio =
+        passed / applicable, never weighted or inflated).
+
+        AUTH / TENANT SCOPING: authenticated with the existing tenant Bearer
+        virtual key (the SAME scheme /chat/completions uses). The tenant is
+        SERVER-RESOLVED from the verified key — there is NO `tenant_id` parameter
+        and no client-supplied tenant header is trusted as the source of truth.
+        The evidence read runs under the tenant-isolated RLS path, so a request
+        only ever sees its own tenant's data. Operator/cross-tenant evidence is
+        OUT OF SCOPE (deferred to F-012).
+
+        SCOPE: read-only aggregate over the tenant's own audit trail; issues no
+        writes to the audit log on the generation path. Evidence is METADATA
+        (control status, event counts, hashes) — never payloads, prompt content,
+        PII, or secrets. v1 frameworks are SOC2 + ISO27001 ONLY.
+
+        HONEST FRAMING: this is audit-ready evidence for audit preparation, NOT a
+        certification or "compliant" claim. Every response carries the
+        `disclaimer` field verbatim.
+      parameters:
+        - name: framework
+          in: query
+          required: true
+          description: |
+            Audit framework to summarize. v1 supports SOC2 + ISO27001 ONLY.
+          schema:
+            type: string
+            enum: [SOC2, ISO27001]
+          example: SOC2
+        - name: t0
+          in: query
+          required: true
+          description: |
+            Inclusive start of the evidence window (RFC 3339 / ISO 8601 date-time,
+            UTC). Evidence is bounded to [t0, t1]; events outside the window are
+            excluded.
+          schema:
+            type: string
+            format: date-time
+            maxLength: 64
+          example: "2026-01-01T00:00:00Z"
+        - name: t1
+          in: query
+          required: true
+          description: |
+            Inclusive end of the evidence window (RFC 3339 / ISO 8601 date-time,
+            UTC).
+          schema:
+            type: string
+            format: date-time
+            maxLength: 64
+          example: "2026-04-01T00:00:00Z"
+      responses:
+        "200":
+          description: |
+            Audit-ready evidence summary for the authenticated tenant over
+            [t0, t1]: per-control status, the gap list, the readiness score, and
+            the mandatory disclaimer. Metadata only; no payloads, PII, or secrets.
+          headers:
+            X-RateLimit-Limit:     { $ref: "#/components/headers/XRateLimitLimit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/XRateLimitRemaining" }
+            X-RateLimit-Reset:     { $ref: "#/components/headers/XRateLimitReset" }
+            X-Request-Id:          { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComplianceEvidenceSummary"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /compliance/export:
+    post:
+      tags: [compliance]
+      operationId: exportCompliancePack
+      summary: Export a signed, tamper-evident compliance evidence pack ZIP
+      description: |
+        Exports a tenant-scoped, ECDSA-signed, tamper-evident compliance evidence
+        pack as a ZIP for the AUTHENTICATED tenant over the window [t0, t1]
+        (F-011, see docs/adr/0013-compliance-evidence-engine.md). The pack is a
+        deterministic, byte-reproducible archive (canonical evidence JSON + a
+        detached ES256/JWS signature + the bundled public key + a manifest) so an
+        auditor can verify it OFFLINE without live access to Sentinel.
+
+        AUTH / TENANT SCOPING: authenticated with the existing tenant Bearer
+        virtual key (the SAME scheme /chat/completions uses). The tenant is
+        SERVER-RESOLVED from the verified key — there is NO `tenant_id` parameter
+        and no client-supplied tenant header is trusted as the source of truth.
+        The exported pack contains only the requester's own tenant data.
+        Operator/cross-tenant export is OUT OF SCOPE (deferred to F-012).
+
+        SCOPE: read-only over the tenant's own audit trail for pack content.
+        Evidence is METADATA (control status, event counts, hashes) — never
+        payloads, prompt content, PII, or secrets. v1 frameworks are SOC2 +
+        ISO27001 ONLY.
+
+        HONEST FRAMING: this is audit-ready evidence for audit preparation, NOT a
+        certification or "compliant" claim. The bundled manifest carries the
+        disclaimer verbatim.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExportCompliancePackRequest"
+      responses:
+        "200":
+          description: |
+            The signed, tamper-evident evidence pack as a binary ZIP archive
+            (`application/zip`). Deterministic: the same
+            [tenant, window, framework] inputs produce a byte-identical archive.
+            Contains evidence metadata only; no payloads, PII, or secrets.
+          headers:
+            X-RateLimit-Limit:     { $ref: "#/components/headers/XRateLimitLimit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/XRateLimitRemaining" }
+            X-RateLimit-Reset:     { $ref: "#/components/headers/XRateLimitReset" }
+            X-Request-Id:          { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+                description: |
+                  The signed evidence pack ZIP (canonical evidence.json +
+                  evidence.json.jws + pubkey.pem + manifest.json). Verifiable
+                  offline. Metadata only; never payloads, PII, or secrets.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
 
 components:
 
@@ -852,3 +1007,140 @@ components:
         data:
           type: array
           items: { $ref: "#/components/schemas/Model" }
+
+    ComplianceControlStatus:
+      type: object
+      description: |
+        Per-control evidence status within a framework. Status is exactly one of
+        passed / gap / not_applicable / not_covered (F-011, ADR-0013 §5). A
+        control with no Sentinel mapping is ALWAYS reported `not_covered`, never
+        fabricated as coverage.
+      required: [control_id, status]
+      additionalProperties: false
+      properties:
+        control_id:
+          type: string
+          maxLength: 64
+          pattern: "^[A-Za-z0-9._-]{1,64}$"
+          description: |
+            Framework-specific control identifier (e.g. 'CC7.2', 'A.5.30').
+            Charset restricted to [A-Za-z0-9._-] to forbid control characters and
+            whitespace (log-injection defense).
+        title:
+          type: string
+          maxLength: 256
+          description: Human-readable control title from the mapping YAML.
+        status:
+          type: string
+          enum: [passed, gap, not_applicable, not_covered]
+          description: |
+            Honest control status: `passed` (mapped + evidence in window), `gap`
+            (mapped but no evidence in window), `not_applicable` (explicit YAML
+            override), `not_covered` (no Sentinel mapping — reported, never faked).
+        evidence_event_count:
+          type: integer
+          minimum: 0
+          description: |
+            Count of mapped evidence events observed in the window for this
+            control. Aggregate metadata only; never event payloads.
+
+    ComplianceEvidenceSummary:
+      type: object
+      description: |
+        Audit-ready compliance evidence summary for the authenticated tenant over
+        a window [t0, t1] (F-011, ADR-0013). Read-only metadata: per-control
+        status, the gap list, and a transparent readiness ratio. Carries NO
+        payloads, prompt content, PII, or secrets. The `disclaimer` field is
+        mandatory and present on every response. This is audit-ready evidence for
+        audit preparation, NOT a certification or "compliant" claim.
+      required:
+        - framework
+        - framework_version
+        - window
+        - controls
+        - gaps
+        - readiness_score
+        - disclaimer
+      additionalProperties: false
+      properties:
+        framework:
+          type: string
+          enum: [SOC2, ISO27001]
+          description: Audit framework summarized. v1 supports SOC2 + ISO27001 ONLY.
+        framework_version:
+          type: string
+          maxLength: 64
+          pattern: "^[A-Za-z0-9._-]{1,64}$"
+          description: |
+            Pinned framework mapping version copied verbatim from the
+            version-controlled mapping YAML (e.g. '2017-TSC-rev2022').
+        window:
+          type: object
+          description: The evidence window [t0, t1] (inclusive), as supplied.
+          required: [t0, t1]
+          additionalProperties: false
+          properties:
+            t0:
+              type: string
+              format: date-time
+              maxLength: 64
+              description: Inclusive window start (RFC 3339 / ISO 8601, UTC).
+            t1:
+              type: string
+              format: date-time
+              maxLength: 64
+              description: Inclusive window end (RFC 3339 / ISO 8601, UTC).
+        controls:
+          type: array
+          description: Per-control evidence status across the framework.
+          items: { $ref: "#/components/schemas/ComplianceControlStatus" }
+        gaps:
+          type: array
+          description: |
+            Control identifiers reported as `gap` or `not_covered` (the honest gap
+            list). Derivable from `controls`; surfaced explicitly so a gap is
+            never hidden.
+          items:
+            type: string
+            maxLength: 64
+            pattern: "^[A-Za-z0-9._-]{1,64}$"
+        readiness_score:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: |
+            Readiness ratio = passed / applicable (applicable = total minus
+            not_applicable). A plain, recomputable ratio in [0,1] — NO weighting,
+            NO rounding-up, NO hiding of not_covered controls. Not a certification.
+        disclaimer:
+          type: string
+          maxLength: 256
+          description: |
+            Mandatory disclaimer carried verbatim on every summary: "Automated
+            evidence for audit preparation. Certification requires an accredited
+            auditor." Audit-ready, never "compliant".
+
+    ExportCompliancePackRequest:
+      type: object
+      description: |
+        Request body for POST /compliance/export. Closed schema
+        (additionalProperties: false): only the fields below are accepted. The
+        tenant is SERVER-RESOLVED from the Bearer key — there is intentionally NO
+        `tenant_id` field a caller could set to another tenant.
+      required: [framework, t0, t1]
+      additionalProperties: false
+      properties:
+        framework:
+          type: string
+          enum: [SOC2, ISO27001]
+          description: Audit framework to export. v1 supports SOC2 + ISO27001 ONLY.
+        t0:
+          type: string
+          format: date-time
+          maxLength: 64
+          description: Inclusive window start (RFC 3339 / ISO 8601 date-time, UTC).
+        t1:
+          type: string
+          format: date-time
+          maxLength: 64
+          description: Inclusive window end (RFC 3339 / ISO 8601 date-time, UTC).

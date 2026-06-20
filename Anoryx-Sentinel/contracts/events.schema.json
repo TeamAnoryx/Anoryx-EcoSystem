@@ -29,7 +29,9 @@
     { "$ref": "#/$defs/JudgeBillingEvent" },
     { "$ref": "#/$defs/RateLimitDegradedEvent" },
     { "$ref": "#/$defs/RateLimitRecoveredEvent" },
-    { "$ref": "#/$defs/RateLimitRedisErrorEvent" }
+    { "$ref": "#/$defs/RateLimitRedisErrorEvent" },
+    { "$ref": "#/$defs/ComplianceEvidenceGeneratedEvent" },
+    { "$ref": "#/$defs/CompliancePackExportedEvent" }
   ],
 
   "$comment": "Dispatch is normative via oneOf + the event_type const on each variant under JSON Schema Draft 2020-12. The 'discriminator' keyword below is a NON-NORMATIVE hint for OpenAPI tooling ONLY; it is not a 2020-12 keyword and has NO validation effect under this dialect. Do not rely on it for correctness.",
@@ -1089,6 +1091,101 @@
           "type": "string",
           "enum": ["logged"],
           "description": "Disposition: 'logged' (detect-and-audit only; the limiter continues enforcing on the in-process fallback path)."
+        }
+      }
+    },
+    "ComplianceEvidenceGeneratedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-011 (ADR-0013) after a tenant-scoped compliance evidence summary is generated over events_audit_log for a window. agent_id is the emitting component slug 'compliance-engine'. Carries the caller's REAL four IDs (a tenant generating evidence over its own data, NOT WILDCARD_UUID). Metadata only — NO payloads, prompt content, PII, or secrets. framework/framework_version describe which framework mapping was evaluated. This is audit-ready evidence, not a certification claim.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "framework",
+        "framework_version",
+        "action_taken"
+      ],
+      "properties": {
+        "event_type": { "const": "compliance_evidence_generated" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "framework": {
+          "type": "string",
+          "enum": ["SOC2", "ISO27001"],
+          "description": "Audit framework the evidence summary was generated for. v1 supports SOC2 and ISO27001 only. NOTE: this enum is local to the F-011 compliance meta-event variants and is deliberately distinct from ComplianceCheckedEvent.framework (which is unchanged)."
+        },
+        "framework_version": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9._-]{1,64}$",
+          "description": "Pinned framework mapping version copied verbatim from the version-controlled mapping YAML (e.g. '2017-TSC-rev2022'). Charset restricted to [A-Za-z0-9._-] to forbid control characters and whitespace (log-injection defense)."
+        },
+        "action_taken": {
+          "type": "string",
+          "enum": ["logged"],
+          "description": "Disposition: 'logged' (a meta-audit record of an evidence-summary generation; the generation path itself issues zero writes to events_audit_log)."
+        }
+      }
+    },
+    "CompliancePackExportedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-011 (ADR-0013) after a tenant-scoped, ECDSA-signed compliance evidence pack ZIP is exported. agent_id is the emitting component slug 'compliance-engine'. Carries the caller's REAL four IDs (a tenant exporting evidence over its own data, NOT WILDCARD_UUID). Metadata only — NO payloads, prompt content, PII, or secrets. pack_content_hash is the forensic linkage to the exported ZIP. This is audit-ready evidence, not a certification claim.",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "framework",
+        "framework_version",
+        "action_taken",
+        "pack_content_hash"
+      ],
+      "properties": {
+        "event_type": { "const": "compliance_pack_exported" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "framework": {
+          "type": "string",
+          "enum": ["SOC2", "ISO27001"],
+          "description": "Audit framework the exported pack was generated for. v1 supports SOC2 and ISO27001 only. NOTE: this enum is local to the F-011 compliance meta-event variants and is deliberately distinct from ComplianceCheckedEvent.framework (which is unchanged)."
+        },
+        "framework_version": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9._-]{1,64}$",
+          "description": "Pinned framework mapping version copied verbatim from the version-controlled mapping YAML (e.g. '2017-TSC-rev2022'). Charset restricted to [A-Za-z0-9._-] to forbid control characters and whitespace (log-injection defense)."
+        },
+        "action_taken": {
+          "type": "string",
+          "enum": ["logged"],
+          "description": "Disposition: 'logged' (a meta-audit record of a pack export)."
+        },
+        "pack_content_hash": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 hex of the canonical signed pack (forensic linkage to the exported ZIP). Never a payload."
         }
       }
     }

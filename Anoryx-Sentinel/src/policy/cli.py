@@ -26,6 +26,7 @@ from pathlib import Path
 
 import structlog
 
+from compliance import cli as compliance_cli
 from policy import crypto
 from policy.intake import intake_policy
 from policy.results import Accepted
@@ -211,6 +212,9 @@ def main(argv: list[str] | None = None) -> int:
     cunset = ccmds.add_parser("unset", help="Clear a tenant's classifier preset.")
     cunset.add_argument("--tenant", required=True, help="Tenant UUID.")
 
+    # F-011 (ADR-0013): compliance audit-readiness commands.
+    compliance_cli.register(groups)
+
     args = parser.parse_args(argv)
     if args.group == "policy":
         if args.cmd == "keygen":
@@ -226,6 +230,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_classifier_get(args.tenant)
         if args.cmd == "unset":
             return _cmd_classifier_unset(args.tenant)
+    elif args.group == "compliance":
+        return compliance_cli.dispatch(args)
     parser.error("unknown command")  # pragma: no cover
     return 2  # pragma: no cover
 
