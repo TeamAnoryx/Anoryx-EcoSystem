@@ -16,8 +16,13 @@ Postgres.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import os
 import re
+import subprocess
+import sys
 import uuid
 from typing import AsyncIterator
 
@@ -30,6 +35,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # Load the root .env so DATABASE_URL / APP_DATABASE_URL are available.
 _ENV_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env")
 load_dotenv(dotenv_path=_ENV_PATH)
+
+# Anoryx-Sentinel/ root (tests/compliance/conftest.py -> ../.. ).
+_SENTINEL_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 def _to_asyncpg_url(raw: str) -> str:
@@ -223,3 +231,108 @@ async def _reset_db_engine_caches() -> AsyncIterator[None]:
                 pass
         setattr(_db, _engine_attr, None)
         setattr(_db, _factory_attr, None)
+
+
+# ---------------------------------------------------------------------------
+# DB readiness (schema-at-head + sentinel_app provisioning) — DB-gated
+# ---------------------------------------------------------------------------
+#
+# The DB-backed compliance tests need the schema migrated to head AND the
+# sentinel_app role's password provisioned. The persistence package provides
+# this via autouse fixtures (ensure_schema_at_head + _provision_app_role_for_
+# each_test), but those are scoped to tests/persistence/ only. In CI the
+# packages run in alphabetical order, so tests/compliance/ runs BEFORE
+# tests/persistence/ — meaning a fresh CI database has neither the schema nor a
+# provisioned sentinel_app when the compliance DB tests run, surfacing as
+# "relation events_audit_log does not exist" and "password authentication failed
+# for sentinel_app".
+#
+# This session-autouse fixture makes the compliance package self-sufficient. It
+# is DB-GATED: if DATABASE_URL/APP_DATABASE_URL are absent or Postgres is
+# unreachable, it is a no-op so the pure-unit compliance tests still run without
+# a database (the DB-backed tests skip via their own DATABASE_URL guards).
+# Logic mirrors the canonical persistence conftest (_provision_sentinel_app_
+# password): SCRAM-SHA-256 verifier computed client-side, only the opaque
+# verifier — never the plaintext — interpolated into the ALTER ROLE statement.
+
+
+def _parse_pg(url: str):
+    return re.match(r"postgresql(?:\+asyncpg)?://([^:]+):([^@]+)@([^:]+):(\d+)/(.+)", url)
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def _ensure_compliance_db_ready() -> AsyncIterator[None]:
+    db_url = os.environ.get("DATABASE_URL", "")
+    app_url = os.environ.get("APP_DATABASE_URL", "")
+    if not db_url or not app_url:
+        yield  # no DB configured -> pure-unit tests only
+        return
+
+    m = _parse_pg(db_url)
+    if not m:
+        yield
+        return
+
+    import asyncpg
+
+    # Reachability probe — if Postgres is down, no-op so pure-unit tests run.
+    try:
+        probe = await asyncpg.connect(
+            user=m.group(1),
+            password=m.group(2),
+            host=m.group(3),
+            port=int(m.group(4)),
+            database=m.group(5),
+            timeout=3,
+        )
+        await probe.close()
+    except Exception:
+        yield  # Postgres unreachable -> DB tests skip via their own guards
+        return
+
+    # 1) Schema at head (creates events_audit_log + sentinel_app role, migration 0006).
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.path.join(_SENTINEL_ROOT, "src")
+    from dotenv import dotenv_values
+
+    env.update({k: v for k, v in dotenv_values(_ENV_PATH).items() if v is not None})
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=_SENTINEL_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        pytest.fail(f"_ensure_compliance_db_ready: alembic upgrade head failed:\n{result.stderr}")
+
+    # 2) Provision sentinel_app's password (SCRAM verifier; plaintext never in SQL).
+    app_pw_m = re.match(r"postgresql(?:\+asyncpg)?://[^:]+:([^@]+)@", app_url)
+    if app_pw_m:
+        app_password = app_pw_m.group(1)
+        conn = await asyncpg.connect(
+            user=m.group(1),
+            password=m.group(2),
+            host=m.group(3),
+            port=int(m.group(4)),
+            database=m.group(5),
+        )
+        try:
+            salt = os.urandom(16)
+            iters = 4096
+            salted = hashlib.pbkdf2_hmac("sha256", app_password.encode("utf-8"), salt, iters)
+            client_key = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+            stored_key = hashlib.sha256(client_key).digest()
+            server_key = hmac.new(salted, b"Server Key", hashlib.sha256).digest()
+            verifier = (
+                f"SCRAM-SHA-256${iters}"
+                f":{base64.b64encode(salt).decode()}"
+                f"${base64.b64encode(stored_key).decode()}"
+                f":{base64.b64encode(server_key).decode()}"
+            )
+            await conn.execute(f"ALTER ROLE sentinel_app WITH PASSWORD '{verifier}'")
+        finally:
+            await conn.close()
+
+    yield
