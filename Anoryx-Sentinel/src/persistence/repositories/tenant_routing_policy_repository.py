@@ -164,6 +164,47 @@ class TenantRoutingPolicyRepository:
         ]
         return resolve_inherited_config(candidates)
 
+    async def get_config_row(
+        self, tenant_id: str, caller_tenant_id: str
+    ) -> TenantRoutingPolicy | None:
+        """Return the raw routing-policy row for a tenant, or None (F-012 config view).
+
+        Defense-in-depth tenant predicate on top of RLS. Exposes the F-007/F-009
+        adjustable fields (classifier_model_id, audit_mode, team_rpm_limit) for the
+        admin operator surface.
+        """
+        stmt = (
+            select(TenantRoutingPolicy)
+            .where(TenantRoutingPolicy.tenant_id == tenant_id)
+            .where(TenantRoutingPolicy.tenant_id == caller_tenant_id)
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def update_config(
+        self, tenant_id: str, caller_tenant_id: str, updates: dict[str, object]
+    ) -> TenantRoutingPolicy | None:
+        """Bounded update of F-007/F-009 config on an existing row (F-012, ADR-0014 D6).
+
+        Only classifier_model_id / audit_mode / team_rpm_limit may be set. The
+        table's existing CHECK constraints (ck_trp_classifier_model_id allow-list,
+        ck_trp_audit_mode, ck_trp_team_rpm_limit > 0) are the source of truth and
+        backstop at flush. Returns the updated row, or None if no row exists (the
+        caller maps that to 404 — creating the base routing policy is out of scope,
+        owned by F-008/defaults). This changes config DATA only, not engine logic.
+        """
+        allowed = {"classifier_model_id", "audit_mode", "team_rpm_limit"}
+        unknown = set(updates) - allowed
+        if unknown:
+            raise ValueError(f"unsupported config fields: {sorted(unknown)}")
+        row = await self.get_config_row(tenant_id, caller_tenant_id)
+        if row is None:
+            return None
+        for key, value in updates.items():
+            setattr(row, key, value)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return row
+
 
 async def get_classifier_config(tenant_context: "TenantContext") -> "ClassifierConfig":
     """Resolve a tenant's classifier config on a tenant session (RLS, R13).

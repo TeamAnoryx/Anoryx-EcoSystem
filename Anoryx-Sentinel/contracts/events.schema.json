@@ -31,7 +31,13 @@
     { "$ref": "#/$defs/RateLimitRecoveredEvent" },
     { "$ref": "#/$defs/RateLimitRedisErrorEvent" },
     { "$ref": "#/$defs/ComplianceEvidenceGeneratedEvent" },
-    { "$ref": "#/$defs/CompliancePackExportedEvent" }
+    { "$ref": "#/$defs/CompliancePackExportedEvent" },
+    { "$ref": "#/$defs/AdminTenantCreatedEvent" },
+    { "$ref": "#/$defs/AdminTenantDeactivatedEvent" },
+    { "$ref": "#/$defs/AdminKeyMintedEvent" },
+    { "$ref": "#/$defs/AdminKeyRevokedEvent" },
+    { "$ref": "#/$defs/AdminConfigUpdatedEvent" },
+    { "$ref": "#/$defs/AdminAuditAccessedEvent" }
   ],
 
   "$comment": "Dispatch is normative via oneOf + the event_type const on each variant under JSON Schema Draft 2020-12. The 'discriminator' keyword below is a NON-NORMATIVE hint for OpenAPI tooling ONLY; it is not a 2020-12 keyword and has NO validation effect under this dialect. Do not rely on it for correctness.",
@@ -1187,6 +1193,108 @@
           "pattern": "^[a-f0-9]{64}$",
           "description": "SHA-256 hex of the canonical signed pack (forensic linkage to the exported ZIP). Never a payload."
         }
+      }
+    },
+    "AdminTenantCreatedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-012a (ADR-0014 §8) when the admin/operator principal creates a tenant. Honest admin attribution: agent_id is the reserved slug 'admin-console' (the operator principal, NOT the system and NOT the target tenant); tenant_id is the TARGET tenant created; team_id = project_id = WILDCARD_UUID because the action is tenant-level, not scoped to a team/project (contracts/ids.md 4th documented WILDCARD_UUID use). Metadata only — NO secrets, key material, or payloads.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "admin_tenant_created" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (admin meta-audit record; no engine bypass)." }
+      }
+    },
+    "AdminTenantDeactivatedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-012a (ADR-0014 §8) when the admin/operator principal soft-deactivates a tenant (is_active=false; no hard delete, the audit chain survives). Honest admin attribution: agent_id is the reserved slug 'admin-console'; tenant_id is the TARGET tenant; team_id = project_id = WILDCARD_UUID (tenant-level action; contracts/ids.md 4th documented WILDCARD_UUID use). Metadata only — NO secrets, key material, or payloads.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "admin_tenant_deactivated" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (admin meta-audit record; soft-deactivate, audit chain untouched)." }
+      }
+    },
+    "AdminKeyMintedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-012a (ADR-0014 §8) when the admin/operator principal mints a virtual key (including the new key on a rotation). Honest admin attribution: agent_id is the reserved slug 'admin-console'; tenant_id is the TARGET tenant; team_id/project_id are the key's REAL team/project (known at mint), NOT WILDCARD_UUID. Metadata only — the plaintext key secret and HMAC fingerprint are NEVER carried on the event (secret is surfaced once in the API response only).",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "admin_key_minted" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (admin meta-audit record; key secret never carried)." }
+      }
+    },
+    "AdminKeyRevokedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-012a (ADR-0014 §8) when the admin/operator principal revokes a virtual key (including the old key on a rotation; rotation is immediate-revoke). Honest admin attribution: agent_id is the reserved slug 'admin-console'; tenant_id is the TARGET tenant; team_id/project_id are the key's REAL team/project, NOT WILDCARD_UUID. Metadata only — NO key secret or fingerprint is carried.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "admin_key_revoked" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (admin meta-audit record; key secret never carried)." }
+      }
+    },
+    "AdminConfigUpdatedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-012a (ADR-0014 §8) when the admin/operator principal adjusts tenant routing config (classifier_model_id / audit_mode / team_rpm_limit) via a bounded UPDATE constrained by the table's existing CHECK constraints — config data only, NO engine logic changed. Honest admin attribution: agent_id is the reserved slug 'admin-console'; tenant_id is the TARGET tenant; team_id = project_id = WILDCARD_UUID (tenant-level action; contracts/ids.md 4th documented WILDCARD_UUID use). Metadata only — NO secrets or payloads.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "admin_config_updated" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (admin meta-audit record; bounded config update, engine logic untouched)." }
+      }
+    },
+    "AdminAuditAccessedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-012a (ADR-0014 §8) on every admin/operator cross-tenant READ (audit log, policy status, config view, or compliance evidence over a target tenant). The audit-read serving query itself writes zero rows (ADR-0014 §9 R1/R5 reconciliation); this access event is a separate, explicit append. Honest admin attribution: agent_id is the reserved slug 'admin-console'; tenant_id is the TARGET tenant read; team_id = project_id = WILDCARD_UUID (tenant-level action; contracts/ids.md 4th documented WILDCARD_UUID use). Metadata only — NO read payloads, PII, or secrets.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "admin_audit_accessed" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (admin meta-audit record of a cross-tenant read; the serving query writes zero rows)." }
       }
     }
   }

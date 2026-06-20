@@ -82,6 +82,14 @@ def _get_auth_exempt_paths() -> frozenset[str]:
         return _AUTH_EXEMPT_PATHS
 
 
+def _is_admin_path(path: str) -> bool:
+    """True for /admin and /admin/* — governed by admin.auth.require_admin, not
+    tenant Bearer auth (ADR-0014 D1). Tenant auth skips this prefix so a tenant
+    key is never resolved on an admin route; the admin token is the sole authority.
+    """
+    return path == "/admin" or path.startswith("/admin/")
+
+
 def _get_request_id(request: Request) -> str:
     """Return the canonical request_id from state, or generate a fallback."""
     rid = getattr(request.state, "request_id", None)
@@ -117,7 +125,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        if request.url.path in _get_auth_exempt_paths():
+        if request.url.path in _get_auth_exempt_paths() or _is_admin_path(request.url.path):
             return await call_next(request)
 
         # MED-3: use the single canonical request_id from the outermost wrapper.

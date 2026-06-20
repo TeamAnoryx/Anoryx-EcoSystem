@@ -101,6 +101,36 @@ tags:
       event counts, hashes), never payloads/PII/secrets, and every artifact
       carries a disclaimer: it is audit-ready evidence, NOT a certification
       claim. Operator/cross-tenant evidence is out of scope (deferred to F-012).
+  - name: audit
+    description: |
+      Tenant self-service audit-log read surface (F-012a, see
+      docs/adr/0014-admin-console-api.md). NOT part of the OpenAI-compatible
+      client surface. Read-only over the AUTHENTICATED tenant's OWN events under
+      the existing tenant Bearer scheme — the tenant is SERVER-RESOLVED from the
+      key and the read runs under the tenant-isolated RLS path, so a request only
+      ever sees its own tenant's rows. Keyset cursor pagination on the monotonic
+      sequence_number. Metadata only; never payloads, PII, or secrets.
+  - name: admin
+    description: |
+      Operator / admin surface (F-012a, see
+      docs/adr/0014-admin-console-api.md). NOT part of the OpenAI-compatible
+      client surface and NOT under the tenant Bearer scheme. Authenticated by the
+      SEPARATE deploy-injected operator secret `SENTINEL_ADMIN_TOKEN` via the
+      `adminAuth` scheme (fail-closed: unset/empty secret → 401 on every
+      `/admin/*` route, never a fall-back to tenant scope). This is Sentinel's
+      FIRST cross-tenant principal: it manages tenants, mints/rotates/revokes
+      virtual keys, reads the audit log across tenants, and thinly controls the
+      F-007/F-008/F-009/F-011 engines. Cross-tenant access uses NO new RLS bypass
+      — per-target tenant data is read/written inside the target tenant's RLS
+      session (one explicitly-named tenant per request); the global tenant
+      registry uses the existing break-glass session. Every mutating action and
+      every cross-tenant read emits an `admin_*` audit event attributing the act
+      to the `admin-console` principal + the TARGET tenant (see
+      contracts/events.schema.json, contracts/ids.md). The target tenant is a
+      PATH parameter (tenant_id / key_id); it is NEVER taken from a request body.
+      v1 is single-operator: no multi-admin, no per-operator attribution, no
+      SSO/SAML, no fine-grained RBAC, no frontend (F-012 proper). "audit-ready",
+      never "compliant".
 
 paths:
   /chat/completions:
@@ -455,6 +485,496 @@ paths:
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /audit:
+    get:
+      tags: [audit]
+      operationId: getTenantAuditLog
+      summary: Read the authenticated tenant's own audit log (tenant self-service)
+      description: |
+        Returns a page of the AUTHENTICATED tenant's OWN audit events (F-012a, see
+        docs/adr/0014-admin-console-api.md §6). Read-only metadata over the tenant's
+        own append-only audit trail; the serving query issues ZERO writes to the
+        audit log.
+
+        AUTH / TENANT SCOPING: authenticated with the existing tenant Bearer virtual
+        key (the SAME scheme /chat/completions uses). The tenant is SERVER-RESOLVED
+        from the verified key — there is NO tenant_id parameter and no client header
+        is trusted as the source of truth. The read runs under the tenant-isolated
+        RLS path, so a request only ever sees its own tenant's rows.
+
+        PAGINATION: keyset cursor on the monotonic sequence_number (after_sequence +
+        bounded limit) — stable under concurrent appends, no offset drift.
+
+        CONTENT: aggregate audit metadata only (event_type, action_taken, the four
+        stable IDs, timestamps, sequence_number) — never payloads, prompt content,
+        PII, or secrets.
+      parameters:
+        - $ref: "#/components/parameters/AuditAfterSequence"
+        - $ref: "#/components/parameters/AuditLimit"
+      responses:
+        "200":
+          description: |
+            A page of the authenticated tenant's own audit events plus the keyset
+            cursor for the next page. Metadata only; no payloads, PII, or secrets.
+          headers:
+            X-RateLimit-Limit:     { $ref: "#/components/headers/XRateLimitLimit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/XRateLimitRemaining" }
+            X-RateLimit-Reset:     { $ref: "#/components/headers/XRateLimitReset" }
+            X-Request-Id:          { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditPage"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/whoami:
+    get:
+      tags: [admin]
+      operationId: adminWhoami
+      summary: Return the authenticated admin principal (admin/operator)
+      description: |
+        Smoke route that proves the admin auth primitive end-to-end (F-012a, ADR-0014):
+        reachable ONLY with a valid `SENTINEL_ADMIN_TOKEN` via the `adminAuth` scheme,
+        and requires no tenant headers (the tenant middlewares skip the `/admin`
+        prefix). Returns the fixed `admin-console` principal slug. No tenant data is
+        read or written; emits no audit event.
+      security:
+        - adminAuth: []
+      responses:
+        "200":
+          description: The authenticated admin principal slug.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminWhoami"
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/tenants:
+    post:
+      tags: [admin]
+      operationId: adminCreateTenant
+      summary: Create a tenant (admin/operator)
+      description: |
+        Creates a tenant in the global tenant registry (F-012a, ADR-0014 §4) via the
+        existing break-glass session (the registry is non-RLS-scoped). Emits
+        `admin_tenant_created` attributing the act to `admin-console` + the created
+        tenant. No hard delete exists anywhere in this surface; lifecycle end is
+        soft-deactivate.
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminCreateTenantRequest"
+      responses:
+        "201":
+          description: The created tenant record (registry metadata only).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminTenant"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    get:
+      tags: [admin]
+      operationId: adminListTenants
+      summary: List tenants (admin/operator)
+      description: |
+        Lists tenant registry records (F-012a, ADR-0014 §4). Registry metadata only;
+        no secrets. This is a global-registry read (not tenant-scoped data), so it
+        emits no per-target `admin_audit_accessed` event.
+      security:
+        - adminAuth: []
+      responses:
+        "200":
+          description: A list of tenant registry records (metadata only).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminTenantList"
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/tenants/{tenant_id}:
+    get:
+      tags: [admin]
+      operationId: adminGetTenant
+      summary: Get a tenant by id (admin/operator)
+      description: |
+        Returns a single tenant registry record (F-012a, ADR-0014 §4). Registry
+        metadata only; no secrets.
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+      responses:
+        "200":
+          description: The tenant registry record (metadata only).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminTenant"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/tenants/{tenant_id}/deactivate:
+    post:
+      tags: [admin]
+      operationId: adminDeactivateTenant
+      summary: Soft-deactivate a tenant (admin/operator)
+      description: |
+        Soft-deactivates a tenant by flipping `is_active=false` (F-012a, ADR-0014
+        §4). NO hard delete: the append-only audit log and its hash chain are
+        untouched and remain verifiable. The tenant's keys are denied at the gateway
+        afterward. Emits `admin_tenant_deactivated` attributing the act to
+        `admin-console` + the target tenant.
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+      responses:
+        "200":
+          description: The updated tenant registry record (is_active=false).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminTenant"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/tenants/{tenant_id}/keys:
+    post:
+      tags: [admin]
+      operationId: adminMintKey
+      summary: Mint a virtual API key for a tenant (admin/operator)
+      description: |
+        Mints a virtual API key for the target tenant (F-012a, ADR-0014 §5). The
+        plaintext secret is generated server-side and returned EXACTLY ONCE in this
+        response — it is stored only as an HMAC fingerprint and is never re-readable.
+        team/project/agent are supplied in the body and validated to belong to the
+        target tenant. Runs inside the target tenant's RLS session. Emits
+        `admin_key_minted` carrying the key's real team/project.
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminMintKeyRequest"
+      responses:
+        "201":
+          description: |
+            The minted key. The plaintext `secret` is present ONCE here and NEVER
+            returned again by any endpoint.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminMintedKey"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    get:
+      tags: [admin]
+      operationId: adminListKeys
+      summary: List a tenant's virtual API keys (admin/operator)
+      description: |
+        Lists the target tenant's virtual API keys (F-012a, ADR-0014 §5). Returns
+        METADATA ONLY (key_id, label, is_active, timestamps) — NEVER the plaintext
+        secret or the HMAC fingerprint. Runs inside the target tenant's RLS session;
+        a tenant principal can never list another tenant's keys. Emits
+        `admin_audit_accessed` (cross-tenant read).
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+      responses:
+        "200":
+          description: A list of key metadata records (no secrets, no fingerprints).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminKeyList"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/tenants/{tenant_id}/keys/{key_id}/rotate:
+    post:
+      tags: [admin]
+      operationId: adminRotateKey
+      summary: Rotate a virtual API key (immediate-revoke, admin/operator)
+      description: |
+        Rotates a virtual API key in one transaction (F-012a, ADR-0014 §5):
+        IMMEDIATELY revokes the old key and mints a new one with the same scope. The
+        new plaintext secret is returned EXACTLY ONCE here; the old key is dead the
+        instant the new one mints (smallest exposure window). Runs inside the target
+        tenant's RLS session. Emits `admin_key_revoked` (old) + `admin_key_minted`
+        (new), each carrying the key's real team/project.
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+        - $ref: "#/components/parameters/AdminKeyId"
+      responses:
+        "201":
+          description: |
+            The newly minted replacement key. Its plaintext `secret` is present
+            ONCE here; the rotated-out key is already revoked.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminMintedKey"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/tenants/{tenant_id}/keys/{key_id}/revoke:
+    post:
+      tags: [admin]
+      operationId: adminRevokeKey
+      summary: Revoke a virtual API key (admin/operator)
+      description: |
+        Revokes a virtual API key by deactivating it (F-012a, ADR-0014 §5). The
+        gateway denies the key on its next request via the existing is_active=false
+        lookup filter. Runs inside the target tenant's RLS session. Emits
+        `admin_key_revoked` carrying the key's real team/project.
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+        - $ref: "#/components/parameters/AdminKeyId"
+      responses:
+        "200":
+          description: The revoked key's metadata (is_active=false; no secret).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminKeyMetadata"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/tenants/{tenant_id}/audit:
+    get:
+      tags: [admin]
+      operationId: adminGetTenantAuditLog
+      summary: Read a target tenant's audit log (admin/operator)
+      description: |
+        Returns a page of the TARGET tenant's audit events (F-012a, ADR-0014 §6),
+        read inside the target tenant's RLS session. The data-serving query issues
+        ZERO writes to the audit log; the cross-tenant read itself is recorded by a
+        separate, explicit `admin_audit_accessed` append (ADR-0014 §9 R1/R5
+        reconciliation). The response honestly surfaces the F-003 chain
+        verification result (`chain_verified` / `chain_rows_checked`) — never a
+        fabricated "valid". Keyset cursor pagination on sequence_number. Metadata
+        only; no payloads, PII, or secrets.
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+        - $ref: "#/components/parameters/AuditAfterSequence"
+        - $ref: "#/components/parameters/AuditLimit"
+      responses:
+        "200":
+          description: |
+            A page of the target tenant's audit events, the keyset cursor, and the
+            honestly-surfaced F-003 chain verification status. Metadata only.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditPage"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/tenants/{tenant_id}/config:
+    get:
+      tags: [admin]
+      operationId: adminGetTenantConfig
+      summary: View a tenant's routing/engine config (admin/operator)
+      description: |
+        Returns the target tenant's routing config (classifier_model_id /
+        audit_mode / team_rpm_limit) via the existing read path (F-012a, ADR-0014
+        §7). Read inside the target tenant's RLS session. Emits
+        `admin_audit_accessed` (cross-tenant read).
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+      responses:
+        "200":
+          description: The tenant's current routing/engine config.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminTenantConfig"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    patch:
+      tags: [admin]
+      operationId: adminUpdateTenantConfig
+      summary: Adjust a tenant's routing/engine config (admin/operator)
+      description: |
+        Applies a BOUNDED update to the target tenant's routing config
+        (classifier_model_id / audit_mode / team_rpm_limit) — F-012a, ADR-0014 §7.
+        The update is validated against the table's EXISTING CHECK constraints
+        (classifier_model_id allow-list, audit_mode in {full,redacted},
+        team_rpm_limit > 0); it changes config DATA, not classifier/limiter LOGIC.
+        Runs inside the target tenant's RLS session. Emits `admin_config_updated`.
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminUpdateTenantConfigRequest"
+      responses:
+        "200":
+          description: The tenant's config after the bounded update.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminTenantConfig"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/tenants/{tenant_id}/policies:
+    get:
+      tags: [admin]
+      operationId: adminGetTenantPolicies
+      summary: View a tenant's policy-intake status (admin/operator)
+      description: |
+        Returns the target tenant's policy-intake status via the existing
+        PolicyRepository read path (F-012a, ADR-0014 §7). READ ONLY — no policy is
+        created or modified here. Read inside the target tenant's RLS session.
+        Emits `admin_audit_accessed` (cross-tenant read). Policy metadata only; no
+        signature/key material.
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+      responses:
+        "200":
+          description: The tenant's policy-intake status records (metadata only).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminPolicyList"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/tenants/{tenant_id}/compliance/evidence:
+    post:
+      tags: [admin]
+      operationId: adminGenerateTenantEvidence
+      summary: Generate a target tenant's compliance evidence (admin/operator)
+      description: |
+        Generates an audit-ready compliance evidence summary for the TARGET tenant
+        over [t0, t1] (F-012a, ADR-0014 §7) — the deferred operator path of F-011,
+        calling the existing generate_evidence(..., tenant_id=TARGET) engine
+        unchanged. Read inside the target tenant's RLS session. Emits
+        `admin_audit_accessed` (cross-tenant read). Evidence is METADATA (control
+        status, event counts, hashes) — never payloads, PII, or secrets. v1
+        frameworks are SOC2 + ISO27001 ONLY. HONEST FRAMING: audit-ready evidence
+        for audit preparation, NOT a certification or "compliant" claim — the
+        `disclaimer` is carried verbatim.
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminGenerateEvidenceRequest"
+      responses:
+        "200":
+          description: |
+            Audit-ready evidence summary for the target tenant over [t0, t1]: the
+            control-status totals, the readiness score, and the mandatory
+            disclaimer (a totals projection, not the per-control list). Metadata
+            only; no payloads, PII, or secrets.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminTenantEvidenceSummary"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
 components:
 
   securitySchemes:
@@ -478,6 +998,39 @@ components:
         override, or impersonate a context the key does not already authorize. All
         attribution propagated onto events and audit logs uses the server-resolved
         values, not the raw client headers.
+
+    adminAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Operator / admin authentication for the `/admin/*` surface ONLY (F-012a,
+        see docs/adr/0014-admin-console-api.md). Presented as
+        `Authorization: Bearer <token>` where the token is the deploy-injected
+        operator secret `SENTINEL_ADMIN_TOKEN`.
+
+        DISTINCT FROM bearerAuth (security-critical): this is NOT a tenant virtual
+        API key. `SENTINEL_ADMIN_TOKEN` is a SINGLE operator secret read at runtime
+        from the environment (Vault/KMS-injected at deploy; never in
+        code/config/logs/tests). The admin validator compares the presented token
+        to this secret with a constant-time compare and validates ONLY against it —
+        it NEVER falls through to the virtual-key lookup. A tenant virtual key
+        presented on `/admin/*` therefore fails the compare and is rejected with
+        401; the admin token presented on a tenant route fails the key lookup. The
+        two principals are mutually exclusive by path AND by validator.
+
+        FAIL-CLOSED: if `SENTINEL_ADMIN_TOKEN` is unset/empty, every `/admin/*`
+        route returns 401 — there is NO fall-back to tenant scope and NO tenant
+        data is ever returned. A missing/malformed header or a mismatched token
+        returns 401.
+
+        CROSS-TENANT, AUDITED: this is Sentinel's first cross-tenant principal.
+        Cross-tenant access uses no new RLS bypass (per-target reads run under the
+        target tenant's RLS session; the global tenant registry uses the existing
+        break-glass session). Every mutating action and every cross-tenant read is
+        recorded as an `admin_*` audit event attributing the act to the
+        `admin-console` principal and the target tenant. v1 is single-operator
+        (no multi-admin, no per-operator attribution, no revoke-without-redeploy);
+        protect this secret like the F-008 signing key.
 
   parameters:
     TenantId:
@@ -541,6 +1094,65 @@ components:
         pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
       example: "gateway-core"
 
+    AdminTargetTenantId:
+      name: tenant_id
+      in: path
+      required: true
+      description: |
+        The TARGET tenant the admin/operator action applies to (UUID v4). PATH
+        parameter — the target is NEVER taken from a request body. Per-tenant data
+        is read/written inside this tenant's RLS session (no new RLS bypass). The
+        emitted `admin_*` audit event sets `tenant_id` to this value (the tenant
+        acted upon), never `WILDCARD_UUID`. Overlong values (> 64 chars) are
+        rejected at 400.
+      schema:
+        type: string
+        format: uuid
+        maxLength: 64
+      example: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+
+    AdminKeyId:
+      name: key_id
+      in: path
+      required: true
+      description: |
+        Identifier of the virtual API key to act on (UUID v4), scoped to the target
+        tenant in the path. PATH parameter. The key secret/fingerprint is NEVER
+        accepted or returned here; only this id and metadata. Overlong values
+        (> 64 chars) are rejected at 400.
+      schema:
+        type: string
+        format: uuid
+        maxLength: 64
+      example: "c4d5e6f7-1234-4abc-9def-0123456789ab"
+
+    AuditAfterSequence:
+      name: after_sequence
+      in: query
+      required: false
+      description: |
+        Keyset cursor: return only events whose monotonic `sequence_number` is
+        strictly greater than this value (F-012a, ADR-0014 §6). Omit for the first
+        page. Stable under concurrent appends — no offset drift, no deep-scan cost.
+      schema:
+        type: integer
+        minimum: 0
+      example: 0
+
+    AuditLimit:
+      name: limit
+      in: query
+      required: false
+      description: |
+        Maximum number of audit events to return in this page. Bounded to cap
+        scan/response cost (fail-safe sizing).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 100
+      example: 100
+
   headers:
     XRateLimitLimit:
       description: |
@@ -591,6 +1203,37 @@ components:
           example:
             error_code: invalid_api_key
             message: "Virtual API key is missing, revoked, or invalid."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    AdminUnauthorized:
+      description: |
+        Admin authentication failed on an `/admin/*` route. Returned when the
+        `Authorization: Bearer <token>` header is missing/malformed, the token does
+        not match `SENTINEL_ADMIN_TOKEN` (constant-time compare), or the operator
+        secret is unset/empty (fail-closed). A tenant virtual key presented here is
+        also rejected with 401 — admin and tenant principals never cross. No
+        fall-back to tenant scope; no tenant data is returned.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: invalid_api_key
+            message: "Virtual API key is missing, revoked, or invalid."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    NotFound:
+      description: |
+        The addressed resource (tenant_id / key_id path parameter) does not exist or
+        is not visible in the addressed scope. The body never echoes request content
+        or PII; correlate via request_id.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: invalid_request
+            message: "The request body is invalid or violates a field constraint."
             request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
     Forbidden:
       description: |
@@ -1144,3 +1787,597 @@ components:
           format: date-time
           maxLength: 64
           description: Inclusive window end (RFC 3339 / ISO 8601 date-time, UTC).
+
+    AuditLogEntry:
+      type: object
+      description: |
+        One audit-log row, returned as METADATA ONLY (F-012a, ADR-0014 §6). Carries
+        the event classification, the four stable IDs, the correlation id, the
+        monotonic sequence_number used as the keyset cursor, and the F-003 chain
+        hashes (prev_hash / row_hash) so a reader can independently follow the chain
+        OFFLINE (ADR-0014 §6 D5; F-011 precedent — the hashes are integrity metadata,
+        exposed BY DESIGN, never secret material). NEVER carries payloads, prompt
+        content, PII, or secrets. Built field-for-field from admin.schemas
+        .AuditEventResponse; used by BOTH /v1/audit and /admin/tenants/{id}/audit.
+      required:
+        - sequence_number
+        - event_id
+        - event_type
+        - event_timestamp
+        - request_id
+        - tenant_id
+        - team_id
+        - project_id
+        - agent_id
+        - prev_hash
+        - row_hash
+      additionalProperties: false
+      properties:
+        sequence_number:
+          type: integer
+          minimum: 0
+          description: |
+            Monotonic per-row sequence number (the keyset pagination cursor). Stable
+            and strictly increasing under concurrent appends.
+        event_id:
+          type: string
+          maxLength: 64
+          description: Stable per-event identifier of the recorded audit row.
+        event_type:
+          type: string
+          maxLength: 64
+          description: |
+            The recorded event type (one of the contracts/events.schema.json
+            variants). Metadata only.
+        event_timestamp:
+          type: string
+          maxLength: 64
+          description: |
+            When the event was recorded, as the stored string value (RFC 3339 /
+            ISO 8601, UTC). Carried verbatim from the audit row (no re-formatting).
+        request_id:
+          type: string
+          maxLength: 64
+          description: Correlation id of the originating request.
+        tenant_id:
+          type: string
+          maxLength: 64
+          description: Server-resolved tenant id on the recorded event.
+        team_id:
+          type: string
+          maxLength: 64
+          description: Team id on the recorded event (may be WILDCARD_UUID per contracts/ids.md).
+        project_id:
+          type: string
+          maxLength: 64
+          description: Project id on the recorded event (may be WILDCARD_UUID per contracts/ids.md).
+        agent_id:
+          type: string
+          maxLength: 64
+          description: Internal Sentinel component slug on the recorded event.
+        action_taken:
+          type: [string, "null"]
+          maxLength: 64
+          description: |
+            The disposition recorded for this event (e.g. 'logged', 'blocked'), or
+            null when the recorded event carried no action.
+        prev_hash:
+          type: string
+          maxLength: 128
+          description: |
+            F-003 hash-chain link to the previous row. Integrity metadata exposed
+            BY DESIGN (ADR-0014 §6 D5) so a reader can verify the chain offline;
+            never secret material.
+        row_hash:
+          type: string
+          maxLength: 128
+          description: |
+            F-003 hash of this row. Integrity metadata exposed BY DESIGN (ADR-0014
+            §6 D5) for offline chain verification; never secret material.
+
+    AuditPage:
+      type: object
+      description: |
+        A keyset-paginated page of audit events plus the honestly-surfaced F-003
+        chain verification status (F-012a, ADR-0014 §6). ONE flat schema (NOT an
+        {object, data} envelope) used by BOTH the tenant self-service read
+        (GET /v1/audit) and the operator cross-tenant read
+        (GET /admin/tenants/{tenant_id}/audit). Built field-for-field from
+        admin.schemas.AuditPageResponse. The data-serving query writes zero rows;
+        on the admin path the cross-tenant read itself is recorded by a separate
+        `admin_audit_accessed` append. Metadata only; no payloads, PII, or secrets.
+      required: [events, count, next_cursor, chain_verified, chain_rows_checked]
+      additionalProperties: false
+      properties:
+        events:
+          type: array
+          maxItems: 200
+          items: { $ref: "#/components/schemas/AuditLogEntry" }
+          description: This page of audit events (keyset-ordered by sequence_number).
+        count:
+          type: integer
+          minimum: 0
+          description: Number of events returned in this page (length of `events`).
+        next_cursor:
+          type: [integer, "null"]
+          minimum: 0
+          description: |
+            Keyset cursor to pass as `after_sequence` for the next page, or null
+            when this is the last page.
+        chain_verified:
+          type: boolean
+          description: |
+            Honestly-surfaced F-003 chain verification result (from
+            validate_chain()) — whether the verified segment of the audit hash
+            chain is intact. Reported as-is, never fabricated as "valid".
+        chain_rows_checked:
+          type: integer
+          minimum: 0
+          description: Number of audit rows covered by the chain verification.
+
+    AdminWhoami:
+      type: object
+      description: |
+        Response for GET /admin/whoami (F-012a, ADR-0014). Built field-for-field from
+        admin.router.whoami — the authenticated admin principal slug. No tenant data.
+      required: [principal]
+      additionalProperties: false
+      properties:
+        principal:
+          type: string
+          maxLength: 64
+          description: |
+            The fixed admin principal slug (`admin-console`) — the agent_id attributed
+            on every `admin_*` audit event (admin.auth.ADMIN_PRINCIPAL).
+
+    AdminCreateTenantRequest:
+      type: object
+      description: |
+        Request body for POST /admin/tenants (F-012a, ADR-0014 §4). Closed schema.
+        There is intentionally NO `tenant_id` field — the id is server-assigned. No
+        secret is accepted here.
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          maxLength: 128
+          pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          description: |
+            Stable machine name for the tenant. Charset restricted to forbid control
+            characters and whitespace.
+        display_name:
+          type: string
+          maxLength: 256
+          description: Optional human-readable display name.
+
+    AdminTenant:
+      type: object
+      description: |
+        A tenant registry record (F-012a, ADR-0014 §4). Registry metadata only; no
+        secrets. Soft-deactivate is represented by `is_active=false` — there is no
+        hard-delete state. Built field-for-field from admin.schemas.TenantResponse.
+      required: [tenant_id, name, display_name, is_active, created_at, updated_at]
+      additionalProperties: false
+      properties:
+        tenant_id:
+          type: string
+          maxLength: 64
+          description: Server-assigned stable tenant id (UUID v4).
+        name:
+          type: string
+          maxLength: 128
+        display_name:
+          type: [string, "null"]
+          maxLength: 256
+          description: Optional human-readable display name; null when unset.
+        is_active:
+          type: boolean
+          description: |
+            Whether the tenant is active. Soft-deactivate flips this to false; the
+            audit log and hash chain are never deleted.
+        created_at:
+          type: string
+          format: date-time
+          maxLength: 64
+        updated_at:
+          type: string
+          format: date-time
+          maxLength: 64
+
+    AdminTenantList:
+      type: object
+      description: |
+        A list of tenant registry records (F-012a, ADR-0014 §4). FLAT shape (NOT an
+        {object, data} envelope) — built field-for-field from
+        admin.schemas.TenantListResponse. Metadata only.
+      required: [tenants, count]
+      additionalProperties: false
+      properties:
+        tenants:
+          type: array
+          items: { $ref: "#/components/schemas/AdminTenant" }
+        count:
+          type: integer
+          minimum: 0
+          description: Number of tenant records returned (length of `tenants`).
+
+    AdminMintKeyRequest:
+      type: object
+      description: |
+        Request body for POST /admin/tenants/{tenant_id}/keys (F-012a, ADR-0014 §5).
+        Closed schema. The target tenant is the PATH parameter — there is NO
+        `tenant_id` field here. team/project/agent scope the minted key and are
+        validated to belong to the target tenant. No secret is accepted (the plaintext
+        is generated server-side and returned once).
+      required: [team_id, project_id, agent_id]
+      additionalProperties: false
+      properties:
+        team_id:
+          type: string
+          format: uuid
+          maxLength: 64
+          description: Team the key is scoped to (must belong to the target tenant).
+        project_id:
+          type: string
+          format: uuid
+          maxLength: 64
+          description: Project the key is scoped to (must belong to the target tenant).
+        agent_id:
+          type: string
+          maxLength: 64
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+          description: Internal Sentinel component slug the key is scoped to.
+        label:
+          type: string
+          maxLength: 256
+          description: Optional human-readable label for the key.
+        expires_at:
+          type: string
+          format: date-time
+          description: Optional expiry (RFC 3339 / ISO 8601 date-time, UTC).
+
+    AdminKeyMetadata:
+      type: object
+      description: |
+        Virtual API key METADATA (F-012a, ADR-0014 §5). NEVER carries the plaintext
+        secret or the HMAC fingerprint — only the id, scope, label, and lifecycle
+        timestamps. Built field-for-field from admin.schemas.KeyResponse; the nullable
+        fields (label / expires_at / last_used_at) are present-but-null when unset.
+      required: [key_id, tenant_id, team_id, project_id, agent_id, label, is_active, created_at, expires_at, last_used_at]
+      additionalProperties: false
+      properties:
+        key_id:
+          type: string
+          maxLength: 64
+        tenant_id:
+          type: string
+          maxLength: 64
+        team_id:
+          type: string
+          maxLength: 64
+        project_id:
+          type: string
+          maxLength: 64
+        agent_id:
+          type: string
+          maxLength: 64
+        label:
+          type: [string, "null"]
+          maxLength: 256
+          description: Optional human-readable label; null when unset.
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+          maxLength: 64
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+          maxLength: 64
+          description: Optional expiry (RFC 3339 / ISO 8601, UTC); null when none.
+        last_used_at:
+          type: [string, "null"]
+          format: date-time
+          maxLength: 64
+          description: Last-use timestamp; null when the key has not been used.
+
+    AdminMintedKey:
+      type: object
+      description: |
+        Response for mint and rotate (F-012a, ADR-0014 §5). Carries the key metadata
+        PLUS the plaintext `secret` EXACTLY ONCE — this is the only place and only
+        time the secret is ever returned. It is stored server-side only as an HMAC
+        fingerprint and is never re-readable. Built field-for-field from
+        admin.schemas.KeyMintResponse (the plaintext field is named `secret`). Treat
+        the response as sensitive.
+      required: [secret, key]
+      additionalProperties: false
+      properties:
+        secret:
+          type: string
+          maxLength: 256
+          description: |
+            The plaintext virtual API key. Returned ONCE on mint/rotate and NEVER
+            again by any endpoint. Surface it to the operator immediately; it cannot
+            be recovered later.
+        key:
+          $ref: "#/components/schemas/AdminKeyMetadata"
+
+    AdminKeyList:
+      type: object
+      description: |
+        A list of virtual API key metadata records for a tenant (F-012a, ADR-0014
+        §5). FLAT shape (NOT an {object, data} envelope) — built field-for-field from
+        admin.schemas.KeyListResponse. Metadata only — never the plaintext secret or
+        the fingerprint.
+      required: [keys, count]
+      additionalProperties: false
+      properties:
+        keys:
+          type: array
+          items: { $ref: "#/components/schemas/AdminKeyMetadata" }
+        count:
+          type: integer
+          minimum: 0
+          description: Number of key records returned (length of `keys`).
+
+    AdminTenantConfig:
+      type: object
+      description: |
+        A target tenant's routing/engine config (F-012a, ADR-0014 §7), reflecting the
+        tenant_routing_policy row. Built field-for-field from
+        admin.schemas.ConfigResponse. `configured` is false (and the three config
+        fields are null) when no routing-policy row exists for the tenant. Config
+        data only — never classifier/limiter logic.
+      required: [tenant_id, classifier_model_id, audit_mode, team_rpm_limit, configured]
+      additionalProperties: false
+      properties:
+        tenant_id:
+          type: string
+          maxLength: 64
+        classifier_model_id:
+          type: [string, "null"]
+          maxLength: 128
+          description: |
+            The configured judge/classifier model id (F-007), or null when unset.
+            Constrained to the table's allow-list CHECK constraint when set.
+        audit_mode:
+          type: [string, "null"]
+          maxLength: 16
+          description: |
+            Audit-evidence mode (F-007), or null when unset. Constrained to
+            {full, redacted} by the table's CHECK constraint when set.
+        team_rpm_limit:
+          type: [integer, "null"]
+          description: |
+            Per-team requests-per-minute limit (F-009), or null when unset.
+            Constrained to > 0 by the table's CHECK constraint when set.
+        configured:
+          type: boolean
+          description: |
+            False (with the three fields null) when no tenant_routing_policy row
+            exists for the tenant; true when a row was found.
+
+    AdminUpdateTenantConfigRequest:
+      type: object
+      description: |
+        Request body for PATCH /admin/tenants/{tenant_id}/config (F-012a, ADR-0014
+        §7). Closed schema (extra='forbid'); partial update — only the supplied
+        fields (model_fields_set) are changed. Each value is validated against the
+        tenant_routing_policy table's EXISTING CHECK constraints (config data only,
+        no engine logic). The target tenant is the PATH parameter — there is NO
+        `tenant_id` field here. Field-for-field from admin.schemas
+        .ConfigUpdateRequest. An empty body (no fields) is rejected by the route with
+        400 (`no_fields`).
+      additionalProperties: false
+      properties:
+        classifier_model_id:
+          type: string
+          maxLength: 128
+          description: |
+            New classifier model id. Validated against the table's allow-list CHECK
+            constraint; a value outside the allow-list is rejected with 400.
+        audit_mode:
+          type: string
+          maxLength: 16
+          enum: [full, redacted]
+          description: New audit mode. Constrained to {full, redacted}.
+        team_rpm_limit:
+          type: integer
+          minimum: 1
+          description: New per-team RPM limit. Must be > 0 (table CHECK constraint).
+
+    AdminPolicyStatus:
+      type: object
+      description: |
+        One policy-intake status record for the target tenant (F-012a, ADR-0014 §7),
+        from PolicyRepository read. Built field-for-field from
+        admin.schemas.PolicyResponse. Metadata only — never signature or key material.
+      required:
+        - policy_id
+        - policy_type
+        - current_version
+        - effective_from
+        - team_id
+        - project_id
+        - agent_id
+        - created_at
+      additionalProperties: false
+      properties:
+        policy_id:
+          type: string
+          maxLength: 64
+          description: Identifier of the policy; joins to contracts/policy.schema.json policy_id.
+        policy_type:
+          type: string
+          maxLength: 64
+          description: The policy type/category (e.g. budget, model allow-list).
+        current_version:
+          type: integer
+          minimum: 0
+          description: |
+            The stored current policy version (replay/rollback defense uses strict
+            monotonicity).
+        effective_from:
+          type: string
+          format: date-time
+          maxLength: 64
+          description: When this policy version became effective (RFC 3339 / ISO 8601, UTC).
+        team_id:
+          type: string
+          maxLength: 64
+          description: Team scope of the policy (may be WILDCARD_UUID per contracts/ids.md).
+        project_id:
+          type: string
+          maxLength: 64
+          description: Project scope of the policy (may be WILDCARD_UUID per contracts/ids.md).
+        agent_id:
+          type: string
+          maxLength: 64
+          description: Agent/component scope of the policy.
+        created_at:
+          type: string
+          format: date-time
+          maxLength: 64
+          description: When this policy record was created (RFC 3339 / ISO 8601, UTC).
+
+    AdminPolicyList:
+      type: object
+      description: |
+        A list of policy-intake status records for a tenant (F-012a, ADR-0014 §7).
+        FLAT shape (NOT an {object, data} envelope) — built field-for-field from
+        admin.schemas.PolicyListResponse. Read-only metadata; no signature/key
+        material.
+      required: [policies, count]
+      additionalProperties: false
+      properties:
+        policies:
+          type: array
+          items: { $ref: "#/components/schemas/AdminPolicyStatus" }
+        count:
+          type: integer
+          minimum: 0
+          description: Number of policy records returned (length of `policies`).
+
+    AdminGenerateEvidenceRequest:
+      type: object
+      description: |
+        Request body for POST /admin/tenants/{tenant_id}/compliance/evidence (F-012a,
+        ADR-0014 §7) — the F-011 operator path. Closed schema (extra='forbid'). The
+        target tenant is the PATH parameter — there is NO `tenant_id` field here.
+        Built field-for-field from admin.schemas.OperatorEvidenceRequest. v1
+        frameworks are SOC2 + ISO27001 ONLY.
+      required: [framework, t0, t1]
+      additionalProperties: false
+      properties:
+        framework:
+          type: string
+          enum: [SOC2, ISO27001]
+          description: Audit framework to summarize. v1 supports SOC2 + ISO27001 ONLY.
+        t0:
+          type: string
+          format: date-time
+          description: Inclusive window start (RFC 3339 / ISO 8601 date-time, UTC).
+        t1:
+          type: string
+          format: date-time
+          description: Inclusive window end (RFC 3339 / ISO 8601 date-time, UTC).
+
+    AdminTenantEvidenceSummary:
+      type: object
+      description: |
+        Audit-ready compliance evidence summary for a TARGET tenant over a window
+        [t0, t1], returned by the F-011 operator path
+        (POST /admin/tenants/{tenant_id}/compliance/evidence, F-012a ADR-0014 §7).
+        Built field-for-field from admin.control.operator_generate_evidence — this is
+        a TOTALS-and-readiness projection (NOT the tenant-self-service
+        ComplianceEvidenceSummary, which carries the per-control list). Aggregate
+        metadata only: control-status counts and a transparent readiness ratio —
+        never payloads, prompt content, PII, or secrets. The `disclaimer` is carried
+        verbatim: audit-ready evidence for audit preparation, NOT a certification or
+        "compliant" claim.
+      required:
+        - tenant_id
+        - framework
+        - framework_version
+        - window
+        - readiness_score
+        - totals
+        - disclaimer
+      additionalProperties: false
+      properties:
+        tenant_id:
+          type: string
+          maxLength: 64
+          description: The TARGET tenant the evidence was generated for (path parameter).
+        framework:
+          type: string
+          enum: [SOC2, ISO27001]
+          description: Audit framework summarized. v1 supports SOC2 + ISO27001 ONLY.
+        framework_version:
+          type: string
+          maxLength: 64
+          description: |
+            Pinned framework mapping version copied verbatim from the
+            version-controlled mapping YAML (e.g. '2017-TSC-rev2022').
+        window:
+          type: object
+          description: The evidence window [t0, t1] (inclusive), echoed as supplied.
+          required: [t0, t1]
+          additionalProperties: false
+          properties:
+            t0:
+              type: string
+              maxLength: 64
+              description: Inclusive window start as supplied (RFC 3339 / ISO 8601, UTC).
+            t1:
+              type: string
+              maxLength: 64
+              description: Inclusive window end as supplied (RFC 3339 / ISO 8601, UTC).
+        readiness_score:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: |
+            Readiness ratio = passed / applicable (applicable = total minus
+            not_applicable). A plain, recomputable ratio in [0,1] — NO weighting,
+            NO rounding-up, NO hiding of not_covered controls. Not a certification.
+        totals:
+          type: object
+          description: Aggregate control-status counts across the framework.
+          required: [total, passed, gap, not_applicable, not_covered, applicable]
+          additionalProperties: false
+          properties:
+            total:
+              type: integer
+              minimum: 0
+              description: Total number of controls in the framework mapping.
+            passed:
+              type: integer
+              minimum: 0
+              description: Controls mapped with evidence in the window.
+            gap:
+              type: integer
+              minimum: 0
+              description: Controls mapped but with no evidence in the window.
+            not_applicable:
+              type: integer
+              minimum: 0
+              description: Controls marked not-applicable by explicit YAML override.
+            not_covered:
+              type: integer
+              minimum: 0
+              description: Controls with no Sentinel mapping (reported, never faked).
+            applicable:
+              type: integer
+              minimum: 0
+              description: total minus not_applicable (the readiness denominator).
+        disclaimer:
+          type: string
+          maxLength: 256
+          description: |
+            Mandatory disclaimer carried verbatim: "Automated evidence for audit
+            preparation. Certification requires an accredited auditor." Audit-ready,
+            never "compliant".

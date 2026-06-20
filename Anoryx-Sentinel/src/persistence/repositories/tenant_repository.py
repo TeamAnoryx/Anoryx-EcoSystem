@@ -58,6 +58,23 @@ class TenantRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_all(self, *, limit: int = 100, offset: int = 0) -> list[Tenant]:
+        """Return ALL tenants (active AND inactive), newest-first (F-012 operator view).
+
+        Unlike list_active, includes deactivated tenants so the admin operator can
+        see the full registry. limit is clamped to [1, 1000].
+        """
+        bounded = max(1, min(limit, 1000))
+        safe_offset = max(0, offset)
+        stmt = (
+            select(Tenant)
+            .order_by(Tenant.created_at.desc(), Tenant.tenant_id)
+            .limit(bounded)
+            .offset(safe_offset)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
     async def deactivate(self, tenant_id: str) -> Tenant:
         """Mark a tenant as inactive (soft delete). Returns updated row."""
         tenant = await self.get_by_id(tenant_id)

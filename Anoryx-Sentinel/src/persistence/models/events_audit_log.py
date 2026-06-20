@@ -70,6 +70,13 @@ VALID_EVENT_TYPES = frozenset(
         # F-011 (ADR-0013 §9 D8) — compliance evidence variants.
         "compliance_evidence_generated",
         "compliance_pack_exported",
+        # F-012 (ADR-0014 §8/§10 D7/D9) — admin console action variants.
+        "admin_tenant_created",
+        "admin_tenant_deactivated",
+        "admin_key_minted",
+        "admin_key_revoked",
+        "admin_config_updated",
+        "admin_audit_accessed",
     }
 )
 
@@ -113,6 +120,14 @@ ACTION_TAKEN_BY_EVENT_TYPE: dict[str, frozenset[str]] = {
     # only; ck_eal_action_taken is UNCHANGED.
     "compliance_evidence_generated": frozenset({"logged"}),
     "compliance_pack_exported": frozenset({"logged"}),
+    # F-012 (ADR-0014 §8 D7): admin console action variants all use
+    # action_taken='logged' only; ck_eal_action_taken is UNCHANGED.
+    "admin_tenant_created": frozenset({"logged"}),
+    "admin_tenant_deactivated": frozenset({"logged"}),
+    "admin_key_minted": frozenset({"logged"}),
+    "admin_key_revoked": frozenset({"logged"}),
+    "admin_config_updated": frozenset({"logged"}),
+    "admin_audit_accessed": frozenset({"logged"}),
 }
 
 

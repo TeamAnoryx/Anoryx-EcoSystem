@@ -55,6 +55,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
 import gateway.redis_client as redis_client
+from admin.router import admin_router
 from gateway.config import get_settings
 from gateway.exceptions import ERROR_TABLE, GatewayError
 from gateway.logging import configure_logging
@@ -66,6 +67,7 @@ from gateway.models import ErrorResponse
 from gateway.observability import metrics
 from gateway.observability.tracing import init_tracing
 from gateway.router.registry import ProviderRegistry
+from gateway.routes.audit import tenant_audit_router
 from gateway.routes.chat_completions import router as chat_router
 from gateway.routes.compliance import router as compliance_router
 from gateway.routes.health import router as health_router
@@ -239,6 +241,12 @@ def create_app() -> FastAPI:
     # Paths /v1/compliance/evidence and /v1/compliance/export are declared with
     # full /v1/ prefix inside compliance_router (matching the openapi paths).
     app.include_router(compliance_router)
+    # F-012a: tenant self-service audit read (/v1/audit) — tenant Bearer auth.
+    app.include_router(tenant_audit_router)
+    # F-012a: admin console API (ADR-0014). /admin/* gated by SENTINEL_ADMIN_TOKEN
+    # via admin.auth.require_admin (router-level dependency); tenant middlewares
+    # skip the /admin prefix. RequestValidation + TerminalAudit still apply (R8).
+    app.include_router(admin_router)
 
     # --- F-009: OTel tracing (ADR-0011 §6 Decision D5) ---
     # init_tracing is called AFTER all middleware is added (instrumentor sits

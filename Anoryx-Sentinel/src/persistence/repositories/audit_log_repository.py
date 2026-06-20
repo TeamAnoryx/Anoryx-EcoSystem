@@ -425,6 +425,34 @@ class AuditLogRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_for_tenant_after(
+        self,
+        tenant_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = _LIST_DEFAULT_LIMIT,
+    ) -> list[EventsAuditLog]:
+        """Keyset page of a tenant's events: sequence_number > after_sequence, ASC.
+
+        F-012 audit-read API (ADR-0014 D5): keyset pagination on the monotonic
+        append-only PK is stable under concurrent appends (no offset drift). Safe
+        on the tenant session — RLS plus an explicit WHERE tenant_id scope it to
+        the caller; this is a pure read (no writes — R5/vector 9).
+        Default limit 100, hard max 1000, values <= 0 rejected.
+        """
+        if limit <= 0:
+            raise ValueError(f"limit must be > 0, got {limit}")
+        effective_limit = min(limit, _LIST_MAX_LIMIT)
+        stmt = (
+            select(EventsAuditLog)
+            .where(EventsAuditLog.tenant_id == tenant_id)
+            .where(EventsAuditLog.sequence_number > after_sequence)
+            .order_by(EventsAuditLog.sequence_number.asc())
+            .limit(effective_limit)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
     @staticmethod
     def _validate_event_data(event_data: dict[str, Any]) -> None:
         """Validate required common fields and per-variant action_taken."""
