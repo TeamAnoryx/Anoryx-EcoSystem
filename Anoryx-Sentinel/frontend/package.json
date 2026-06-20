@@ -1,0 +1,39 @@
+{
+  "name": "anoryx-sentinel-admin-console",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Anoryx Sentinel operator admin console (F-012). Consumes the /admin/* API; the admin token is server-side only.",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "check:token": "node scripts/check-token-absence.mjs"
+  },
+  "dependencies": {
+    "next": "^14.2.35",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "server-only": "0.0.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.46.0",
+    "@types/node": "20.14.10",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "autoprefixer": "10.4.20",
+    "eslint": "8.57.0",
+    "eslint-config-next": "^14.2.35",
+    "postcss": "8.4.41",
+    "tailwindcss": "3.4.10",
+    "typescript": "5.5.3",
+    "vitest": "2.0.5"
+  }
+}
