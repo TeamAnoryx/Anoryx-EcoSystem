@@ -16,12 +16,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from admin.audit import emit_admin_event
 from admin.schemas import TenantCreateRequest, TenantListResponse, TenantResponse
+from admin.scope import reject_sso_global
 from admin.util import parse_body, request_id, validate_tenant_id_path
 from persistence.database import get_privileged_session
 from persistence.repositories.tenant_repository import TenantNotFoundError, TenantRepository
 from persistence.repositories.virtual_api_key_repository import VirtualApiKeyRepository
 
-tenants_router = APIRouter(tags=["admin"])
+# The global tenant registry is inherently cross-tenant; in v1 it is BREAK-GLASS
+# ONLY (no SSO path is ever cross-tenant, ADR-0017 §3 D2.5). reject_sso_global
+# rejects an operator-session with 403; break-glass is allowed. require_admin runs
+# at the parent admin_router (so admin_auth is always set before this guard).
+tenants_router = APIRouter(tags=["admin"], dependencies=[Depends(reject_sso_global)])
 
 
 @tenants_router.post(

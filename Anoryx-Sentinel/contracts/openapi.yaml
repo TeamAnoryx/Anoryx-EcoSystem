@@ -131,6 +131,37 @@ tags:
       v1 is single-operator: no multi-admin, no per-operator attribution, no
       SSO/SAML, no fine-grained RBAC, no frontend (F-012 proper). "audit-ready",
       never "compliant".
+  - name: sso
+    description: |
+      Operator SSO / IdP-identity surface (F-014, see
+      docs/adr/0017-sso-oidc-saml.md). NOT part of the OpenAI-compatible client
+      surface. It ADDS, on top of the F-012a admin surface, the deferred operator
+      identity + role layer (RBAC), per-tenant IdP configuration (OIDC + SAML),
+      assertion-validated SSO login, per-tenant group→role mapping (fail-closed),
+      and an audited env-token break-glass signal. Two distinct posture groups:
+
+        * UNAUTHENTICATED SSO login (`/admin/sso/oidc/*`, `/admin/sso/saml/*`):
+          the IdP assertion IS the auth, so these endpoints carry `security: []`
+          (no scheme). They are NOT under `require_admin`. Anti-enumeration: a
+          tenant with no active config returns the SAME uniform 404
+          (`sso_unavailable`) as a malformed/unknown tenant. A successful callback
+          mints a tenant-pinned, role-scoped operator-session token delivered
+          server-to-server to the frontend BFF (stored in an httpOnly cookie),
+          NEVER exposed to browser JavaScript.
+        * AUTHENTICATED IdP-config + break-glass (`/admin/tenants/{tenant_id}/idp*`,
+          `/admin/breakglass/login`): the per-tenant IdP-config + group-mapping
+          endpoints accept EITHER `adminAuth` (env-token break-glass, cross-tenant)
+          OR `operatorSession` (SSO, tenant-pinned + `tenant_admin` role). The
+          break-glass login endpoint is `adminAuth` ONLY.
+
+      SECRETS (R6): OIDC `client_secret` and SAML `sp_private_key` are WRITE-ONLY
+      request fields, encrypted at rest, and are NEVER returned, logged, or audited.
+      Config reads expose only `client_secret_set` / `sp_private_key_set` booleans.
+      The operator-session is tenant-pinned (the cross-tenant defense, R1): an
+      operator authenticated via tenant A's IdP can act only on tenant A. Honest
+      per-operator attribution flows via the `operator-sso` agent slug + the
+      `actor_id` field (see contracts/ids.md, contracts/events.schema.json).
+      "audit-ready", never "compliant".
 
 paths:
   /chat/completions:
@@ -975,6 +1006,368 @@ paths:
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /admin/sso/oidc/login:
+    post:
+      tags: [sso]
+      operationId: ssoOidcLogin
+      summary: Begin an OIDC SSO login (unauthenticated)
+      description: |
+        Begins the SP-initiated OIDC authorization-code + PKCE flow for the named
+        tenant (F-014, ADR-0017 §3/§5). UNAUTHENTICATED — the IdP assertion IS the
+        auth, so this route carries NO security scheme and is NOT under
+        `require_admin`. No tenant headers / virtual key are required or resolved.
+
+        Returns the IdP authorization URL the caller redirects the browser to.
+
+        ANTI-ENUMERATION (security-critical): a `tenant_id` that is malformed,
+        unknown, OR has no active OIDC config all return the SAME uniform 404
+        (`sso_unavailable`) — the caller cannot distinguish "no config" from "bad
+        tenant". The route is per-IP rate limited (in-process sliding window;
+        unauthenticated tenant-named surface) — exceeding it returns 429.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SsoOidcLoginRequest"
+      responses:
+        "200":
+          description: The IdP authorization URL to redirect the browser to.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SsoOidcLoginResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/SsoUnavailable" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/sso/oidc/callback:
+    post:
+      tags: [sso]
+      operationId: ssoOidcCallback
+      summary: Complete an OIDC SSO login (unauthenticated)
+      description: |
+        Completes the OIDC flow (F-014, ADR-0017 §3/§5). UNAUTHENTICATED — carries
+        NO security scheme. Validates the assertion fail-closed (state / PKCE /
+        JWKS signature / iss / aud / exp / iat / nonce), then resolves the subject's
+        groups to a role via the tenant's fail-closed group→role map.
+
+        On success it JIT-provisions the operator (`admin_users` + role assignment),
+        emits `operator_sso_login` (honest attribution: `actor_id` = the operator's
+        `admin_users.id`, real tenant), and MINTS a tenant-pinned, role-scoped
+        operator-session token (the `operatorSession` bearer). The token is
+        delivered SERVER-TO-SERVER to the frontend BFF, which stores it in an
+        httpOnly cookie — it is NEVER exposed to browser JavaScript. The raw IdP
+        subject is NOT returned (no PII to the browser, R6).
+
+        DENIAL: a valid assertion whose groups map to NO role emits
+        `operator_sso_denied` (blocked), provisions nothing, and returns 403
+        (`sso_no_role`, vector 14). Any assertion-validation failure returns a
+        generic 401 (no detail leak, R6). Per-IP rate limited (429).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SsoCallbackRequest"
+      responses:
+        "200":
+          description: |
+            The minted operator-session for the provisioned operator. The
+            `operator_session_token` is the `operatorSession` bearer; it is
+            delivered server-to-server to the BFF (httpOnly cookie), never to
+            browser JS. No raw IdP subject / PII is returned.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SsoSessionResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/SsoAuthFailed" }
+        "403": { $ref: "#/components/responses/SsoNoRole" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/SsoSessionUnavailable" }
+
+  /admin/sso/saml/login:
+    post:
+      tags: [sso]
+      operationId: ssoSamlLogin
+      summary: Begin a SAML SSO login (unauthenticated)
+      description: |
+        Begins the SP-initiated SAML login for the named tenant (F-014, ADR-0017
+        §3/§6). UNAUTHENTICATED — the signed assertion IS the auth, so this route
+        carries NO security scheme and is NOT under `require_admin`. SP-initiated
+        only (Fork 4). Returns the IdP redirect URL plus the SP-issued
+        AuthnRequest id (`request_id`), which the caller echoes back as RelayState
+        on the ACS (the `InResponseTo` binding).
+
+        ANTI-ENUMERATION (security-critical): a malformed/unknown tenant, a tenant
+        with no active SAML config, AND a deploy without the optional SAML library
+        installed all return the SAME uniform 404 (`sso_unavailable`). Per-IP rate
+        limited (429).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SsoSamlLoginRequest"
+      responses:
+        "200":
+          description: |
+            The IdP redirect URL plus the SP-issued AuthnRequest id to echo as
+            RelayState on the ACS.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SsoSamlLoginResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/SsoUnavailable" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/sso/saml/acs:
+    post:
+      tags: [sso]
+      operationId: ssoSamlAcs
+      summary: SAML Assertion Consumer Service (unauthenticated)
+      description: |
+        The SAML Assertion Consumer Service — validates the IdP's HTTP-POST-binding
+        `SAMLResponse` (F-014, ADR-0017 §3/§6). UNAUTHENTICATED — the signed
+        assertion IS the auth, so this route carries NO security scheme. Validates
+        fail-closed: signature present + valid (unsigned assertions REJECTED), XSW
+        / single-signed-assertion, Issuer / Audience / Recipient / Destination,
+        NotBefore / NotOnOrAfter, and `InResponseTo` bound to the RelayState
+        AuthnRequest id (single-use replay defense). Then resolves groups→role.
+
+        Success / denial behaviour MIRRORS the OIDC callback: success mints the
+        tenant-pinned operator-session (delivered server-to-server to the BFF →
+        httpOnly cookie, never to browser JS; no raw NameID/PII returned) and emits
+        `operator_sso_login`; a no-role assertion emits `operator_sso_denied` and
+        returns 403 (`sso_no_role`, vector 14); any validation failure returns a
+        generic 401. R6: the `SAMLResponse`, the assertion, and all PII attributes
+        are never logged. Per-IP rate limited (429).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SsoSamlAcsRequest"
+      responses:
+        "200":
+          description: |
+            The minted operator-session for the provisioned operator (same shape as
+            the OIDC callback). The `operator_session_token` is delivered
+            server-to-server to the BFF (httpOnly cookie), never to browser JS.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SsoSessionResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/SsoAuthFailed" }
+        "403": { $ref: "#/components/responses/SsoNoRole" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/SsoSessionUnavailable" }
+
+  /admin/breakglass/login:
+    post:
+      tags: [sso]
+      operationId: ssoBreakglassLogin
+      summary: Emit the audited break-glass login signal (admin/operator)
+      description: |
+        Records the audited env-token break-glass login signal (F-014, ADR-0017 §8
+        D7; vector 15, R5). `adminAuth` ONLY — the env `SENTINEL_ADMIN_TOKEN` IS
+        the auth here (only a holder of the break-glass token can emit the
+        break-glass-used signal); fail-closed by construction (no/invalid token →
+        401 before the handler runs). The operator-session SSO branch does NOT
+        reach this route.
+
+        Emits exactly one `admin_breakglass_used` event (system-scoped:
+        `tenant_id` = WILDCARD_UUID / SYSTEM_TENANT_ID — break-glass is
+        cross-tenant by purpose; `agent_id` = `admin-console`; `actor_id` = null;
+        `action_taken` = `logged`) on a separate privileged session. The console
+        calls this ONCE at break-glass login — ordinary admin calls do NOT re-emit.
+        R6: the response carries NO tenant data and the audit row carries NO secret
+        material (never the token).
+      security:
+        - adminAuth: []
+      responses:
+        "200":
+          description: The break-glass login signal was recorded. No tenant data.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SsoBreakglassAck"
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/tenants/{tenant_id}/idp:
+    post:
+      tags: [sso]
+      operationId: ssoUpsertIdpConfig
+      summary: Create or update a tenant's IdP config (admin/operator OR SSO)
+      description: |
+        Creates or updates the target tenant's IdP configuration (F-014, ADR-0017
+        §4 D3). One active config per (tenant, protocol) — `oidc` or `saml`. Runs
+        inside the target tenant's RLS session (no new RLS bypass).
+
+        AUTH: EITHER `adminAuth` (env-token break-glass, cross-tenant) OR
+        `operatorSession` (SSO; tenant-pinned + `tenant_admin` role — an operator
+        may only configure its own tenant). The two are mutually exclusive and each
+        validated independently (fail-closed).
+
+        SECRETS (R6, security-critical): `client_secret` (OIDC) and
+        `sp_private_key` (SAML) are WRITE-ONLY request fields — encrypted at rest
+        before storage and NEVER echoed, logged, or written to an audit row. If the
+        encryption key is unavailable the write fails-closed (503) and NOTHING is
+        stored. The response is METADATA ONLY, carrying `client_secret_set` /
+        `sp_private_key_set` booleans in place of the secret material. Emits
+        `idp_config_changed` (agent_id `operator-sso` with `actor_id` for SSO, or
+        `admin-console` with null `actor_id` for break-glass), carrying NO secret.
+      security:
+        - adminAuth: []
+        - operatorSession: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SsoIdpConfigUpsertRequest"
+      responses:
+        "201":
+          description: |
+            The stored IdP config METADATA (no secret, no ciphertext). Secret
+            presence is reported by the `client_secret_set` / `sp_private_key_set`
+            booleans.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SsoIdpConfigEnvelope"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/IdpSecretUnavailable" }
+    get:
+      tags: [sso]
+      operationId: ssoListIdpConfig
+      summary: List a tenant's active IdP config metadata (admin/operator OR SSO)
+      description: |
+        Lists the target tenant's active IdP config(s) (F-014, ADR-0017 §4 D3),
+        read inside the target tenant's RLS session. AUTH: EITHER `adminAuth`
+        (break-glass) OR `operatorSession` (SSO, tenant-pinned + `tenant_admin`).
+        Returns METADATA ONLY — NEVER the secret or the ciphertext (R6); secret
+        presence is reported by `client_secret_set` / `sp_private_key_set`.
+      security:
+        - adminAuth: []
+        - operatorSession: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+      responses:
+        "200":
+          description: The tenant's active IdP config metadata records (no secrets).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SsoIdpConfigList"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/tenants/{tenant_id}/idp/groups:
+    post:
+      tags: [sso]
+      operationId: ssoSetGroupMapping
+      summary: Set a tenant's IdP group→role mapping (admin/operator OR SSO)
+      description: |
+        Sets a single per-tenant IdP group→role mapping (F-014, ADR-0017 §7 D6),
+        inside the target tenant's RLS session. The role MUST be `tenant_admin` or
+        `tenant_auditor` (the two seeded roles). A group with no mapping grants NO
+        access (fail-closed). AUTH: EITHER `adminAuth` (break-glass) OR
+        `operatorSession` (SSO, tenant-pinned + `tenant_admin`). Emits
+        `idp_config_changed` (attribution as for the IdP-config upsert).
+      security:
+        - adminAuth: []
+        - operatorSession: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SsoGroupMappingRequest"
+      responses:
+        "201":
+          description: The stored group→role mapping (the supplied group + role).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SsoGroupMappingEnvelope"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    get:
+      tags: [sso]
+      operationId: ssoListGroupMappings
+      summary: List a tenant's IdP group→role mappings (admin/operator OR SSO)
+      description: |
+        Lists the target tenant's IdP group→role mappings (F-014, ADR-0017 §7 D6),
+        read inside the target tenant's RLS session. AUTH: EITHER `adminAuth`
+        (break-glass) OR `operatorSession` (SSO, tenant-pinned + `tenant_admin`).
+      security:
+        - adminAuth: []
+        - operatorSession: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+      responses:
+        "200":
+          description: The tenant's IdP group→role mapping records.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SsoGroupMappingList"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
 components:
 
   securitySchemes:
@@ -1031,6 +1424,41 @@ components:
         `admin-console` principal and the target tenant. v1 is single-operator
         (no multi-admin, no per-operator attribution, no revoke-without-redeploy);
         protect this secret like the F-008 signing key.
+
+    operatorSession:
+      type: http
+      scheme: bearer
+      description: |
+        Operator SSO session authentication for the per-tenant IdP-config + group
+        mapping routes under `/admin/tenants/{tenant_id}/idp*` (F-014, see
+        docs/adr/0017-sso-oidc-saml.md §3 D2). Presented as
+        `Authorization: Bearer <operator_session_token>` — the compact, signed
+        operator-session minted by the SSO callback/ACS after a successful assertion
+        + group→role resolution.
+
+        WHAT THE TOKEN IS: an HMAC-SHA256-signed token over a canonical payload
+        `{tenant_id, admin_user_id, role, auth_method:"sso", iat, exp, jti}` under
+        the deploy-injected env secret `SENTINEL_ADMIN_SESSION_SECRET` (Vault/KMS;
+        DISTINCT from the break-glass `SENTINEL_ADMIN_TOKEN` and from the frontend
+        cookie `SESSION_SECRET`). The admin API both mints and verifies it
+        (symmetric HMAC is correct — no asymmetric trust needed), in constant time,
+        fail-closed (unset secret / malformed / expired / forged → 401). Short TTL
+        (≤ 30 min, matching the cookie spine). The tenant_id / role / admin_user_id
+        are INSIDE the signed token — the client cannot assert them.
+
+        TENANT-PINNING (the R1 cross-tenant defense): the allowed tenant is derived
+        from the TOKEN, not the URL. A request whose path `{tenant_id}` ≠ the
+        token's `tenant_id` is rejected before any session opens — an operator
+        authenticated via tenant A's IdP can act only on tenant A. ROLE: the IdP
+        routes require the `tenant_admin` role; `tenant_auditor` is denied.
+
+        DISTINCT FROM adminAuth: an operator-session is NOT the env break-glass
+        token and NOT a tenant virtual key; the three principals are validated by
+        distinct paths/validators and never cross. The token is server-side only
+        (delivered to the frontend BFF and stored in an httpOnly cookie) — it is
+        NEVER exposed to browser JavaScript (R6). Honest per-operator attribution:
+        `agent_id="operator-sso"` names the subsystem, `actor_id` (=
+        `admin_user_id`) names the specific operator on every emitted event.
 
   parameters:
     TenantId:
@@ -1318,6 +1746,75 @@ components:
             error_code: internal_error
             message: "An internal error occurred. The request was not processed."
             request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    SsoUnavailable:
+      description: |
+        Uniform SSO-unavailable response for an SSO login/initiate route (F-014,
+        ADR-0017 §5/§6). ANTI-ENUMERATION: returned identically for a malformed or
+        unknown `tenant_id`, a tenant with no active config for the requested
+        protocol, OR (SAML) a deploy without the optional SAML library installed —
+        the caller can NEVER distinguish these cases. Body carries the fixed
+        `sso_unavailable` detail; no request content or tenant existence is leaked.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SsoError" }
+          example:
+            detail: sso_unavailable
+    SsoAuthFailed:
+      description: |
+        Generic SSO assertion-validation failure on an SSO callback / ACS (F-014,
+        ADR-0017 §5/§6). Returned for ANY fail-closed assertion-validation error
+        (OIDC: state / PKCE / JWKS signature / iss / aud / exp / nonce; SAML:
+        signature / XSW / conditions / InResponseTo). DELIBERATELY GENERIC — it
+        never reveals which check failed (R6). No operator session is produced.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SsoError" }
+          example:
+            detail: sso_authentication_failed
+    SsoNoRole:
+      description: |
+        The assertion was VALID but the subject's IdP groups mapped to NO role
+        (F-014, ADR-0017 §7 D6; vector 14). Fail-closed: the subject is NOT
+        provisioned and NO operator session is minted; `operator_sso_denied` is
+        emitted exactly once. Returns the fixed `sso_no_role` detail.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SsoError" }
+          example:
+            detail: sso_no_role
+    SsoSessionUnavailable:
+      description: |
+        The SSO assertion validated and the operator resolved, but the
+        operator-session could not be minted because `SENTINEL_ADMIN_SESSION_SECRET`
+        is unavailable (F-014, ADR-0017 §3 D2). Fail-closed (R4): no operator
+        session is issued. Returns the fixed `sso_session_unavailable` detail.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SsoError" }
+          example:
+            detail: sso_session_unavailable
+    IdpSecretUnavailable:
+      description: |
+        An IdP-config write could not encrypt its secret material because the
+        encryption key (`SENTINEL_IDP_SECRET_KEY`) is unavailable (F-014, ADR-0017
+        §4 D3; R6). Fail-closed: the write is refused and NOTHING is stored (no
+        config row with a plaintext or absent secret). Returns the fixed
+        `idp_secret_encryption_unavailable` detail.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SsoError" }
+          example:
+            detail: idp_secret_encryption_unavailable
 
   schemas:
 
@@ -2381,3 +2878,487 @@ components:
             Mandatory disclaimer carried verbatim: "Automated evidence for audit
             preparation. Certification requires an accredited auditor." Audit-ready,
             never "compliant".
+
+    SsoError:
+      type: object
+      description: |
+        Error envelope for the F-014 SSO surface (ADR-0017). This surface returns a
+        FastAPI-style `{detail: <code>}` body (it is NOT the OpenAI-compatible
+        `Error` envelope used by the `/v1` data plane and the F-012a admin surface).
+        `detail` is a fixed, machine-readable code; it NEVER echoes request content,
+        the assertion, a secret, or PII (R6). Correlate via the X-Request-Id header.
+      required: [detail]
+      additionalProperties: false
+      properties:
+        detail:
+          type: string
+          maxLength: 64
+          description: |
+            Stable SSO error code. Enumerated so each maps to one stable cause.
+          enum:
+            - sso_unavailable
+            - sso_authentication_failed
+            - sso_no_role
+            - sso_session_unavailable
+            - idp_secret_encryption_unavailable
+            - rate_limited
+
+    SsoOidcLoginRequest:
+      type: object
+      description: |
+        Request body for POST /admin/sso/oidc/login (F-014, ADR-0017 §5). Closed
+        schema (extra='forbid'). Built field-for-field from
+        admin.sso.oidc_routes.OidcLoginRequest. `tenant_id` is validated to a UUID
+        shape; a malformed value returns the uniform `sso_unavailable` 404
+        (anti-enumeration).
+      required: [tenant_id]
+      additionalProperties: false
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+          maxLength: 64
+          description: |
+            The tenant whose OIDC IdP to authenticate against (UUID v4). The
+            authoritative tenant is the OWNER of the matched IdP config — never a
+            value taken from the eventual token (the issuer/audience→tenant binding).
+
+    SsoOidcLoginResponse:
+      type: object
+      description: |
+        Response for POST /admin/sso/oidc/login (F-014, ADR-0017 §5). Built
+        field-for-field from admin.sso.oidc_routes.oidc_login.
+      required: [authorization_url]
+      additionalProperties: false
+      properties:
+        authorization_url:
+          type: string
+          maxLength: 4096
+          description: |
+            The IdP authorization endpoint URL (with state + PKCE code_challenge)
+            the caller redirects the browser to.
+
+    SsoSamlLoginRequest:
+      type: object
+      description: |
+        Request body for POST /admin/sso/saml/login (F-014, ADR-0017 §6). Closed
+        schema (extra='forbid'). Built field-for-field from
+        admin.sso.saml_routes.SamlLoginRequest. `tenant_id` is validated to a UUID
+        shape; a malformed value returns the uniform `sso_unavailable` 404.
+      required: [tenant_id]
+      additionalProperties: false
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+          maxLength: 64
+          description: |
+            The tenant whose SAML IdP to authenticate against (UUID v4). The
+            authoritative tenant is the OWNER of the matched IdP config.
+
+    SsoSamlLoginResponse:
+      type: object
+      description: |
+        Response for POST /admin/sso/saml/login (F-014, ADR-0017 §6). Built
+        field-for-field from admin.sso.saml_routes.saml_login.
+      required: [redirect_url, request_id]
+      additionalProperties: false
+      properties:
+        redirect_url:
+          type: string
+          maxLength: 4096
+          description: |
+            The IdP SSO redirect URL the caller redirects the browser to
+            (SP-initiated AuthnRequest).
+        request_id:
+          type: string
+          maxLength: 256
+          description: |
+            The SP-issued AuthnRequest id. The caller MUST echo this back as
+            `RelayState` on the ACS — it is the `InResponseTo` binding (single-use
+            replay defense). This is the SAML AuthnRequest id, NOT the
+            X-Request-Id correlation header.
+
+    SsoCallbackRequest:
+      type: object
+      description: |
+        Request body for POST /admin/sso/oidc/callback (F-014, ADR-0017 §5). Closed
+        schema (extra='forbid'). Built field-for-field from
+        admin.sso.oidc_routes.OidcCallbackRequest. `state` and `code` are validated
+        fail-closed (state match, PKCE code exchange) before any claim is read.
+      required: [state, code]
+      additionalProperties: false
+      properties:
+        state:
+          type: string
+          maxLength: 64
+          description: |
+            The opaque CSRF `state` value issued at login; must match the stored,
+            single-use value (vector 9).
+        code:
+          type: string
+          maxLength: 4096
+          description: |
+            The IdP authorization code, exchanged with the PKCE code_verifier
+            (vector 13). Treated as sensitive; never logged.
+
+    SsoSamlAcsRequest:
+      type: object
+      description: |
+        Request body for POST /admin/sso/saml/acs (F-014, ADR-0017 §6). Closed
+        schema (extra='forbid'). Built field-for-field from
+        admin.sso.saml_routes.SamlAcsRequest. R6: the `SAMLResponse` and the
+        assertion are NEVER logged.
+      required: [SAMLResponse, RelayState]
+      additionalProperties: false
+      properties:
+        SAMLResponse:
+          type: string
+          maxLength: 1000000
+          description: |
+            The base64-encoded IdP `SAMLResponse` (HTTP-POST binding). Treated as
+            sensitive; never logged. Bounded to cap parse cost.
+        RelayState:
+          type: string
+          maxLength: 64
+          description: |
+            The AuthnRequest id echoed from the SAML login `request_id` — the
+            `InResponseTo` binding (single-use replay defense, vector 7).
+
+    SsoSessionResponse:
+      type: object
+      description: |
+        Response for a successful OIDC callback / SAML ACS (F-014, ADR-0017 §3 D2).
+        Built field-for-field from admin.sso.oidc_routes.oidc_callback /
+        admin.sso.saml_routes.saml_acs. Carries the minted, tenant-pinned,
+        role-scoped operator-session token (the `operatorSession` bearer).
+
+        DELIVERY (security-critical, R6): the `operator_session_token` is delivered
+        SERVER-TO-SERVER to the frontend BFF, which stores it in an httpOnly cookie
+        and presents it on subsequent `/admin/*` calls. It is NEVER exposed to
+        browser JavaScript. The raw IdP subject / NameID is NOT returned (no PII to
+        the browser); `tenant_id` / `role` / `admin_user_id` live inside the signed
+        token and are echoed here only for the BFF's session bookkeeping.
+      required: [operator_session_token, token_type, expires_in, role, tenant_id]
+      additionalProperties: false
+      properties:
+        operator_session_token:
+          type: string
+          maxLength: 4096
+          description: |
+            The signed operator-session token (the `operatorSession` bearer).
+            Server-to-server only; stored in an httpOnly cookie by the BFF, never
+            in browser JS. Treat as sensitive.
+        token_type:
+          type: string
+          enum: [Bearer]
+          description: |
+            Always `Bearer` — presented as `Authorization: Bearer <token>`.
+        expires_in:
+          type: integer
+          minimum: 1
+          description: |
+            Token lifetime in seconds (bounded ≤ 30 min, matching the cookie spine).
+        role:
+          type: string
+          enum: [tenant_admin, tenant_auditor]
+          description: |
+            The operator's resolved role (the highest mapped role). Also carried
+            inside the signed token; echoed for the BFF.
+        tenant_id:
+          type: string
+          maxLength: 64
+          description: |
+            The operator's tenant-pin (UUID v4) — the only tenant this session may
+            act on (the R1 control). Also carried inside the signed token; echoed
+            for the BFF.
+
+    SsoBreakglassAck:
+      type: object
+      description: |
+        Response for POST /admin/breakglass/login (F-014, ADR-0017 §8 D7). Built
+        field-for-field from admin.sso.breakglass_routes.breakglass_login. Carries
+        NO tenant data — only an acknowledgement that the audited
+        `admin_breakglass_used` signal was recorded.
+      required: [ok]
+      additionalProperties: false
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+          description: Always true on success; the break-glass login signal was recorded.
+
+    SsoIdpConfigUpsertRequest:
+      type: object
+      description: |
+        Request body for POST /admin/tenants/{tenant_id}/idp (F-014, ADR-0017 §4
+        D3). Closed schema (extra='forbid'). Built field-for-field from
+        admin.sso.idp_routes.IdpConfigUpsertRequest. The target tenant is the PATH
+        parameter — there is NO `tenant_id` field here.
+
+        SECRETS (R6, security-critical): `client_secret` (OIDC) and `sp_private_key`
+        (SAML) are WRITE-ONLY (`writeOnly: true`) — accepted here, encrypted at rest
+        before storage, and NEVER returned by any endpoint, logged, or written to an
+        audit row. The response (SsoIdpConfigMetadata) instead exposes only the
+        `client_secret_set` / `sp_private_key_set` booleans. OIDC fields apply when
+        `protocol=oidc`; SAML fields when `protocol=saml`.
+      required: [protocol]
+      additionalProperties: false
+      properties:
+        protocol:
+          type: string
+          enum: [oidc, saml]
+          description: The IdP protocol — `oidc` or `saml`. One active config per (tenant, protocol).
+        issuer:
+          type: [string, "null"]
+          maxLength: 2048
+          description: OIDC issuer URL (the iss→tenant binding). OIDC only.
+        client_id:
+          type: [string, "null"]
+          maxLength: 2048
+          description: OIDC client id (the configured aud). OIDC only.
+        client_secret:
+          type: [string, "null"]
+          maxLength: 4096
+          writeOnly: true
+          description: |
+            OIDC client secret. WRITE-ONLY (R6): accepted here, encrypted at rest,
+            and NEVER returned, logged, or audited. Its presence is reported by
+            `client_secret_set` in responses. OIDC only.
+        scopes:
+          type: [string, "null"]
+          maxLength: 2048
+          description: OIDC scopes to request (space/comma-delimited). OIDC only.
+        idp_entity_id:
+          type: [string, "null"]
+          maxLength: 2048
+          description: SAML IdP EntityID (the Issuer→tenant binding). SAML only.
+        idp_sso_url:
+          type: [string, "null"]
+          maxLength: 2048
+          description: SAML IdP SSO (redirect) URL. SAML only.
+        idp_x509_cert:
+          type: [string, "null"]
+          maxLength: 16384
+          description: |
+            SAML IdP signing certificate (PUBLIC) used to verify assertion
+            signatures. Stored plaintext (it is public). SAML only.
+        sp_acs_url:
+          type: [string, "null"]
+          maxLength: 2048
+          description: The SP Assertion Consumer Service URL (Recipient/Destination check). SAML only.
+        audience:
+          type: [string, "null"]
+          maxLength: 2048
+          description: The SP EntityID / Audience the assertion must target. SAML only.
+        sp_private_key:
+          type: [string, "null"]
+          maxLength: 16384
+          writeOnly: true
+          description: |
+            SP private key (if SP-signing is configured). WRITE-ONLY (R6): accepted
+            here, encrypted at rest, and NEVER returned, logged, or audited. Its
+            presence is reported by `sp_private_key_set` in responses. SAML only.
+
+    SsoIdpConfigMetadata:
+      type: object
+      description: |
+        IdP config METADATA (F-014, ADR-0017 §4 D3). Built field-for-field from
+        persistence.repositories.idp_config_repository.IdpConfigRepository
+        ._to_metadata. SECRET-FREE (R6): it DELIBERATELY OMITS `client_secret` /
+        `sp_private_key` and their ciphertext, exposing ONLY the boolean indicators
+        `client_secret_set` / `sp_private_key_set`. No secret material ever leaves
+        here. Protocol-specific fields are present-but-null for the other protocol.
+      required:
+        - id
+        - tenant_id
+        - protocol
+        - is_active
+        - issuer
+        - client_id
+        - scopes
+        - idp_entity_id
+        - idp_sso_url
+        - idp_x509_cert
+        - sp_acs_url
+        - audience
+        - client_secret_set
+        - sp_private_key_set
+        - created_at
+        - updated_at
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          maxLength: 64
+          description: The IdP config id (UUID v4).
+        tenant_id:
+          type: string
+          maxLength: 64
+          description: The owning tenant (UUID v4).
+        protocol:
+          type: string
+          enum: [oidc, saml]
+        is_active:
+          type: boolean
+        issuer:
+          type: [string, "null"]
+          maxLength: 2048
+        client_id:
+          type: [string, "null"]
+          maxLength: 2048
+        scopes:
+          type: [string, "null"]
+          maxLength: 2048
+        idp_entity_id:
+          type: [string, "null"]
+          maxLength: 2048
+        idp_sso_url:
+          type: [string, "null"]
+          maxLength: 2048
+        idp_x509_cert:
+          type: [string, "null"]
+          maxLength: 16384
+          description: The IdP signing certificate (PUBLIC); null when unset.
+        sp_acs_url:
+          type: [string, "null"]
+          maxLength: 2048
+        audience:
+          type: [string, "null"]
+          maxLength: 2048
+        client_secret_set:
+          type: boolean
+          description: |
+            True when an OIDC client secret is stored (encrypted at rest). The
+            secret itself is NEVER returned (R6) — this boolean is the only signal.
+        sp_private_key_set:
+          type: boolean
+          description: |
+            True when an SP private key is stored (encrypted at rest). The key
+            itself is NEVER returned (R6) — this boolean is the only signal.
+        created_at:
+          type: string
+          format: date-time
+          maxLength: 64
+        updated_at:
+          type: string
+          format: date-time
+          maxLength: 64
+
+    SsoIdpConfigEnvelope:
+      type: object
+      description: |
+        Response for POST /admin/tenants/{tenant_id}/idp (F-014, ADR-0017 §4 D3).
+        Built field-for-field from admin.sso.idp_routes.upsert_idp_config
+        (`{config: <metadata>}`). The nested config is METADATA ONLY — no secret,
+        no ciphertext (R6).
+      required: [config]
+      additionalProperties: false
+      properties:
+        config:
+          $ref: "#/components/schemas/SsoIdpConfigMetadata"
+
+    SsoIdpConfigList:
+      type: object
+      description: |
+        Response for GET /admin/tenants/{tenant_id}/idp (F-014, ADR-0017 §4 D3).
+        FLAT shape — built field-for-field from
+        admin.sso.idp_routes.list_idp_config (`{configs, count}`). Each entry is
+        METADATA ONLY — no secret, no ciphertext (R6).
+      required: [configs, count]
+      additionalProperties: false
+      properties:
+        configs:
+          type: array
+          items: { $ref: "#/components/schemas/SsoIdpConfigMetadata" }
+        count:
+          type: integer
+          minimum: 0
+          description: Number of config records returned (length of `configs`).
+
+    SsoGroupMappingRequest:
+      type: object
+      description: |
+        Request body for POST /admin/tenants/{tenant_id}/idp/groups (F-014, ADR-0017
+        §7 D6). Closed schema (extra='forbid'). Built field-for-field from
+        admin.sso.idp_routes.IdpGroupMappingRequest. The target tenant is the PATH
+        parameter — there is NO `tenant_id` field here. A group with no mapping
+        grants NO access (fail-closed).
+      required: [idp_group, role]
+      additionalProperties: false
+      properties:
+        idp_group:
+          type: string
+          maxLength: 256
+          pattern: "^[\\w .:/@-]{1,256}$"
+          description: |
+            The IdP group/claim value to map (charset-restricted to forbid control
+            characters).
+        role:
+          type: string
+          enum: [tenant_admin, tenant_auditor]
+          description: |
+            The role the group grants — one of the two seeded roles. `tenant_admin`
+            (manage own tenant) or `tenant_auditor` (read-only).
+
+    SsoGroupMapping:
+      type: object
+      description: |
+        One IdP group→role mapping record (F-014, ADR-0017 §7 D6). The LIST shape is
+        built field-for-field from
+        persistence.repositories.idp_group_role_map_repository
+        .IdpGroupRoleMapRepository.list_for_tenant (carries id / tenant_id /
+        created_at); the POST echo carries only `idp_group` + `role`. `id`,
+        `tenant_id`, and `created_at` are therefore optional (present on the list,
+        omitted on the create echo).
+      required: [idp_group, role]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          maxLength: 64
+          description: The mapping id (UUID v4). Present on the list read; omitted on the create echo.
+        tenant_id:
+          type: string
+          maxLength: 64
+          description: The owning tenant (UUID v4). Present on the list read; omitted on the create echo.
+        idp_group:
+          type: string
+          maxLength: 256
+        role:
+          type: string
+          enum: [tenant_admin, tenant_auditor]
+        created_at:
+          type: string
+          format: date-time
+          maxLength: 64
+          description: When the mapping was created. Present on the list read; omitted on the create echo.
+
+    SsoGroupMappingEnvelope:
+      type: object
+      description: |
+        Response for POST /admin/tenants/{tenant_id}/idp/groups (F-014, ADR-0017 §7
+        D6). Built field-for-field from admin.sso.idp_routes.set_group_mapping
+        (`{mapping: {idp_group, role}}`).
+      required: [mapping]
+      additionalProperties: false
+      properties:
+        mapping:
+          $ref: "#/components/schemas/SsoGroupMapping"
+
+    SsoGroupMappingList:
+      type: object
+      description: |
+        Response for GET /admin/tenants/{tenant_id}/idp/groups (F-014, ADR-0017 §7
+        D6). FLAT shape — built field-for-field from
+        admin.sso.idp_routes.list_group_mappings (`{mappings, count}`).
+      required: [mappings, count]
+      additionalProperties: false
+      properties:
+        mappings:
+          type: array
+          items: { $ref: "#/components/schemas/SsoGroupMapping" }
+        count:
+          type: integer
+          minimum: 0
+          description: Number of mapping records returned (length of `mappings`).

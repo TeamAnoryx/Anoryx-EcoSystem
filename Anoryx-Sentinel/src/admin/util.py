@@ -43,6 +43,23 @@ def request_id(request: Request) -> str:
     return rid if rid else "req-" + uuid.uuid4().hex[:32]
 
 
+def actor_id(request: Request) -> str | None:
+    """Return the acting operator's admin_users.id for honest attribution (D9).
+
+    require_admin (F-014) sets request.state.admin_auth on every successful auth:
+      * SSO operator-session -> the operator's admin_user_id (a real UUID).
+      * break-glass env token -> None (no per-operator identity).
+    Routes pass this to emit_admin_event(actor_id=...) so an SSO operator's
+    key/config/audit actions are attributed to the real operator, while break-glass
+    keeps the exact F-012a behavior (actor_id NULL). Returns None when admin_auth is
+    absent (defensive — keeps the F-012a default).
+    """
+    admin_auth = getattr(request.state, "admin_auth", None)
+    if isinstance(admin_auth, dict):
+        return admin_auth.get("admin_user_id")
+    return None
+
+
 async def parse_body(request: Request, model: type[_M]) -> _M:
     """Parse + validate a JSON request body against a pydantic model.
 

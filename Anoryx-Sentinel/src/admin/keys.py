@@ -25,14 +25,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from admin.audit import emit_admin_event
 from admin.schemas import KeyListResponse, KeyMintRequest, KeyMintResponse, KeyResponse
-from admin.util import parse_body, request_id, validate_tenant_id_path
+from admin.scope import enforce_admin_scope
+from admin.util import actor_id, parse_body, request_id, validate_tenant_id_path
 from persistence.database import get_privileged_session, get_tenant_session
 from persistence.repositories.virtual_api_key_repository import (
     VirtualApiKeyNotFoundError,
     VirtualApiKeyRepository,
 )
 
-keys_router = APIRouter(tags=["admin"], dependencies=[Depends(validate_tenant_id_path)])
+# Router deps run after the parent admin_router's require_admin: validate the path
+# tenant_id, then enforce the operator's tenant-pin + role (ADR-0017 §3 D2, R1).
+keys_router = APIRouter(
+    tags=["admin"],
+    dependencies=[Depends(validate_tenant_id_path), Depends(enforce_admin_scope)],
+)
 
 
 async def _assert_scope_in_tenant(
@@ -85,6 +91,7 @@ async def mint_key(tenant_id: str, request: Request) -> KeyMintResponse:
     """Mint a virtual key for the target tenant. Returns the secret ONCE."""
     body = await parse_body(request, KeyMintRequest)
     rid = request_id(request)
+    aid = actor_id(request)
     plaintext = _new_plaintext()
 
     # get_tenant_session autobegins a transaction (the set_config GUC call), so the
@@ -114,6 +121,7 @@ async def mint_key(tenant_id: str, request: Request) -> KeyMintResponse:
                 request_id=rid,
                 team_id=body.team_id,
                 project_id=body.project_id,
+                actor_id=aid,
             )
     return KeyMintResponse(secret=plaintext, key=meta)
 
@@ -122,6 +130,7 @@ async def mint_key(tenant_id: str, request: Request) -> KeyMintResponse:
 async def list_keys(tenant_id: str, request: Request) -> KeyListResponse:
     """List key METADATA for the target tenant (never secrets). Audited (R1)."""
     rid = request_id(request)
+    aid = actor_id(request)
     async with get_tenant_session(tenant_id) as ts:
         rows = await VirtualApiKeyRepository(ts).list_for_tenant(tenant_id)
         keys = [KeyResponse.model_validate(r) for r in rows]
@@ -133,6 +142,7 @@ async def list_keys(tenant_id: str, request: Request) -> KeyListResponse:
                 event_type="admin_audit_accessed",
                 target_tenant_id=tenant_id,
                 request_id=rid,
+                actor_id=aid,
             )
     return KeyListResponse(keys=keys, count=len(keys))
 
@@ -145,6 +155,7 @@ async def list_keys(tenant_id: str, request: Request) -> KeyListResponse:
 async def rotate_key(tenant_id: str, key_id: str, request: Request) -> KeyMintResponse:
     """Rotate a key: immediate-revoke old + mint new. Returns the new secret ONCE."""
     rid = request_id(request)
+    aid = actor_id(request)
     plaintext = _new_plaintext()
     async with get_tenant_session(tenant_id) as ts:
         try:
@@ -167,6 +178,7 @@ async def rotate_key(tenant_id: str, key_id: str, request: Request) -> KeyMintRe
                 request_id=rid,
                 team_id=team_id,
                 project_id=project_id,
+                actor_id=aid,
             )
             await emit_admin_event(
                 ps,
@@ -175,6 +187,7 @@ async def rotate_key(tenant_id: str, key_id: str, request: Request) -> KeyMintRe
                 request_id=rid,
                 team_id=team_id,
                 project_id=project_id,
+                actor_id=aid,
             )
     return KeyMintResponse(secret=plaintext, key=meta)
 
@@ -186,6 +199,7 @@ async def rotate_key(tenant_id: str, key_id: str, request: Request) -> KeyMintRe
 async def revoke_key(tenant_id: str, key_id: str, request: Request) -> KeyResponse:
     """Revoke (deactivate) a key. The gateway denies it on the next request."""
     rid = request_id(request)
+    aid = actor_id(request)
     async with get_tenant_session(tenant_id) as ts:
         try:
             row = await VirtualApiKeyRepository(ts).deactivate(key_id, caller_tenant_id=tenant_id)
@@ -205,5 +219,6 @@ async def revoke_key(tenant_id: str, key_id: str, request: Request) -> KeyRespon
                 request_id=rid,
                 team_id=team_id,
                 project_id=project_id,
+                actor_id=aid,
             )
     return meta

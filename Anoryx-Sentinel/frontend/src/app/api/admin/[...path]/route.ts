@@ -8,10 +8,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * BFF catch-all for client-initiated admin calls (ADR-0015 D2). Thin adapter:
- * resolve the session, hand the request parts to the tested proxy core, and
- * serialize the result. The admin token is never touched here — it is injected
- * inside handleAdminProxy, server-side (vectors 2, 5).
+ * BFF catch-all for client-initiated admin calls (ADR-0015 D2, ADR-0017 D8).
+ * Thin adapter: resolve the session, hand the request parts to the tested proxy
+ * core, and serialize the result.
+ *
+ * The admin token (break-glass) and the operator-session bearer (SSO) are never
+ * touched here — they are resolved inside handleAdminProxy based on `session.kind`,
+ * server-side only (R6 / vectors 2, 5).
  */
 async function handle(
   request: NextRequest,
@@ -30,7 +33,7 @@ async function handle(
   }
 
   const result = await handleAdminProxy({
-    authenticated: getSession() !== null,
+    session: getSession(),
     segments: context.params.path ?? [],
     search: request.nextUrl.searchParams,
     method,

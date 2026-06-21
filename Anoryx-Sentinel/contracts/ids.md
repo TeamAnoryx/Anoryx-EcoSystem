@@ -51,6 +51,20 @@ convention for Delta records — never a privilege or cross-tenant grant.
      tenant, never to the system. (The key-level admin events `admin_key_minted` /
      `admin_key_revoked` instead carry the key's REAL team/project, known at
      mint/revoke.) The admin principal is `agent_id = "admin-console"` (below).
+  5. **System-scoped admin auth event for F-014 break-glass** (F-014 / ADR-0017 §10) —
+     on `admin_breakglass_used`, `tenant_id = WILDCARD_UUID` because the env-token
+     break-glass authentication is a SYSTEM-scoped auth event with NO single target
+     tenant (break-glass is cross-tenant by purpose). The same applies to
+     `operator_sso_denied` when the denial is PRE-BINDING — i.e. no tenant resolves from
+     the assertion (the documented system-scoped-audit-owner use, purpose 2 generalized
+     to SSO). Here `tenant_id = WILDCARD_UUID` denotes "the Sentinel system itself" / "no
+     resolvable target tenant" — it is a SYSTEM ATTRIBUTION, NEVER a cross-tenant grant.
+     CRITICAL contrast: the tenant-bound SSO events (`operator_sso_login`, and
+     `operator_sso_denied` once a tenant resolves, and `idp_config_changed`) carry the
+     operator's/target tenant's REAL `tenant_id` and are NEVER `WILDCARD_UUID` — an
+     operator's tenant action must be attributed to that tenant. On all of these
+     `team_id = project_id = WILDCARD_UUID` (no team/project scope). The acting human
+     operator is named by `actor_id` (below), never by `tenant_id`.
 
 - **`agent_id` reserved slugs.** `agent_id` is a lowercase SLUG, not a UUID, so it
   cannot use the zero-UUID; system attribution uses a reserved slug instead. This
@@ -68,9 +82,45 @@ convention for Delta records — never a privilege or cross-tenant grant.
     (`WILDCARD_UUID`) and never to the target tenant's own identity. v1 is
     single-operator (one deploy-injected `SENTINEL_ADMIN_TOKEN`), so all admin actions
     share this one slug; per-operator attribution is a documented future upgrade. See
-    ADR-0014 §8.
+    ADR-0014 §8. (F-014 / ADR-0017: `admin-console` is also the principal on the
+    `admin_breakglass_used` and break-glass-path `idp_config_changed` events.)
+  - **`operator-sso`** — the F-014 SSO subsystem principal (ADR-0017 §10, D9). Carried as
+    `agent_id` on `operator_sso_login` and `operator_sso_denied` (and on `idp_config_changed`
+    when an SSO-authenticated operator changes config). It names the SSO subsystem as the
+    EMITTING principal; the SPECIFIC human operator is named by the `actor_id` field (below),
+    not by this slug. This is the F-014 realization of the per-operator-attribution upgrade
+    that `admin-console` deferred: `operator-sso` + `actor_id` together attribute an SSO
+    operator action honestly — never to the system (`WILDCARD_UUID`) and never to the
+    target tenant's own identity. See ADR-0017 §10 (vector 16).
+
+## The `actor_id` attribution field (F-014 / ADR-0017 §10)
+
+`actor_id` is an OPTIONAL event field (it is NOT one of the four LOCKED stable IDs and is
+NOT a reserved-value of them). It is the honest per-operator attribution carrier added for
+F-014 SSO (ADR-0017 §10, threat vector 16): the four stable IDs plus the LOCKED `agent_id`
+slug leave no field that can name a specific HUMAN operator, so a new bounded field carries
+it.
+
+- **What it holds.** The INTERNAL `admin_users.id` — an opaque UUID string, VARCHAR(64)-
+  bounded (same shape as `event_id` in `contracts/events.schema.json`). It is joinable
+  (RLS-scoped) to the operator identity row.
+- **Never PII.** `actor_id` is NEVER the raw IdP subject, email, NameID, or any credential
+  (Sentinel non-negotiable: no PII in events; ADR-0017 R6). It is the surrogate internal id
+  only.
+- **The only field that names a human.** `agent_id` names the emitting SUBSYSTEM
+  (`operator-sso` / `admin-console`); `actor_id` names the SPECIFIC OPERATOR. They are
+  complementary: subsystem + operator = honest attribution.
+- **Presence per variant** (normative shape lives in `events.schema.json`):
+  - `operator_sso_login` — `actor_id` REQUIRED (a successful login always has a provisioned
+    `admin_users` row).
+  - `operator_sso_denied` — `actor_id` ABSENT (the subject was denied and not provisioned).
+  - `admin_breakglass_used` — `actor_id` ABSENT (the env-token break-glass has no operator
+    identity).
+  - `idp_config_changed` — `actor_id` OPTIONAL (the operator's `admin_users.id`; ABSENT when
+    the change is performed via break-glass).
 
 Cross-reference: ADR-0009 §4 / §7 (reserved-UUID convention, purposes 1 and 2),
-ADR-0011 §7 (purpose 3 + the `rate-limiter` slug), and ADR-0014 §8 (purpose 4 +
-the `admin-console` slug). The `contracts/events.schema.json` variants are the
+ADR-0011 §7 (purpose 3 + the `rate-limiter` slug), ADR-0014 §8 (purpose 4 +
+the `admin-console` slug), and ADR-0017 §10 (purpose 5 + the `operator-sso` slug +
+the `actor_id` attribution field). The `contracts/events.schema.json` variants are the
 normative shape; this file documents the reserved-value semantics.

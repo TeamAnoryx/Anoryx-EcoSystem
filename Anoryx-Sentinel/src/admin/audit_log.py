@@ -15,10 +15,16 @@ from fastapi import APIRouter, Depends, Query, Request
 from admin.audit import emit_admin_event
 from admin.audit_read import read_audit_page, verify_chain
 from admin.schemas import AuditEventResponse, AuditPageResponse
-from admin.util import request_id, validate_tenant_id_path
+from admin.scope import enforce_admin_scope
+from admin.util import actor_id, request_id, validate_tenant_id_path
 from persistence.database import get_privileged_session, get_tenant_session
 
-audit_log_router = APIRouter(tags=["admin"], dependencies=[Depends(validate_tenant_id_path)])
+# Router deps: validate the path tenant_id, then enforce the operator's tenant-pin
+# + role (ADR-0017 §3 D2, R1). require_admin runs at the parent admin_router.
+audit_log_router = APIRouter(
+    tags=["admin"],
+    dependencies=[Depends(validate_tenant_id_path), Depends(enforce_admin_scope)],
+)
 
 
 @audit_log_router.get("/tenants/{tenant_id}/audit", response_model=AuditPageResponse)
@@ -30,6 +36,7 @@ async def read_tenant_audit(
 ) -> AuditPageResponse:
     """Operator read of a target tenant's audit events (audited, read-only)."""
     rid = request_id(request)
+    aid = actor_id(request)
 
     # R1/D8: the cross-tenant access is audited via a SEPARATE privileged append,
     # BEFORE the read — never from the serving query (which stays zero-write).
@@ -40,6 +47,7 @@ async def read_tenant_audit(
                 event_type="admin_audit_accessed",
                 target_tenant_id=tenant_id,
                 request_id=rid,
+                actor_id=aid,
             )
 
     # Serving read: RLS-scoped to the TARGET tenant; pure SELECT (R5/vector 9).

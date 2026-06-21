@@ -28,7 +28,8 @@ from admin.schemas import (
     PolicyListResponse,
     PolicyResponse,
 )
-from admin.util import parse_body, request_id, validate_tenant_id_path
+from admin.scope import enforce_admin_scope
+from admin.util import actor_id, parse_body, request_id, validate_tenant_id_path
 from compliance.constants import DISCLAIMER
 from compliance.errors import EvidenceWindowError
 from compliance.evidence import generate_evidence, validate_window
@@ -38,11 +39,22 @@ from persistence.database import get_privileged_session, get_tenant_session
 from persistence.repositories.policy_repository import PolicyRepository
 from persistence.repositories.tenant_routing_policy_repository import TenantRoutingPolicyRepository
 
-control_router = APIRouter(tags=["admin"], dependencies=[Depends(validate_tenant_id_path)])
+# Router deps: validate the path tenant_id, then enforce the operator's tenant-pin
+# + role (ADR-0017 §3 D2, R1). require_admin runs at the parent admin_router.
+control_router = APIRouter(
+    tags=["admin"],
+    dependencies=[Depends(validate_tenant_id_path), Depends(enforce_admin_scope)],
+)
 
 
-async def _emit_access(tenant_id: str, request_id_val: str) -> None:
-    """Append admin_audit_accessed for an operator cross-tenant read (R1, D8)."""
+async def _emit_access(
+    tenant_id: str, request_id_val: str, actor_id_val: str | None = None
+) -> None:
+    """Append admin_audit_accessed for an operator cross-tenant read (R1, D8).
+
+    actor_id_val (F-014 D9) attributes the read to the SSO operator (their
+    admin_users.id) when present; None for break-glass (exact F-012a behavior).
+    """
     async with get_privileged_session() as ps:
         async with ps.begin():
             await emit_admin_event(
@@ -50,6 +62,7 @@ async def _emit_access(tenant_id: str, request_id_val: str) -> None:
                 event_type="admin_audit_accessed",
                 target_tenant_id=tenant_id,
                 request_id=request_id_val,
+                actor_id=actor_id_val,
             )
 
 
@@ -88,7 +101,7 @@ async def get_config(tenant_id: str, request: Request) -> ConfigResponse:
                 team_rpm_limit=row.team_rpm_limit,
                 configured=True,
             )
-    await _emit_access(tenant_id, rid)
+    await _emit_access(tenant_id, rid, actor_id(request))
     return resp
 
 
@@ -97,6 +110,7 @@ async def update_config(tenant_id: str, request: Request) -> ConfigResponse:
     """Adjust a tenant's F-007/F-009 config (bounded by the table's CHECK constraints)."""
     body = await parse_body(request, ConfigUpdateRequest)
     rid = request_id(request)
+    aid = actor_id(request)
     updates = {k: getattr(body, k) for k in body.model_fields_set}
     if not updates:
         raise HTTPException(status_code=400, detail="no_fields")
@@ -127,6 +141,7 @@ async def update_config(tenant_id: str, request: Request) -> ConfigResponse:
                 event_type="admin_config_updated",
                 target_tenant_id=tenant_id,
                 request_id=rid,
+                actor_id=aid,
             )
     return resp
 
@@ -140,10 +155,11 @@ async def list_policies(
 ) -> PolicyListResponse:
     """View a tenant's policy intake status (current policies). Reuses F-008 store."""
     rid = request_id(request)
+    aid = actor_id(request)
     async with get_tenant_session(tenant_id) as ts:
         rows = await PolicyRepository(ts).list_for_tenant(tenant_id, limit=limit, offset=offset)
         policies = [PolicyResponse.model_validate(r) for r in rows]
-    await _emit_access(tenant_id, rid)
+    await _emit_access(tenant_id, rid, aid)
     return PolicyListResponse(policies=policies, count=len(policies))
 
 
@@ -156,6 +172,7 @@ async def operator_generate_evidence(tenant_id: str, request: Request) -> dict[s
     """
     body = await parse_body(request, OperatorEvidenceRequest)
     rid = request_id(request)
+    aid = actor_id(request)
     t0, t1 = _parse_dt(body.t0), _parse_dt(body.t1)
     try:
         validate_window(t0, t1)
@@ -166,7 +183,7 @@ async def operator_generate_evidence(tenant_id: str, request: Request) -> dict[s
     projection = await generate_evidence(framework_map, t0, t1, tenant_id=tenant_id)
     gap = analyze_gaps(framework_map, projection)
 
-    await _emit_access(tenant_id, rid)
+    await _emit_access(tenant_id, rid, aid)
     return {
         "tenant_id": tenant_id,
         "framework": gap.framework,

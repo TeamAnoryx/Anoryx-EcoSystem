@@ -77,6 +77,11 @@ VALID_EVENT_TYPES = frozenset(
         "admin_key_revoked",
         "admin_config_updated",
         "admin_audit_accessed",
+        # F-014 (ADR-0017 §10 D9) — SSO + break-glass audit variants.
+        "operator_sso_login",
+        "operator_sso_denied",
+        "admin_breakglass_used",
+        "idp_config_changed",
     }
 )
 
@@ -128,6 +133,14 @@ ACTION_TAKEN_BY_EVENT_TYPE: dict[str, frozenset[str]] = {
     "admin_key_revoked": frozenset({"logged"}),
     "admin_config_updated": frozenset({"logged"}),
     "admin_audit_accessed": frozenset({"logged"}),
+    # F-014 (ADR-0017 §10 D9): SSO + break-glass variants. operator_sso_denied
+    # uses 'blocked' (a valid assertion but no role/unknown subject); the other
+    # three use 'logged'. ck_eal_action_taken is UNCHANGED (all values already
+    # present in the existing CHECK constraint).
+    "operator_sso_login": frozenset({"logged"}),
+    "operator_sso_denied": frozenset({"blocked"}),
+    "admin_breakglass_used": frozenset({"logged"}),
+    "idp_config_changed": frozenset({"logged"}),
 }
 
 
@@ -225,6 +238,13 @@ class EventsAuditLog(Base):
     audit_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
     classifier_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # F-014 (ADR-0017 §10 D9) — per-operator attribution column.
+    # Holds the internal admin_users.id UUID (opaque, NOT PII, NOT the raw IdP
+    # subject/email). Nullable: pre-binding denials and break-glass events have
+    # no resolved operator. Folded into the hash canonical form ONLY WHEN NOT
+    # NULL — see hash_chain.canonical_json() for the backward-compat rule.
+    actor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     # -----------------------------------------------------------------------
     # Hash-chain columns
     # -----------------------------------------------------------------------
@@ -252,7 +272,15 @@ class EventsAuditLog(Base):
             "'classifier_invocation_failed','shadow_ai_detected_outbound',"
             "'recursive_injection_attempt','judge_billing_event',"
             # F-009 (ADR-0011 §7) — kept in sync with migration 0011.
-            "'rate_limit_degraded','rate_limit_recovered','rate_limit_redis_error')",
+            "'rate_limit_degraded','rate_limit_recovered','rate_limit_redis_error',"
+            # F-011/F-012 — kept in sync with migrations 0012/0013.
+            "'compliance_evidence_generated','compliance_pack_exported',"
+            "'admin_tenant_created','admin_tenant_deactivated',"
+            "'admin_key_minted','admin_key_revoked',"
+            "'admin_config_updated','admin_audit_accessed',"
+            # F-014 (ADR-0017 §10 D9) — kept in sync with migration 0015.
+            "'operator_sso_login','operator_sso_denied',"
+            "'admin_breakglass_used','idp_config_changed')",
             name="ck_eal_event_type",
         ),
         CheckConstraint(
