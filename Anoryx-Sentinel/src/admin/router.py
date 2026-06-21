@@ -8,12 +8,14 @@ control surface are added to this router in later steps.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from admin.audit_log import audit_log_router
 from admin.auth import ADMIN_PRINCIPAL, require_admin
 from admin.control import control_router
 from admin.keys import keys_router
+from admin.sso.breakglass_routes import breakglass_router
+from admin.sso.idp_routes import idp_router
 from admin.tenants import tenants_router
 
 admin_router = APIRouter(
@@ -24,14 +26,16 @@ admin_router = APIRouter(
 
 
 @admin_router.get("/whoami")
-async def whoami() -> dict[str, str]:
-    """Return the authenticated admin principal.
+async def whoami(request: Request) -> dict[str, str]:
+    """Return the authenticated admin principal (honest per-session).
 
-    Smoke route proving the auth primitive end-to-end: reachable only with a
-    valid SENTINEL_ADMIN_TOKEN, and only because the tenant middlewares skip the
-    /admin prefix (no tenant headers required).
+    Reports the REAL principal slug set by require_admin on request.state:
+    "admin-console" for the env-token break-glass path, "operator-sso" for an
+    SSO operator-session (LOW fix — never mislabel an SSO session as break-glass).
+    Reachable only with a valid credential (require_admin at the parent router),
+    and only because the tenant middlewares skip the /admin prefix.
     """
-    return {"principal": ADMIN_PRINCIPAL}
+    return {"principal": getattr(request.state, "admin_principal", ADMIN_PRINCIPAL)}
 
 
 # Feature routers — each mounted under /admin with the require_admin dependency
@@ -40,3 +44,5 @@ admin_router.include_router(tenants_router)
 admin_router.include_router(keys_router)
 admin_router.include_router(audit_log_router)
 admin_router.include_router(control_router)
+admin_router.include_router(idp_router)
+admin_router.include_router(breakglass_router)

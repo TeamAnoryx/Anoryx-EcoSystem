@@ -137,6 +137,9 @@ def _row_to_hash_data(row: EventsAuditLog) -> dict[str, Any]:
         "judge_outcome": row.judge_outcome,
         "audit_mode": row.audit_mode,
         "classifier_reason": row.classifier_reason,
+        # F-014 (ADR-0017 §10 D9) — actor_id: passed through so canonical_json()
+        # can apply the opt-in-when-present rule (included in hash iff not None).
+        "actor_id": row.actor_id,
         "prev_hash": row.prev_hash,
     }
 
@@ -289,6 +292,12 @@ class AuditLogRepository:
             judge_outcome=row_data.get("judge_outcome"),
             audit_mode=row_data.get("audit_mode"),
             classifier_reason=row_data.get("classifier_reason"),
+            # F-014 (ADR-0017 §10 D9) — actor_id attribution column.
+            # Flows from event_data through row_data into both the hash input
+            # (compute_row_hash above) and the stored column. canonical_json()
+            # applies the opt-in-when-present rule: None → omitted from hash;
+            # non-None UUID → included in hash (tamper-evident).
+            actor_id=row_data.get("actor_id"),
             # chain fields
             prev_hash=prev_hash,
             row_hash=row_hash,

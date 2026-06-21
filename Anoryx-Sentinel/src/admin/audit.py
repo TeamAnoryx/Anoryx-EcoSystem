@@ -56,6 +56,7 @@ async def emit_admin_event(
     request_id: str,
     team_id: str = WILDCARD_UUID,
     project_id: str = WILDCARD_UUID,
+    actor_id: str | None = None,
 ) -> None:
     """Append an admin-attributed audit event on the caller's privileged session.
 
@@ -67,13 +68,21 @@ async def emit_admin_event(
         request_id: correlation id (TerminalAudit's req-... or a fresh one).
         team_id / project_id: WILDCARD_UUID for tenant-level events; the key's
             real team/project for key events.
+        actor_id: OPTIONAL per-operator attribution (F-014, ADR-0017 §10 D9). When
+            an SSO operator performs an F-012a admin action, this is the operator's
+            admin_users.id (an opaque UUID, NEVER PII). Included in the event_data
+            dict ONLY when not None — so the hash-chain conditional canonicalization
+            carries it for operator-attributed rows and omits it otherwise. The
+            DEFAULT None reproduces the EXACT F-012a behavior (break-glass: NULL).
+            agent_id stays "admin-console" for these F-012a meta-events (the slug
+            names the subsystem; actor_id names the specific operator).
 
     Raises ValueError for a non-admin event_type (defense-in-depth).
     """
     if event_type not in ADMIN_EVENT_TYPES:
         raise ValueError(f"not an admin event_type: {event_type!r}")
 
-    event_data = {
+    event_data: dict[str, object] = {
         "event_id": str(uuid.uuid4()),
         "event_type": event_type,
         "event_timestamp": _now_rfc3339_z(),
@@ -84,4 +93,9 @@ async def emit_admin_event(
         "agent_id": ADMIN_PRINCIPAL,
         "action_taken": "logged",
     }
+    # actor_id is added ONLY when present (D9): the hash-chain canonicalization
+    # carries it for operator-attributed rows and omits it for break-glass / pre-
+    # F-014 rows. The value is the opaque admin_users.id — never PII, never secret.
+    if actor_id is not None:
+        event_data["actor_id"] = actor_id
     await AuditLogRepository(session).append(event_data)

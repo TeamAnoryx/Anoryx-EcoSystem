@@ -61,6 +61,9 @@ def _parse_pg(url: str):
 # ---------------------------------------------------------------------------
 
 ADMIN_TOKEN = "admin-test-token-shared"  # noqa: S105 — test-only dummy, never a real secret
+# F-014 STEP 7: the operator-session HMAC secret (distinct from ADMIN_TOKEN). A
+# runtime-assembled test-only value — never a real secret (the F-005 lesson).
+ADMIN_SESSION_SECRET = "session-test-secret-" + "x" * 24  # noqa: S105 — test-only dummy
 
 
 @pytest.fixture()
@@ -77,6 +80,12 @@ def admin_app(monkeypatch):
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "[]")
     monkeypatch.setenv("ROUTER_DEFAULT_PROVIDERS", '["openai"]')
     monkeypatch.setenv("SENTINEL_ADMIN_TOKEN", ADMIN_TOKEN)
+    # F-014 STEP 7: provision the operator-session secret + reset its load-once
+    # cache so the SSO callbacks can mint and require_admin can verify a session.
+    monkeypatch.setenv("SENTINEL_ADMIN_SESSION_SECRET", ADMIN_SESSION_SECRET)
+    from admin.sso import session as _op_session
+
+    _op_session.reset_secret_cache_for_testing()
     if not os.environ.get("UPSTREAM_BASE_URL"):
         monkeypatch.setenv("UPSTREAM_BASE_URL", "https://upstream.example.invalid")
     if not os.environ.get("SENTINEL_KEY_SECRET"):
@@ -91,8 +100,39 @@ def admin_app(monkeypatch):
 
 @pytest.fixture()
 def admin_auth_headers() -> dict[str, str]:
-    """Authorization headers carrying the shared test admin token."""
+    """Authorization headers carrying the shared test admin token (break-glass)."""
     return {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+
+
+@pytest.fixture()
+def operator_session_headers():
+    """Factory: Authorization headers carrying a freshly-minted operator-session.
+
+    Usage: operator_session_headers(tenant_id=..., role="tenant_admin",
+    admin_user_id=...). The secret is provisioned by the admin_app fixture; this
+    factory mints under the SAME secret so require_admin verifies it. The minted
+    token is tenant-pinned to tenant_id (the R1 control under test).
+    """
+    from types import SimpleNamespace
+
+    from admin.sso import session as _op_session
+
+    def _make(
+        *, tenant_id: str, role: str = "tenant_admin", admin_user_id: str | None = None
+    ) -> dict[str, str]:
+        # Mint under the same secret the admin_app fixture provisions. Set it here
+        # too so the factory works even if requested before app construction.
+        os.environ["SENTINEL_ADMIN_SESSION_SECRET"] = ADMIN_SESSION_SECRET
+        _op_session.reset_secret_cache_for_testing()
+        principal = SimpleNamespace(
+            tenant_id=tenant_id,
+            admin_user_id=admin_user_id or str(uuid.uuid4()),
+            role=role,
+        )
+        token = _op_session.mint(principal)
+        return {"Authorization": f"Bearer {token}"}
+
+    return _make
 
 
 @pytest.fixture()

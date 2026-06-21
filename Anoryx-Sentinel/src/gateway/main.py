@@ -56,6 +56,15 @@ from fastapi.responses import JSONResponse, Response
 
 import gateway.redis_client as redis_client
 from admin.router import admin_router
+
+# F-014 STEP 5 (ADR-0017 §6): registering the SAML login + ACS routes is a pure
+# side effect of importing saml_routes — its @sso_login_router decorators attach the
+# /admin/sso/saml/* paths to the same UNAUTHENTICATED router included below. The
+# import is intentionally for its side effect (the router is shared with OIDC).
+# onelogin.saml2 stays lazy-imported inside admin.sso.saml, so this import does NOT
+# require python3-saml on the slim image.
+from admin.sso import saml_routes as _saml_routes  # noqa: F401
+from admin.sso.oidc_routes import sso_login_router
 from gateway.config import get_settings
 from gateway.exceptions import ERROR_TABLE, GatewayError
 from gateway.logging import configure_logging
@@ -247,6 +256,12 @@ def create_app() -> FastAPI:
     # via admin.auth.require_admin (router-level dependency); tenant middlewares
     # skip the /admin prefix. RequestValidation + TerminalAudit still apply (R8).
     app.include_router(admin_router)
+    # F-014 (ADR-0017 §3/§5): OIDC SSO LOGIN router — mounted SEPARATELY (NOT under
+    # admin_router) and UNAUTHENTICATED: the IdP assertion is the auth, so these
+    # routes cannot sit behind require_admin. Their /admin/sso paths still match the
+    # _is_admin_path prefix in AuthMiddleware/TenantContextMiddleware, so tenant
+    # Bearer auth + tenant-header gating are skipped for them (verified F-014 STEP 4).
+    app.include_router(sso_login_router)
 
     # --- F-009: OTel tracing (ADR-0011 §6 Decision D5) ---
     # init_tracing is called AFTER all middleware is added (instrumentor sits

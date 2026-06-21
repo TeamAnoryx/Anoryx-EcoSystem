@@ -11,6 +11,15 @@ from persistence.models.events_audit_log import EventsAuditLog
 from persistence.models.policy import Policy, PolicyVersion
 from persistence.models.project import Project
 from persistence.models.role_assignment import RoleAssignment
+from persistence.models.sso_identity import (
+    AdminRole,
+    AdminRoleAssignment,
+    AdminUser,
+    IdpConfig,
+    IdpGroupRoleMap,
+    OidcLoginTransaction,
+    SamlLoginTransaction,
+)
 from persistence.models.team import Team
 from persistence.models.tenant import Tenant
 from persistence.models.tenant_routing_policy import TenantRoutingPolicy
@@ -30,4 +39,12 @@ __all__ = [
     "PolicyVersion",
     "EventsAuditLog",
     "TenantRoutingPolicy",
+    # F-014 SSO identity tables
+    "AdminUser",
+    "AdminRole",
+    "AdminRoleAssignment",
+    "IdpConfig",
+    "IdpGroupRoleMap",
+    "OidcLoginTransaction",
+    "SamlLoginTransaction",
 ]

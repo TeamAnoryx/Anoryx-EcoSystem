@@ -17,6 +17,33 @@ SHA-256 of the domain-separation string "anoryx-sentinel:events:genesis:v1"
 Column names in CANONICAL_FIELDS match contracts/events.schema.json exactly:
   severity  — PiiBlockedEvent.severity (NOT pii_severity)
   status    — ComplianceCheckedEvent.status (NOT compliance_status)
+
+F-014 BACKWARD-COMPATIBLE actor_id RULE (ADR-0017 §10 D9):
+  actor_id is NOT in CANONICAL_FIELDS.  Instead, canonical_json() conditionally
+  includes it ONLY WHEN the value is not None:
+
+      if data.get("actor_id") is not None:
+          filtered["actor_id"] = data["actor_id"]
+
+  Rationale for the opt-in-when-present design:
+  * Backward compatibility: every pre-F-014 row and every new non-operator event
+    has actor_id=None (absent from the data dict or explicitly None). Their
+    canonical JSON is IDENTICAL to the pre-F-014 form — no "actor_id":null key
+    appears — so all stored hashes remain valid and validate_chain() passes over
+    the full historical chain without any recalculation.
+  * Tamper-evident when present: a row that WAS written with a non-null actor_id
+    includes that UUID in its stored hash. If an attacker later nulls actor_id
+    (or changes it to a different value), the recomputed canonical JSON no longer
+    matches the stored row_hash — the chain breaks at that row, detected
+    immediately by validate_chain().
+  * Omission-detection: a row whose actor_id was present at write time CANNOT be
+    silently stripped without breaking verification. The stored hash binds the
+    original actor_id value.
+
+  NOTE: adding actor_id to CANONICAL_FIELDS would instead produce
+  "actor_id":null in EVERY pre-F-014 row's recomputed canonical JSON — changing
+  their hashes and breaking validate_chain over all existing data. This was
+  explicitly rejected (see ADR-0017 §10 D9 discussion).
 """
 
 from __future__ import annotations
@@ -95,8 +122,21 @@ def canonical_json(data: dict[str, Any]) -> bytes:
     Only keys in CANONICAL_FIELDS are included.  Missing keys produce a None
     value in the output to prevent omission attacks.  Keys are serialized in
     alphabetical order (sort_keys=True) for determinism.
+
+    F-014 actor_id opt-in-when-present rule (ADR-0017 §10 D9):
+    actor_id is NOT in CANONICAL_FIELDS.  It is appended to the filtered dict
+    ONLY when data["actor_id"] is not None.  This preserves the exact canonical
+    form for all pre-F-014 rows (actor_id absent or None → no "actor_id" key in
+    the JSON → stored hashes unchanged → validate_chain() continues to pass over
+    historical data).  Rows written with a non-null actor_id bind that value
+    into their hash: changing or nulling actor_id post-write breaks verification.
     """
     filtered: dict[str, Any] = {k: data.get(k) for k in CANONICAL_FIELDS}
+    # Conditionally include actor_id — present only when explicitly set (non-None).
+    # Must NOT be added to CANONICAL_FIELDS (that would inject "actor_id":null
+    # into every historical row's recomputed hash and break the chain).
+    if data.get("actor_id") is not None:
+        filtered["actor_id"] = data["actor_id"]
     return json.dumps(filtered, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
         "utf-8"
     )

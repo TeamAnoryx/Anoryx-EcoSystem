@@ -37,7 +37,11 @@
     { "$ref": "#/$defs/AdminKeyMintedEvent" },
     { "$ref": "#/$defs/AdminKeyRevokedEvent" },
     { "$ref": "#/$defs/AdminConfigUpdatedEvent" },
-    { "$ref": "#/$defs/AdminAuditAccessedEvent" }
+    { "$ref": "#/$defs/AdminAuditAccessedEvent" },
+    { "$ref": "#/$defs/OperatorSsoLoginEvent" },
+    { "$ref": "#/$defs/OperatorSsoDeniedEvent" },
+    { "$ref": "#/$defs/AdminBreakglassUsedEvent" },
+    { "$ref": "#/$defs/IdpConfigChangedEvent" }
   ],
 
   "$comment": "Dispatch is normative via oneOf + the event_type const on each variant under JSON Schema Draft 2020-12. The 'discriminator' keyword below is a NON-NORMATIVE hint for OpenAPI tooling ONLY; it is not a 2020-12 keyword and has NO validation effect under this dialect. Do not rely on it for correctness.",
@@ -85,6 +89,12 @@
       "pattern": "^[A-Za-z0-9._-]{1,64}$",
       "maxLength": 64,
       "description": "Correlation ID matching the originating gateway request (X-Request-Id in contracts/openapi.yaml). Links the event back to the request that produced it. Charset is restricted to [A-Za-z0-9._-] to forbid control characters and whitespace (log-injection defense)."
+    },
+    "actor_id": {
+      "type": "string",
+      "format": "uuid",
+      "maxLength": 64,
+      "description": "OPTIONAL honest per-operator attribution carrier (F-014 / ADR-0017 §10, vector 16). Holds the INTERNAL admin_users.id — an opaque UUID string (VARCHAR(64)-bounded, mirroring event_id's shape) — joinable (RLS-scoped) to the operator identity. It is the ONLY event field that names a specific HUMAN operator, while agent_id names the emitting subsystem ('operator-sso'/'admin-console'). It is NEVER PII: never the raw IdP subject, email, NameID, or any credential (R6). REQUIRED on operator_sso_login (a successful login always has a provisioned admin_users row); OPTIONAL/nullable elsewhere — absent on operator_sso_denied (a denied login may have no provisioned user), absent on admin_breakglass_used (the env-token break-glass has no operator identity), and absent on idp_config_changed when performed via break-glass. When omitted, the field is simply not present (additionalProperties:false keeps every variant closed)."
     },
 
     "UsageEvent": {
@@ -1295,6 +1305,80 @@
         "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
         "request_id": { "$ref": "#/$defs/request_id" },
         "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (admin meta-audit record of a cross-tenant read; the serving query writes zero rows)." }
+      }
+    },
+    "OperatorSsoLoginEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-014 (ADR-0017 §10, D9) when an SSO operator login succeeds (assertion validated, group->role resolved, operator-session minted). Honest attribution: agent_id is the reserved slug 'operator-sso' (the SSO subsystem principal — NOT the system, NOT the target tenant), and actor_id names the SPECIFIC operator (the admin_users.id). tenant_id is the operator's OWN tenant (a real tenant UUID — NEVER WILDCARD_UUID, since an operator login is always bound to one tenant via the idp_config audience/issuer->tenant binding); team_id = project_id = WILDCARD_UUID because the action is tenant-level, not scoped to a team/project (contracts/ids.md WILDCARD_UUID use). Metadata only — NO IdP subject/email/NameID, NO assertion bytes, NO secrets, NO operator-session material.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken", "actor_id"],
+      "properties": {
+        "event_type": { "const": "operator_sso_login" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "actor_id": { "$ref": "#/$defs/actor_id" },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (SSO operator-login meta-audit record)." }
+      }
+    },
+    "OperatorSsoDeniedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-014 (ADR-0017 §10, D9) when an SSO assertion validated but the subject was denied — its IdP group(s) map to no role (fail-closed, D6) or the subject is unknown/unprovisioned (threat vector 14). The subject is NOT provisioned, so there is NO admin_users row and actor_id is absent/nullable. Honest attribution: agent_id is the reserved slug 'operator-sso'. tenant_id is the tenant owning the matched idp_config when resolvable; when the failure is pre-binding (no tenant resolves) tenant_id = WILDCARD_UUID — the documented system-scoped-audit-owner use (a SYSTEM attribution, never a cross-tenant grant). team_id = project_id = WILDCARD_UUID (tenant-level action). Metadata only — NO IdP subject/email/NameID, NO assertion bytes, NO secrets.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "operator_sso_denied" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "actor_id": { "$ref": "#/$defs/actor_id" },
+        "action_taken": { "type": "string", "enum": ["blocked"], "description": "Disposition: 'blocked' (the subject was denied and not provisioned; fail-closed group->role, D6)." }
+      }
+    },
+    "AdminBreakglassUsedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-014 (ADR-0017 §10, D9 / D7) when the env-token break-glass path authenticates (the cross-tenant recovery/bootstrap path, kept and audited distinctly from operator_sso_login). The break-glass token has NO operator identity, so actor_id is absent/nullable. This is a SYSTEM-scoped auth event with no single target tenant, so tenant_id = WILDCARD_UUID (a SYSTEM attribution per contracts/ids.md, NEVER a cross-tenant grant); team_id = project_id = WILDCARD_UUID. Honest attribution: agent_id is the reserved slug 'admin-console' (the break-glass principal, unchanged from F-012a). Metadata only — NO token bytes, NO secrets.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "admin_breakglass_used" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "actor_id": { "$ref": "#/$defs/actor_id" },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (break-glass auth meta-audit record; always visible in the audit log, D7)." }
+      }
+    },
+    "IdpConfigChangedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-014 (ADR-0017 §10, D9 / D3) when an operator creates, updates, or rotates a tenant's IdP configuration. Honest attribution: agent_id is the acting principal slug ('operator-sso' for an SSO-authenticated operator, or 'admin-console' for the break-glass path); actor_id names the SPECIFIC operator (the admin_users.id) and is OPTIONAL — absent when the change is performed via break-glass (which has no operator identity). tenant_id is the TARGET tenant whose config changed (a real tenant UUID — NEVER WILDCARD_UUID); team_id = project_id = WILDCARD_UUID (tenant-level action). R6 — MUST NOT carry any secret material: NO client_secret, NO private keys, NO ciphertext. Only the config id + protocol metadata may ride; keep it minimal. protocol is the OPTIONAL protocol slug ('oidc' or 'saml'); idp_config_id is the OPTIONAL config row id for forensic linkage.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "idp_config_changed" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "actor_id": { "$ref": "#/$defs/actor_id" },
+        "protocol": { "type": "string", "enum": ["oidc", "saml"], "description": "OPTIONAL IdP protocol the changed config uses. Protocol metadata only — NEVER a secret, key, or ciphertext (R6)." },
+        "idp_config_id": { "type": "string", "format": "uuid", "maxLength": 64, "description": "OPTIONAL id of the changed idp_config row (forensic linkage). NEVER secret material; the OIDC client_secret and any SP private key are encrypted at rest and are NEVER carried on this event (R6)." },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (IdP-config change meta-audit record; no secret material carried)." }
       }
     }
   }

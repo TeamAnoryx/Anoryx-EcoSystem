@@ -44,6 +44,11 @@ dependencies = [
     # span export, env-gated on OTEL_EXPORTER_OTLP_ENDPOINT. HTTP/protobuf is the
     # lightweight core default; the heavier gRPC transport is the [otlp-grpc] extra.
     "opentelemetry-exporter-otlp-proto-http>=1.24,<2",
+    # authlib: F-014 (ADR-0017 §5 D4) OIDC auth-code + PKCE + JWKS signature/claims
+    # validation. No hand-rolled JWT/signature verification (R3). OIDC is a core SSO
+    # protocol so authlib stays in core deps; only SAML's python3-saml is the
+    # optional [saml] extra (it needs the system libxmlsec1 native library).
+    "authlib>=1.3,<2",
 ]
 
 [project.optional-dependencies]
@@ -65,7 +70,18 @@ otlp-grpc = [
     # Heavier gRPC OTLP transport (pulls grpcio); HTTP is the core default.
     "opentelemetry-exporter-otlp-proto-grpc>=1.24,<2",
 ]
-all = ["anoryx-sentinel[bedrock,pii-spacy,otlp-grpc]"]
+saml = [
+    # SAML SSO for the admin surface (F-014 STEP 5, ADR-0017 §6 D5). python3-saml is
+    # the vetted SP toolkit with XSW (signature-wrapping) defences; we configure
+    # strict + validate every condition and do NOT hand-roll XML signature
+    # validation (R3). It pulls lxml + xmlsec; the xmlsec wheel bundles the native
+    # libxmlsec1 (win_amd64 / manylinux), and the deploy image additionally installs
+    # libxmlsec1. onelogin.saml2 is LAZY-imported in src/admin/sso/saml.py so the
+    # slim image / a non-SAML deploy imports src/admin without it installed
+    # (mirrors the bedrock / pii-spacy / otlp-grpc optional-extras discipline).
+    "python3-saml>=1.16,<2",
+]
+all = ["anoryx-sentinel[bedrock,pii-spacy,otlp-grpc,saml]"]
 dev = [
     "ruff>=0.4,<1",
     "black>=24,<26",
