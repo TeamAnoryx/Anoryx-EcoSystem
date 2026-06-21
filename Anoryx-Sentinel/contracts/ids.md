@@ -92,6 +92,11 @@ convention for Delta records — never a privilege or cross-tenant grant.
     that `admin-console` deferred: `operator-sso` + `actor_id` together attribute an SSO
     operator action honestly — never to the system (`WILDCARD_UUID`) and never to the
     target tenant's own identity. See ADR-0017 §10 (vector 16).
+  - **`bulk-worker`** — the F-015 async bulk-pipeline worker principal; carried as `agent_id`
+    on every `batch_*` lifecycle/outcome event (`batch_submitted`, `batch_file_processed`,
+    `batch_file_blocked`, `batch_file_dead_lettered`, `batch_completed`). The `tenant_id` on
+    these events is ALWAYS the real submitting tenant — NEVER `WILDCARD_UUID` (a batch belongs
+    to a real tenant). See ADR-0018 §8.
 
 ## The `actor_id` attribution field (F-014 / ADR-0017 §10)
 

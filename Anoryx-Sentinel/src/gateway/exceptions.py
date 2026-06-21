@@ -48,6 +48,14 @@ ERROR_TABLE: Final[dict[str, tuple[str, int]]] = {
         "Rate limit exceeded. Retry after the window resets.",
         429,
     ),
+    "not_found": (
+        # F-015 (ADR-0018): a batch_id not visible to the caller tenant (RLS
+        # returns no row) or absent. Same response either way — never leaks
+        # whether another tenant owns it. api-architect adds the matching
+        # Error.message enum value + 404 responses to openapi.yaml at STEP 8.
+        "The requested resource was not found.",
+        404,
+    ),
     "internal_error": (
         "An internal error occurred. The request was not processed.",
         500,

@@ -68,8 +68,10 @@ def test_frozen_services_unchanged():
     assert c["services"]["postgres"]["image"] == "postgres:16-alpine"
     # redis service must remain password-less (no requirepass added — R3).
     assert "requirepass" not in str(c["services"]["redis"].get("command", ""))
-    # No new named volumes were added to the frozen volumes section.
-    assert set(c["volumes"].keys()) == {"redis-data", "sentinel-postgres-data"}
+    # The F-009 volumes are unchanged (not removed/renamed). F-015 additively adds
+    # `minio-data` for the bulk-pipeline object store (ADR-0018) — the only addition.
+    assert {"redis-data", "sentinel-postgres-data"}.issubset(set(c["volumes"].keys()))
+    assert set(c["volumes"].keys()) == {"redis-data", "sentinel-postgres-data", "minio-data"}
 
 
 # --------------------------------------------------------------------------- #

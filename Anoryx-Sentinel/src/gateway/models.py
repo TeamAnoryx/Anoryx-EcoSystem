@@ -137,6 +137,7 @@ class ErrorResponse(BaseModel):
         "id_context_mismatch",
         "policy_blocked",
         "rate_limit_exceeded",
+        "not_found",  # F-015 (ADR-0018): batch_id not visible/absent → 404
         "internal_error",
     ]
     message: str = Field(..., max_length=200)

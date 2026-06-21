@@ -359,6 +359,7 @@ def test_error_table_code_message_pairing():
         "id_context_mismatch": "Supplied routing context does not match the API key's authorized scope.",  # noqa: E501
         "policy_blocked": "Request blocked by policy for this tenant/team/project/agent context.",
         "rate_limit_exceeded": "Rate limit exceeded. Retry after the window resets.",
+        "not_found": "The requested resource was not found.",
         "internal_error": "An internal error occurred. The request was not processed.",
     }
     for code, expected_message in verbatim_mapping.items():
