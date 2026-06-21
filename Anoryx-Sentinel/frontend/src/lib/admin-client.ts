@@ -10,6 +10,8 @@ import type {
   KeyMintRequest,
   KeyMintResponse,
   KeyResponse,
+  OperatorEvidenceRequest,
+  OperatorEvidenceResponse,
   PolicyListResponse,
   TenantCreateRequest,
   TenantListResponse,
@@ -120,6 +122,13 @@ export const adminApi = {
     adminFetch<PolicyListResponse>(`/admin/tenants/${encodeURIComponent(tenantId)}/policies`, {
       query: { limit, offset },
     }),
+
+  // ---- Compliance (F-011 operator path) ----------------------------------- //
+  operatorEvidence: (tenantId: string, body: OperatorEvidenceRequest) =>
+    adminFetch<OperatorEvidenceResponse>(
+      `/admin/tenants/${encodeURIComponent(tenantId)}/compliance/evidence`,
+      { method: "POST", body },
+    ),
 };
 
 export type AdminApi = typeof adminApi;
