@@ -82,6 +82,12 @@ VALID_EVENT_TYPES = frozenset(
         "operator_sso_denied",
         "admin_breakglass_used",
         "idp_config_changed",
+        # F-015 (ADR-0018 §8 D7) — bulk pipeline lifecycle/outcome variants.
+        "batch_submitted",
+        "batch_file_processed",
+        "batch_file_blocked",
+        "batch_file_dead_lettered",
+        "batch_completed",
     }
 )
 
@@ -141,6 +147,14 @@ ACTION_TAKEN_BY_EVENT_TYPE: dict[str, frozenset[str]] = {
     "operator_sso_denied": frozenset({"blocked"}),
     "admin_breakglass_used": frozenset({"logged"}),
     "idp_config_changed": frozenset({"logged"}),
+    # F-015 (ADR-0018 §8 D7): bulk variants. batch_file_blocked uses 'blocked'
+    # (detector/policy denied the file); the other four use 'logged'.
+    # ck_eal_action_taken is UNCHANGED (all values already present).
+    "batch_submitted": frozenset({"logged"}),
+    "batch_file_processed": frozenset({"logged"}),
+    "batch_file_blocked": frozenset({"blocked"}),
+    "batch_file_dead_lettered": frozenset({"logged"}),
+    "batch_completed": frozenset({"logged"}),
 }
 
 

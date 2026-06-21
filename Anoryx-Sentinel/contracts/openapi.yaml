@@ -162,6 +162,27 @@ tags:
       per-operator attribution flows via the `operator-sso` agent slug + the
       `actor_id` field (see contracts/ids.md, contracts/events.schema.json).
       "audit-ready", never "compliant".
+  - name: bulk
+    description: |
+      Async bulk batch-processing data plane (F-015, see
+      docs/adr/0018-bulk-processing.md). NOT part of the OpenAI-compatible client
+      surface, but UNDER THE SAME tenant Bearer scheme as /chat/completions: the
+      four stable ID headers are required and the tenant is SERVER-RESOLVED from the
+      verified virtual key (no tenant_id parameter; no client header trusted as the
+      source of truth). The caller mints presigned, tenant-namespaced upload grants,
+      uploads files directly to object storage, then submits a batch (idempotent on
+      idempotency_key) for asynchronous per-file processing by the bulk-pipeline
+      worker. Each file is processed through the REUSED F-005/F-008 inspection +
+      policy path (no bypass); per-file security findings ride the existing
+      pii_blocked / injection_detected / secret_leaked / policy_decision_* event
+      variants, while the batch lifecycle is recorded by the `batch_*` meta-events
+      attributed to the `bulk-worker` principal and the REAL submitting tenant (see
+      contracts/events.schema.json, contracts/ids.md). Submitted object keys MUST
+      belong to the resolved tenant's namespace (cross-tenant key reuse is rejected).
+      The status / manifest reads run under the tenant-isolated RLS path: a batch_id
+      the caller does not own returns the SAME uniform 404 as a non-existent one
+      (never leaks cross-tenant ownership). Metadata only on reads; never payloads,
+      prompt content, PII, or secrets. "audit-ready", never "compliant".
 
 paths:
   /chat/completions:
@@ -1368,6 +1389,231 @@ paths:
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /batches/uploads:
+    post:
+      tags: [bulk]
+      operationId: mintBatchUploads
+      summary: Mint presigned single-object upload grants for a bulk batch
+      description: |
+        Mints N presigned single-object upload grants so the caller can upload the
+        files of a bulk batch directly to tenant-namespaced object storage (F-015,
+        see docs/adr/0018-bulk-processing.md §6 D5). Each grant is a presigned
+        upload (S3 POST policy form) bound to a server-minted, tenant-namespaced,
+        unguessable object key — clients never choose the key.
+
+        AUTH / TENANT SCOPING: authenticated with the existing tenant Bearer virtual
+        key (the SAME scheme /chat/completions uses) and the four stable ID headers.
+        The tenant is SERVER-RESOLVED from the verified key — there is NO tenant_id
+        parameter and no client header is trusted as the source of truth. The minted
+        keys are namespaced under the resolved tenant's prefix.
+
+        SCOPE: minting URLs writes NO audit row (the read-only mint principle). The
+        requested `count` is bounded by the per-batch file cap; an out-of-bounds
+        count is rejected with 400. Each grant carries the storage-enforced
+        `max_bytes` per-object size cap and an `expires_in` TTL.
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/TeamId"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/AgentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchUploadMintRequest"
+      responses:
+        "200":
+          description: |
+            The minted presigned upload grants (one per requested file). Each grant
+            carries the server-minted `object_key`, the upload `url` + `fields`, the
+            per-object `max_bytes` cap, and the `expires_in` TTL.
+          headers:
+            X-RateLimit-Limit:     { $ref: "#/components/headers/XRateLimitLimit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/XRateLimitRemaining" }
+            X-RateLimit-Reset:     { $ref: "#/components/headers/XRateLimitReset" }
+            X-Request-Id:          { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchUploadMintResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /batches:
+    post:
+      tags: [bulk]
+      operationId: submitBatch
+      summary: Submit a bulk batch for async processing (idempotent)
+      description: |
+        Submits a bulk batch — an idempotency key plus the previously-uploaded
+        object keys to process — for asynchronous per-file processing by the
+        bulk-pipeline worker (F-015, see docs/adr/0018-bulk-processing.md §1/§8).
+        Each file is processed through the REUSED F-005/F-008 inspection + policy
+        path (no bypass); per-file security findings are emitted on the existing
+        pii_blocked / injection_detected / secret_leaked / policy_decision_*
+        variants, and the batch lifecycle is recorded by the `batch_*` meta-events
+        (see contracts/events.schema.json) attributed to the `bulk-worker` principal
+        and the real submitting tenant.
+
+        AUTH / TENANT SCOPING: authenticated with the existing tenant Bearer virtual
+        key (the SAME scheme /chat/completions uses) and the four stable ID headers.
+        The tenant is SERVER-RESOLVED from the verified key. Every supplied
+        `object_key` MUST belong to the resolved tenant's namespace and be
+        well-formed; a key outside the tenant prefix or with a bad shape is rejected
+        with 400 BEFORE any DB write (tenant-isolation defense).
+
+        IDEMPOTENCY: the submit is idempotent on `idempotency_key`. A NEW batch is
+        accepted with 202 and enqueued (one explicit `batch_submitted` audit append).
+        A replay of an already-seen key returns the EXISTING batch with 200 and does
+        NOT reserve slots or re-enqueue. BACKPRESSURE: a new batch reserves per-tenant
+        slots; exceeding the per-tenant cap returns 429.
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/TeamId"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/AgentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchSubmitRequest"
+      responses:
+        "202":
+          description: |
+            A NEW batch was accepted and enqueued for asynchronous processing.
+            Returns the batch id, the initial status, the total file count, and the
+            per-status counts.
+          headers:
+            X-RateLimit-Limit:     { $ref: "#/components/headers/XRateLimitLimit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/XRateLimitRemaining" }
+            X-RateLimit-Reset:     { $ref: "#/components/headers/XRateLimitReset" }
+            X-Request-Id:          { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchStatusResponse"
+        "200":
+          description: |
+            IDEMPOTENT REPLAY: a batch with this `idempotency_key` already exists.
+            The existing batch is returned UNCHANGED (no slots reserved, nothing
+            re-enqueued) with its current status and counts.
+          headers:
+            X-RateLimit-Limit:     { $ref: "#/components/headers/XRateLimitLimit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/XRateLimitRemaining" }
+            X-RateLimit-Reset:     { $ref: "#/components/headers/XRateLimitReset" }
+            X-Request-Id:          { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchStatusResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /batches/{batch_id}:
+    get:
+      tags: [bulk]
+      operationId: getBatchStatus
+      summary: Get a bulk batch's status (tenant self-service, read-only)
+      description: |
+        Returns the status of a bulk batch the calling tenant owns (F-015, see
+        docs/adr/0018-bulk-processing.md §1/§8): the batch id, the overall status,
+        the total file count, and the per-status file counts.
+
+        AUTH / TENANT SCOPING: authenticated with the existing tenant Bearer virtual
+        key (the SAME scheme /chat/completions uses) and the four stable ID headers.
+        The tenant is SERVER-RESOLVED from the verified key; the read runs under the
+        tenant-isolated RLS path, so a request only ever sees its own tenant's
+        batches.
+
+        TENANT-ISOLATION 404: a `batch_id` that the caller's tenant does not own (RLS
+        returns no row) is INDISTINGUISHABLE from a `batch_id` that does not exist —
+        both return the SAME 404 (`not_found`). The response never reveals whether
+        another tenant owns the batch. Reads write NO audit row.
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/TeamId"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/AgentId"
+        - $ref: "#/components/parameters/BatchId"
+      responses:
+        "200":
+          description: |
+            The batch status for the calling tenant's batch: id, status, total file
+            count, and per-status counts.
+          headers:
+            X-RateLimit-Limit:     { $ref: "#/components/headers/XRateLimitLimit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/XRateLimitRemaining" }
+            X-RateLimit-Reset:     { $ref: "#/components/headers/XRateLimitReset" }
+            X-Request-Id:          { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchStatusResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/BatchNotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /batches/{batch_id}/files:
+    get:
+      tags: [bulk]
+      operationId: getBatchManifest
+      summary: Get a bulk batch's per-file manifest (tenant self-service, read-only)
+      description: |
+        Returns the per-file manifest of a bulk batch the calling tenant owns
+        (F-015, see docs/adr/0018-bulk-processing.md §1/§8): for each file its id,
+        object key, status, terminal outcome, attempt count, and failure class (when
+        dead-lettered).
+
+        AUTH / TENANT SCOPING: authenticated with the existing tenant Bearer virtual
+        key (the SAME scheme /chat/completions uses) and the four stable ID headers.
+        The tenant is SERVER-RESOLVED from the verified key; the read runs under the
+        tenant-isolated RLS path, so a request only ever sees its own tenant's
+        batches.
+
+        TENANT-ISOLATION 404: a `batch_id` the caller's tenant does not own (RLS
+        returns no row) is INDISTINGUISHABLE from one that does not exist — both
+        return the SAME 404 (`not_found`). Reads write NO audit row. The manifest is
+        metadata only; it never carries payloads, prompt content, PII, or secrets.
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/TeamId"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/AgentId"
+        - $ref: "#/components/parameters/BatchId"
+      responses:
+        "200":
+          description: |
+            The per-file manifest for the calling tenant's batch (metadata only; no
+            payloads, PII, or secrets).
+          headers:
+            X-RateLimit-Limit:     { $ref: "#/components/headers/XRateLimitLimit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/XRateLimitRemaining" }
+            X-RateLimit-Reset:     { $ref: "#/components/headers/XRateLimitReset" }
+            X-Request-Id:          { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchManifestResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/BatchNotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
 components:
 
   securitySchemes:
@@ -1554,6 +1800,23 @@ components:
         maxLength: 64
       example: "c4d5e6f7-1234-4abc-9def-0123456789ab"
 
+    BatchId:
+      name: batch_id
+      in: path
+      required: true
+      description: |
+        Identifier of the bulk batch to read (UUID v4), scoped to the AUTHENTICATED
+        tenant (F-015, ADR-0018 §1/§8). PATH parameter. The read runs under the
+        tenant-isolated RLS path: a batch_id the caller's tenant does not own returns
+        the SAME uniform 404 (`not_found`) as a non-existent batch — ownership of
+        another tenant's batch is NEVER revealed. Overlong values (> 64 chars) are
+        rejected at 400.
+      schema:
+        type: string
+        format: uuid
+        maxLength: 64
+      example: "d5e6f7a8-1234-4abc-9def-0123456789ab"
+
     AuditAfterSequence:
       name: after_sequence
       in: query
@@ -1662,6 +1925,23 @@ components:
           example:
             error_code: invalid_request
             message: "The request body is invalid or violates a field constraint."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    BatchNotFound:
+      description: |
+        The addressed bulk batch (batch_id path parameter) does not exist OR is not
+        owned by the authenticated tenant (F-015, ADR-0018 §1/§8). TENANT-ISOLATION:
+        the two cases are INDISTINGUISHABLE — a batch the caller's tenant does not
+        own (RLS returns no row) and a non-existent batch both return this SAME 404,
+        so ownership of another tenant's batch is never revealed. The body never
+        echoes request content or PII; correlate via request_id.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: not_found
+            message: "The requested resource was not found."
             request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
     Forbidden:
       description: |
@@ -1846,6 +2126,7 @@ components:
             - id_context_mismatch
             - policy_blocked
             - rate_limit_exceeded
+            - not_found
             - internal_error
         message:
           type: string
@@ -1862,6 +2143,7 @@ components:
             - "Supplied routing context does not match the API key's authorized scope."
             - "Request blocked by policy for this tenant/team/project/agent context."
             - "Rate limit exceeded. Retry after the window resets."
+            - "The requested resource was not found."
             - "An internal error occurred. The request was not processed."
         request_id:
           type: string
@@ -3362,3 +3644,198 @@ components:
           type: integer
           minimum: 0
           description: Number of mapping records returned (length of `mappings`).
+
+    BatchUploadMintRequest:
+      type: object
+      description: |
+        Request body for POST /batches/uploads (F-015, ADR-0018 §6 D5). Closed
+        schema — built field-for-field from bulk.api.schemas.UploadMintRequest
+        (`extra="forbid"`). Requests `count` presigned single-object upload grants.
+        `count` is additionally validated against the per-batch file cap at the
+        route; an out-of-bounds value is rejected with 400.
+      required: [count]
+      additionalProperties: false
+      properties:
+        count:
+          type: integer
+          minimum: 1
+          maximum: 100000
+          description: |
+            Number of presigned upload grants to mint (one per file). Bounded
+            [1, 100000]; further constrained by the deploy's per-batch file cap.
+
+    BatchUploadGrant:
+      type: object
+      description: |
+        One presigned single-object upload grant (S3 POST policy form) — built
+        field-for-field from bulk.api.schemas.UploadGrantOut. The `object_key` is
+        server-minted, tenant-namespaced, and unguessable; the client uploads to
+        `url` with `fields`, bounded by `max_bytes`, before `expires_in` elapses.
+      required: [object_key, url, fields, max_bytes, expires_in]
+      additionalProperties: false
+      properties:
+        object_key:
+          type: string
+          maxLength: 1024
+          description: |
+            The server-minted, tenant-namespaced object key the file MUST be
+            uploaded under. Clients never choose the key; this is the value passed
+            back in BatchSubmitRequest.object_keys.
+        url:
+          type: string
+          maxLength: 2048
+          description: The presigned upload endpoint URL (S3 POST policy form action).
+        fields:
+          type: object
+          description: |
+            The presigned POST form fields the client MUST include with the upload
+            (policy, signature, key, etc.). Opaque string→string map.
+          additionalProperties:
+            type: string
+        max_bytes:
+          type: integer
+          minimum: 0
+          description: Storage-enforced maximum size in bytes for this single object.
+        expires_in:
+          type: integer
+          minimum: 0
+          description: Seconds until this presigned grant expires.
+
+    BatchUploadMintResponse:
+      type: object
+      description: |
+        Response for POST /batches/uploads (F-015, ADR-0018 §6 D5) — built
+        field-for-field from bulk.api.schemas.UploadMintResponse (`{uploads}`).
+      required: [uploads]
+      additionalProperties: false
+      properties:
+        uploads:
+          type: array
+          items: { $ref: "#/components/schemas/BatchUploadGrant" }
+          description: The minted presigned upload grants (one per requested file).
+
+    BatchSubmitRequest:
+      type: object
+      description: |
+        Request body for POST /batches (F-015, ADR-0018 §1/§8). Closed schema —
+        built field-for-field from bulk.api.schemas.BatchSubmitRequest
+        (`extra="forbid"`). The submit is idempotent on `idempotency_key`. Every
+        `object_keys` entry MUST belong to the resolved tenant's namespace and be
+        well-formed; a key outside the tenant prefix or with a bad shape is rejected
+        with 400 before any DB write.
+      required: [idempotency_key, object_keys]
+      additionalProperties: false
+      properties:
+        idempotency_key:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: |
+            Client-chosen idempotency key. A replay of an already-seen key returns
+            the EXISTING batch (200) without reserving slots or re-enqueuing.
+        object_keys:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            maxLength: 1024
+          description: |
+            The previously-minted, tenant-namespaced object keys to process (from
+            BatchUploadGrant.object_key). Duplicates are de-duplicated
+            order-preservingly; the resulting count is bounded by the per-batch file
+            cap (out-of-bounds → 400).
+        model:
+          type: string
+          maxLength: 256
+          description: |
+            OPTIONAL target model. When set, F-008 model allow/deny policy applies
+            per file. Omit to use the deploy default. Never a credential.
+
+    BatchStatusResponse:
+      type: object
+      description: |
+        Response for POST /batches (202 new / 200 idempotent replay) and GET
+        /batches/{batch_id} (F-015, ADR-0018 §1/§8) — built field-for-field from
+        bulk.api.schemas.BatchStatusResponse. Metadata only.
+      required: [batch_id, status, total_files, counts]
+      additionalProperties: false
+      properties:
+        batch_id:
+          type: string
+          maxLength: 64
+          description: The batch identifier (UUID v4).
+        status:
+          type: string
+          maxLength: 64
+          description: |
+            The batch's overall lifecycle status (e.g. 'queued', then a terminal
+            state once every file settles). Reported as a stable lowercase token.
+        total_files:
+          type: integer
+          minimum: 0
+          description: Total number of files in the batch.
+        counts:
+          type: object
+          description: |
+            Per-status file counts (status token → count). Sums to `total_files`
+            once the manifest is fully populated.
+          additionalProperties:
+            type: integer
+            minimum: 0
+
+    BatchFileItem:
+      type: object
+      description: |
+        One per-file manifest record (F-015, ADR-0018 §1/§8) — built field-for-field
+        from bulk.api.schemas.BatchFileItem. Metadata only; never a payload, prompt
+        content, PII, or secret. `outcome` and `failure_class` are nullable (absent
+        until the file reaches a terminal state / unless dead-lettered).
+      required: [file_id, object_key, status, attempt_count]
+      additionalProperties: false
+      properties:
+        file_id:
+          type: string
+          maxLength: 64
+          description: The file identifier (UUID v4), unique within the batch.
+        object_key:
+          type: string
+          maxLength: 1024
+          description: The tenant-namespaced object key this file was uploaded under.
+        status:
+          type: string
+          maxLength: 64
+          description: The file's processing status as a stable lowercase token.
+        outcome:
+          type: [string, "null"]
+          maxLength: 64
+          description: |
+            The terminal per-file outcome once settled (e.g. allowed/redacted/
+            blocked), or null while not yet terminal.
+        attempt_count:
+          type: integer
+          minimum: 0
+          description: Number of processing attempts made for this file.
+        failure_class:
+          type: [string, "null"]
+          maxLength: 64
+          description: |
+            The failure classification when the file was dead-lettered, or null
+            otherwise. A stable token; never an exception message or payload.
+
+    BatchManifestResponse:
+      type: object
+      description: |
+        Response for GET /batches/{batch_id}/files (F-015, ADR-0018 §1/§8) — built
+        field-for-field from bulk.api.schemas.BatchManifestResponse. Metadata only;
+        never payloads, PII, or secrets.
+      required: [batch_id, files]
+      additionalProperties: false
+      properties:
+        batch_id:
+          type: string
+          maxLength: 64
+          description: The batch identifier (UUID v4) the manifest belongs to.
+        files:
+          type: array
+          items: { $ref: "#/components/schemas/BatchFileItem" }
+          description: The per-file manifest records for the batch.

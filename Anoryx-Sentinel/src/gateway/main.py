@@ -65,6 +65,7 @@ from admin.router import admin_router
 # require python3-saml on the slim image.
 from admin.sso import saml_routes as _saml_routes  # noqa: F401
 from admin.sso.oidc_routes import sso_login_router
+from bulk.api import router as bulk_router
 from gateway.config import get_settings
 from gateway.exceptions import ERROR_TABLE, GatewayError
 from gateway.logging import configure_logging
@@ -246,6 +247,9 @@ def create_app() -> FastAPI:
     # --- Routers ---
     app.include_router(health_router)  # /health, /ready (no /v1 prefix)
     app.include_router(chat_router)  # /v1/chat/completions
+    # F-015 (ADR-0018): bulk batch data-plane (/v1/batches*). Tenant Bearer auth
+    # via the existing AuthMiddleware + resolve_tenant_context; RLS-scoped reads.
+    app.include_router(bulk_router)
     # F-011: compliance evidence endpoints (ADR-0013 §12).
     # Paths /v1/compliance/evidence and /v1/compliance/export are declared with
     # full /v1/ prefix inside compliance_router (matching the openapi paths).

@@ -41,7 +41,12 @@
     { "$ref": "#/$defs/OperatorSsoLoginEvent" },
     { "$ref": "#/$defs/OperatorSsoDeniedEvent" },
     { "$ref": "#/$defs/AdminBreakglassUsedEvent" },
-    { "$ref": "#/$defs/IdpConfigChangedEvent" }
+    { "$ref": "#/$defs/IdpConfigChangedEvent" },
+    { "$ref": "#/$defs/BatchSubmittedEvent" },
+    { "$ref": "#/$defs/BatchFileProcessedEvent" },
+    { "$ref": "#/$defs/BatchFileBlockedEvent" },
+    { "$ref": "#/$defs/BatchFileDeadLetteredEvent" },
+    { "$ref": "#/$defs/BatchCompletedEvent" }
   ],
 
   "$comment": "Dispatch is normative via oneOf + the event_type const on each variant under JSON Schema Draft 2020-12. The 'discriminator' keyword below is a NON-NORMATIVE hint for OpenAPI tooling ONLY; it is not a 2020-12 keyword and has NO validation effect under this dialect. Do not rely on it for correctness.",
@@ -1379,6 +1384,91 @@
         "protocol": { "type": "string", "enum": ["oidc", "saml"], "description": "OPTIONAL IdP protocol the changed config uses. Protocol metadata only — NEVER a secret, key, or ciphertext (R6)." },
         "idp_config_id": { "type": "string", "format": "uuid", "maxLength": 64, "description": "OPTIONAL id of the changed idp_config row (forensic linkage). NEVER secret material; the OIDC client_secret and any SP private key are encrypted at rest and are NEVER carried on this event (R6)." },
         "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (IdP-config change meta-audit record; no secret material carried)." }
+      }
+    },
+    "BatchSubmittedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-015 (ADR-0018 §8) when an async bulk batch is accepted at submit. A lifecycle/outcome meta-event layered on top of the reused F-005/F-008 per-file path (per-file security findings stay on the existing pii_blocked / injection_detected / secret_leaked / policy_decision_* variants with the tenant's own four IDs). Honest attribution: agent_id is the reserved slug 'bulk-worker' (the async bulk-pipeline principal); tenant_id is ALWAYS the real submitting tenant — NEVER WILDCARD_UUID (a batch belongs to a real tenant); team_id/project_id are the submitting key's REAL IDs (known at submit). Metadata only — NO payloads, prompt content, PII, or secrets.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "batch_submitted" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (batch-lifecycle meta-audit record)." }
+      }
+    },
+    "BatchFileProcessedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-015 (ADR-0018 §8) when a single file in a bulk batch completes (allowed/redacted) through the reused F-005/F-008 per-file path. A lifecycle/outcome meta-event (per-file security findings stay on the existing pii_blocked / injection_detected / secret_leaked / policy_decision_* variants with the tenant's own four IDs). Honest attribution: agent_id is the reserved slug 'bulk-worker'; tenant_id is ALWAYS the real submitting tenant — NEVER WILDCARD_UUID; team_id/project_id are the submitting key's REAL IDs. Metadata only — NO payloads, prompt content, PII, or secrets.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "batch_file_processed" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (per-file completion meta-audit record)." }
+      }
+    },
+    "BatchFileBlockedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-015 (ADR-0018 §8) when a single file in a bulk batch is blocked by a detector/policy on the reused F-005/F-008 per-file path. A lifecycle/outcome meta-event (the underlying security finding is also emitted on the existing pii_blocked / injection_detected / secret_leaked / policy_decision_* variants with the tenant's own four IDs). Honest attribution: agent_id is the reserved slug 'bulk-worker'; tenant_id is ALWAYS the real submitting tenant — NEVER WILDCARD_UUID; team_id/project_id are the submitting key's REAL IDs. Metadata only — NO payloads, prompt content, PII, or secrets.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "batch_file_blocked" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["blocked"], "description": "Disposition: 'blocked' (the file was blocked by a detector/policy on the reused per-file path)." }
+      }
+    },
+    "BatchFileDeadLetteredEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-015 (ADR-0018 §8) when a single file in a bulk batch is dead-lettered after exhausting its bounded retries. A lifecycle/outcome meta-event. Honest attribution: agent_id is the reserved slug 'bulk-worker'; tenant_id is ALWAYS the real submitting tenant — NEVER WILDCARD_UUID; team_id/project_id are the submitting key's REAL IDs. Metadata only — NO payloads, prompt content, PII, or secrets.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "batch_file_dead_lettered" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (per-file dead-letter meta-audit record after bounded retries)." }
+      }
+    },
+    "BatchCompletedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-015 (ADR-0018 §8) when all files in a bulk batch reach a terminal state. A lifecycle/outcome meta-event. Honest attribution: agent_id is the reserved slug 'bulk-worker'; tenant_id is ALWAYS the real submitting tenant — NEVER WILDCARD_UUID; team_id/project_id are the submitting key's REAL IDs. Metadata only — NO payloads, prompt content, PII, or secrets.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken"],
+      "properties": {
+        "event_type": { "const": "batch_completed" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (batch-completion meta-audit record)." }
       }
     }
   }
