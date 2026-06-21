@@ -46,11 +46,25 @@ def _parse_pg(url: str):
 
 
 @pytest.fixture(autouse=True)
-def _pin_gateway_list_env(monkeypatch):
-    """Pin list-typed settings to valid JSON so get_settings() parses (root .env
-    carries non-JSON values; the admin fixture pins them the same way)."""
+def _pin_gateway_env(monkeypatch):
+    """Provide the minimum GatewaySettings env for the bulk suite (mirrors
+    tests/gateway/conftest._ensure_gateway_env).
+
+    - List-typed fields must be JSON in env (root .env carries non-JSON values).
+    - The REQUIRED fields upstream_base_url + sentinel_key_secret are pinned with
+      test fallbacks ONLY when unset, so a real local/CI value is never clobbered.
+      In CI there is no .env, so without this the fail-loud GatewaySettings
+      (F-010, correct by design) raises before any bulk test runs.
+    - DATABASE_URL / APP_DATABASE_URL are intentionally NOT pinned: the DB fixtures
+      (db_url/app_db_url) skip cleanly when they are absent, and pinning fakes would
+      break the real-DB integration tests.
+    """
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "[]")
     monkeypatch.setenv("ROUTER_DEFAULT_PROVIDERS", '["openai"]')
+    if not os.environ.get("UPSTREAM_BASE_URL"):
+        monkeypatch.setenv("UPSTREAM_BASE_URL", "https://upstream.example.invalid")
+    if not os.environ.get("SENTINEL_KEY_SECRET"):
+        monkeypatch.setenv("SENTINEL_KEY_SECRET", "bulk-test-key-secret")
     from gateway.config import _reset_settings
 
     _reset_settings()
