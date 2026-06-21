@@ -113,3 +113,37 @@ export interface PolicyListResponse {
 export interface WhoamiResponse {
   principal: string;
 }
+
+/**
+ * Operator compliance-evidence request (F-011 path via control.py). framework is
+ * "SOC2" | "ISO27001"; t0/t1 are RFC3339 UTC bounds of a half-open window.
+ */
+export interface OperatorEvidenceRequest {
+  framework: string;
+  t0: string;
+  t1: string;
+}
+
+export interface OperatorEvidenceTotals {
+  total: number;
+  passed: number;
+  gap: number;
+  not_applicable: number;
+  not_covered: number;
+  applicable: number;
+}
+
+/**
+ * Operator compliance-evidence response (mirror of control.py
+ * operator_generate_evidence dict). Aggregate totals + readiness ONLY — the
+ * per-control list is not exposed by this endpoint (F-013 ADR-0016 deferral 2b).
+ */
+export interface OperatorEvidenceResponse {
+  tenant_id: string;
+  framework: string;
+  framework_version: string;
+  window: { t0: string; t1: string };
+  readiness_score: number;
+  totals: OperatorEvidenceTotals;
+  disclaimer: string;
+}
