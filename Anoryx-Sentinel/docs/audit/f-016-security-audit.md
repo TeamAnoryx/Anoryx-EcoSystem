@@ -212,3 +212,86 @@ The "conditions" are the standing, documented honest-scope limitations above —
 not open defects. Recommended for the human STEP-9 gate; Affu may commission a
 fresh independent re-audit if implementer-verified closure is insufficient for
 sign-off.
+
+---
+
+## Independent Re-audit (2026-06-22)
+
+ARMS-LENGTH adversarial re-audit. A fresh auditor (no prior involvement, no trust extended to the implementer-verified Remediation-and-Re-audit section above) re-derived the threat model and tried to BREAK the control. Every claim was proven or refuted with the auditor own repro scripts run against the live system (semgrep 1.166.0 + bandit 1.9.4 installed, Postgres sentinel-postgres up, PYTHONPATH=src, schema at head 0020). No source or test file was modified.
+
+### Independent verdict: BLOCK - 1 Critical (new), plus confirmed-solid controls.
+
+The implementer CRIT-1 fix (no longer reading the smuggled _db_session from the context) is REAL at the detector layer. HOWEVER, the remediation did not actually restore the feature to a working state in production: it moved the permanent no-op from the session layer to the config-enablement layer. A code_scan policy row CANNOT be persisted anywhere in the system, so load_code_scan_config returns the disabled config for every tenant, and the detector still silently passes every response. This is the SAME class of defect the original CRIT-1 raised (a control that looks present but is inert), merely relocated. The implementer PASS-with-conditions above is therefore NOT sustained on an arms-length pass.
+
+### Focus area 1 - is the CRIT-1 fix real - PARTIALLY PROVEN / NET REFUTED (new CRITICAL)
+
+PROVEN (detector layer):
+- orchestration/context.py HookContext is a dataclass whose fields are exactly tenant_context, request_id, original_user_content, phase, _events_per_detector_cap, _event_budget, provider_registry, gateway_settings - with NO _db_session (repro: dataclasses.fields).
+- chat_completions.py _make_post_context (l.871-900) builds the post-context from pre_ctx.tenant_context, so ctx.tenant_context.tenant_id is carried on the real gateway path.
+- detector.py:97 reads tenant_id from context.tenant_context.tenant_id; config.py:148 opens its OWN get_tenant_session(tenant_id).
+- Driving the REAL CodeScanDetector (no stub) with an enabled config injected ONLY at _load_config and a real vulnerable fenced block produced action=block, one code_scan_blocked event, finding_count=4. The detector machinery works end-to-end WHEN config is enabled.
+
+REFUTED (production reachability - the new Critical):
+- The detector config gate can NEVER be satisfied in production. load_code_scan_config reads get_active_policies_for_scope(tenant_id, code_scan), but NO code path can write a policy_type code_scan row:
+  - policy_repository.py:77 raises ValueError Invalid policy_type code_scan; _VALID_POLICY_TYPES = budget_limit, model_allowlist, model_denylist (l.33). The intake path (policy/intake.py:229 save_new_version to upsert_policy) and every other writer funnel through upsert_policy. Repro: upsert_policy with policy_type code_scan raised ValueError.
+  - DB CHECK constraints ck_policies_policy_type and ck_pv_policy_type (models/policy.py:92,155) restrict policy_type to the three legacy types. Repro: a direct INSERT INTO policies with policy_type code_scan against the live DB raised asyncpg.CheckViolationError. Confirmed via pg_get_constraintdef.
+  - F-016 added NO migration to widen these constraints (migration 0020 touches only ck_eal_event_type); a code_scan grep over src/policy and every policy writer returns nothing. There is no code_scan write surface.
+- End-to-end repro on the live DB: load_code_scan_config(real tenant) returned enabled=False; the real detector then returned action=pass with ZERO events for a response containing os.system(cmd) + eval(payload). Silent fail-open of the entire feature, for every tenant.
+
+Why the green suite (96 code_scan + 4 gateway) misses it: the cited CRIT-1 regression guards bypass the real config load. test_real_hook_context_triggers_scan_not_noop does patch.object(detector, _load_config, return_value=enabled_config). test_real_detector_blocks_nonstreamed_via_policy (and the clean-passes companion) patch code_scan.detector.load_code_scan_config and only assert it was awaited with the tenant_id - they prove the loader is CALLED, never that it can RETURN enabled through the real policies write+read path. TestVector12TenantScoped mocks get_tenant_session + PolicyRepository and never inserts a real code_scan policy. No test persists a code_scan policy, so the unwidened policies constraint is never observed.
+
+Result: CRIT-2 (below). Severity Critical: BLOCK.
+
+### Focus area 2 - is the newline / json.dumps fix real - PROVEN
+
+- Repro built a real ChatCompletionResponse with a fenced python block in the assistant message and replicated the exact gateway logic: OLD path extract_code_blocks(json.dumps(completion.model_dump())) yields 0 blocks (json.dumps escapes the newlines the markdown fence needs); NEW path _code_scan_text = join over choice message content (chat_completions.py:414-417) yields 1 block, language python extracted.
+- Multi-choice: both choices fenced blocks extracted (2 blocks). Empty/None content: the or-empty-string guard yields the empty string, 0 blocks, no crash.
+- The outbound-secret hook still receives the full serialized envelope (response_text = json.dumps(_completion_dict) at l.406, passed to run_post_response at l.419); id/choices fields preserved.
+Result: the fix is real. (Moot in production only because of CRIT-2, but correct.)
+
+### Focus area 3 - scanner attack surface - PROVEN (one soft-cap nuance, LOW)
+
+All run against real semgrep/bandit and forced conditions:
+- Extraction caps fire BEFORE scanning: per-block truncated to exactly 65,536 bytes (truncated=True); block-count cap holds at 20 (30 skipped); total-byte cap holds at or under 524,288.
+- Path traversal: _write_block_to_tempdir(content, dot-dot-slash etc/passwd) wrote the file as server-chosen block.txt INSIDE the mkdtemp dir; the model-supplied language/filename never influences the path.
+- Shell/command injection: content with os.system touch-marker, backtick chars, dollar-paren, semicolons, scanned by real semgrep+bandit produced NO marker file (static only, shell=False literal in _run_subprocess; argv is a list with the file path).
+- Temp cleanup: 0 leftover sentinel_scan dirs after clean + error (timeout) paths (shutil.rmtree ignore_errors=True in finally). Per-subprocess timeout to ScannerError(timeout).
+- Aggregate budget (MAX_TOTAL_SCAN_SECONDS=60, detector.py:285-296): a 20-block run with a slow scan_block raised ScannerError(scan_budget_exceeded) and stopped early to fail-safe WARN. Genuine improvement over the original 1200 s amplification.
+- No egress: real semgrep with all proxies pointed at 127.0.0.1:1 still returned findings in ~5.5 s (hermetic; metrics-off + disable-version-check + local config).
+- LOW (new): the aggregate budget is a SOFT cap - the deadline is checked only at the top of the block loop, so one in-flight block can overshoot. Worst case is 60 s budget + one Python block (semgrep 30 s + bandit 30 s) approx 120 s, not 60 s. Far below 1200 s and moot under CRIT-2. (LOW-5)
+
+### Focus area 4 - fail-safe = WARN - PROVEN
+
+- timeout, binary_not_found, generic RuntimeError, MemoryError, garbage output (parse_error), subprocess_error ALL return action=pass + a code_scan_error event. Never PASS-that-hides (an error row is always written), never fail-closed BLOCK (no weaponizable DoS), never a 500.
+- MED-1 success-path emit guard is real: a raising emit on the BLOCK path is swallowed and the detector still returns action=block (no escape to 500); on the error path it is likewise swallowed.
+
+### Focus area 5 - tenant scoping - PROVEN (design); moot under CRIT-2
+
+- config.py:148-151 reads via get_tenant_session(tenant_id) + get_active_policies_for_scope(tenant_id, code_scan) (RLS-scoped, no parallel config system).
+- empty/whitespace tenant_id to disabled (fail-closed); absent policy to disabled (default-OFF); malformed payload to disabled (fail-safe).
+- Tenant A enabled + Tenant B absent yields A enabled=True, B enabled=False; the config query is always scoped to (tenant, code_scan). No cross-tenant leak in the read path. Events stamped with the caller real tenant/team/project (never WILDCARD).
+- The whole isolation surface is correct in design but unreachable in production because no tenant can hold a code_scan policy (CRIT-2).
+
+### Other independently-confirmed-solid (not re-litigated)
+
+- Migration 0020 reversible round-trip on the live DB (downgrade 0019 removes code_scan from ck_eal_event_type; upgrade head restores). Semgrep p/python + p/security-audit + p/secrets severity ERROR over all seven changed source files: 0 ERROR findings.
+- Audit-event 4-site discipline consistent for the four code_scan variants; action_taken mapping correct; no code/secret/stack-trace in events or logs; honest language throughout.
+- Streaming honesty: would-BLOCK on a stream context yields action=pass + code_scan_warned with block_suppressed_by_streaming=true, verdict=block; registry.run_code_scan never raises on the stream path; _scan_buf hard-capped at 512 KiB.
+
+### Independent findings
+
+#### CRIT-2 - code_scan policy can never be persisted; the detector remains a permanent production no-op - BLOCK
+
+Files: src/persistence/repositories/policy_repository.py:33,77 (app-layer _VALID_POLICY_TYPES excludes code_scan; upsert_policy raises ValueError); src/persistence/models/policy.py:91-94 and :154-157 (DB CHECK constraints ck_policies_policy_type / ck_pv_policy_type exclude code_scan, live-DB confirmed); src/code_scan/config.py:151 (reads get_active_policies_for_scope(tenant_id, code_scan) from a table that can hold no such row); no F-016 migration widens the policy policy_type constraints.
+
+Exploit / impact: a tenant who follows ADR-0019 section 9 to enable code-scan (POST a signed code_scan policy) is rejected at intake (ValueError) and, even via a direct DB insert, by the CHECK constraint. So load_code_scan_config returns the disabled config for every tenant, the detector returns action=pass with no scan and no event for every response, and a BLOCK-threshold vulnerable non-streamed response is NOT rejected. Silent fail-open of the whole feature for every tenant - identical impact profile to the original CRIT-1 (a control present but inert), relocated from the session layer to the config-enablement layer by the remediation. Proven end-to-end: upsert_policy(code_scan) raised ValueError; direct INSERT raised asyncpg.CheckViolationError; load_code_scan_config(real tenant) returned enabled=False; real detector on os.system/eval content returned action=pass with 0 events.
+
+Fix (report only): add a reversible migration widening ck_policies_policy_type and ck_pv_policy_type to include code_scan (DROP+ADD, the established pattern of 0008/0015/0020), AND add code_scan to _VALID_POLICY_TYPES in policy_repository.py, AND provide the actual write surface (intake variant view / admin config) so a tenant can enable it. Then add a test that PERSISTS a real code_scan policy through the production write path and drives /v1/chat/completions end-to-end WITHOUT patching load_code_scan_config or _load_config - the loader returns enabled from a real row - asserting a code_scan_blocked row is written and a 403 results. The current real-detector tests all stub the config load and cannot catch this class of defect.
+
+#### LOW-5 - aggregate scan budget is a soft cap (one in-flight block can overshoot to approx 120 s) - report
+
+File: src/code_scan/detector.py:285-296. The time.monotonic deadline is checked only at the top of the per-block loop, so a block that starts just under the deadline runs to its own subprocess timeouts (semgrep 30 s + bandit 30 s for a Python block) before the loop re-checks. Worst-case wall clock is 60 s budget + 60 s in-flight block approx 120 s, not 60 s. Large improvement over the prior 1200 s; acceptable for v1 but should be documented as a soft cap, or enforced per-subprocess for a hard bound. (Moot under CRIT-2.)
+
+### Independent verdict
+
+BLOCK. The headline scanner-isolation controls are sound and the focus-area-2 through focus-area-5 fixes are real and independently reproduced. But CRIT-2 means F-016 still does not run for any tenant in production: the remediation closed the session-smuggling no-op and silently opened a config-enablement no-op, because no code path (and no DB constraint) permits a code_scan policy row to exist. A security control that cannot be turned on is indistinguishable from one that is absent. CRIT-2 must be fixed and covered by a test that persists a real code_scan policy through the production write path (no load_code_scan_config / _load_config patching) before this PR merges. The implementer PASS-with-conditions is NOT sustained on an arms-length pass.

@@ -30,7 +30,7 @@ from persistence.models.policy import Policy, PolicyVersion
 
 # Compact-JWS pattern: three dot-separated base64url segments.
 _JWS_PATTERN = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")
-_VALID_POLICY_TYPES = frozenset({"budget_limit", "model_allowlist", "model_denylist"})
+_VALID_POLICY_TYPES = frozenset({"budget_limit", "model_allowlist", "model_denylist", "code_scan"})
 
 
 class PolicyNotFoundError(Exception):

@@ -145,10 +145,15 @@ async def load_code_scan_config(tenant_id: str) -> CodeScanConfig:
         return _DISABLED_CONFIG
 
     try:
+        # get_tenant_session autobegins (it executes set_config(app.current_tenant_id)
+        # before yielding), so the session is already in a transaction — do NOT call
+        # session.begin() again (it raises InvalidRequestError, which the except below
+        # would swallow into a silent no-op: CRIT-2 load-path bug). This is a read; the
+        # autobegun transaction is sufficient, matching the other get_tenant_session
+        # readers (e.g. the SSO tenant-isolation tests).
         async with get_tenant_session(tenant_id) as session:
-            async with session.begin():
-                repo = PolicyRepository(session)
-                policies = await repo.get_active_policies_for_scope(tenant_id, "code_scan")
+            repo = PolicyRepository(session)
+            policies = await repo.get_active_policies_for_scope(tenant_id, "code_scan")
     except Exception:
         log.warning(
             "code_scan.config_load_error",
