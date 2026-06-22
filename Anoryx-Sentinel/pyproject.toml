@@ -89,7 +89,18 @@ bulk = [
     # discipline, ADR-0018 §6 / R10). arq + redis are already core deps.
     "boto3>=1.34,<2",
 ]
-all = ["anoryx-sentinel[bedrock,pii-spacy,otlp-grpc,saml,bulk]"]
+code-scan = [
+    # F-016 code-output scanning (ADR-0019 §11). Heavy subprocess-based scanners
+    # live behind this optional extra so the slim image / non-scanning deploys
+    # import src/code_scan without them installed. LAZY-guarded in scanners.py:
+    # a missing binary raises ScannerError("binary_not_found") → WARN (fail-safe,
+    # never a crash). Semgrep ships with the dev extra (unpinned); here we pin
+    # to a stable major range and make it an explicit runtime dependency for
+    # code-scan-enabled deployments. Bandit is new (absent from dev before F-016).
+    "semgrep>=1.60,<2",
+    "bandit>=1.7,<2",
+]
+all = ["anoryx-sentinel[bedrock,pii-spacy,otlp-grpc,saml,bulk,code-scan]"]
 dev = [
     "ruff>=0.4,<1",
     "black>=24,<26",

@@ -1,0 +1,330 @@
+# Anoryx Sentinel — Curated offline Semgrep ruleset for F-016 (ADR-0019).
+#
+# Scope: high-signal Python security patterns that Semgrep can detect statically
+# without network access.  This file is the single vendored ruleset used by
+# CodeScanDetector.  It is pinned in-tree so scanner isolation is hermetic:
+# no live registry fetch, no telemetry (--metrics=off), no network dependency.
+#
+# Honest scope (ADR-0019 §13): this covers well-known dangerous Python patterns.
+# It does NOT replace a full security audit.  "high-coverage detection" of known
+# patterns — never "100% detection" or "bug-free."
+#
+# Severity levels used: ERROR (maps to "high" in verdict.py),
+#                       WARNING (maps to "medium"),
+#                       INFO (maps to "low").
+#
+# Rule IDs are prefixed "sentinel-" to distinguish them from upstream packs.
+
+rules:
+
+  # ---------------------------------------------------------------------------
+  # Command injection / shell execution
+  # ---------------------------------------------------------------------------
+
+  - id: sentinel-os-system
+    patterns:
+      - pattern: os.system(...)
+    message: >
+      os.system() passes commands to the shell interpreter.  Prefer
+      subprocess with an argument list and shell=False.  (likely defect)
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: command-injection
+
+  - id: sentinel-subprocess-shell-true
+    patterns:
+      - pattern: subprocess.$FUNC(..., shell=True, ...)
+    message: >
+      subprocess called with shell=True allows shell injection when any
+      argument contains attacker-controlled content.  Pass an argv list
+      and shell=False instead.  (likely defect)
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: command-injection
+
+  - id: sentinel-os-popen
+    patterns:
+      - pattern: os.popen(...)
+    message: >
+      os.popen() executes a shell command.  Use subprocess with shell=False
+      and an explicit argv list.  (likely defect)
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: command-injection
+
+  - id: sentinel-commands-getoutput
+    patterns:
+      - pattern: commands.getoutput(...)
+    message: >
+      commands.getoutput() is deprecated and passes input to the shell.
+      Use subprocess.check_output with shell=False.  (likely defect)
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: command-injection
+
+  # ---------------------------------------------------------------------------
+  # Code execution
+  # ---------------------------------------------------------------------------
+
+  - id: sentinel-eval
+    patterns:
+      - pattern: eval(...)
+    message: >
+      eval() executes arbitrary Python expressions.  If the argument is
+      attacker-influenced this is a remote code execution vector.  (likely defect)
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: code-execution
+
+  - id: sentinel-exec
+    patterns:
+      - pattern: exec(...)
+    message: >
+      exec() executes arbitrary Python code.  Attacker-controlled input
+      enables remote code execution.  (likely defect)
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: code-execution
+
+  - id: sentinel-compile-exec
+    patterns:
+      - pattern: compile(..., ..., "exec")
+    message: >
+      compile() with mode "exec" followed by exec() is equivalent to exec().
+      Same RCE risk applies.  (likely defect)
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      subcategory: code-execution
+
+  # ---------------------------------------------------------------------------
+  # SQL injection
+  # ---------------------------------------------------------------------------
+
+  - id: sentinel-sql-string-format
+    patterns:
+      - pattern: $CURSOR.execute($QUERY % ...)
+    message: >
+      SQL query built with % string formatting is vulnerable to SQL injection.
+      Use parameterised queries (pass a tuple of values as the second argument).
+      (likely defect)
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: sql-injection
+
+  - id: sentinel-sql-fstring
+    patterns:
+      - pattern: $CURSOR.execute(f"...")
+    message: >
+      SQL query built with an f-string is vulnerable to SQL injection.
+      Use parameterised queries instead.  (likely defect)
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: sql-injection
+
+  - id: sentinel-sql-format-method
+    patterns:
+      - pattern: $CURSOR.execute($QUERY.format(...))
+    message: >
+      SQL query built with .format() is vulnerable to SQL injection.
+      Use parameterised queries instead.  (likely defect)
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: sql-injection
+
+  # ---------------------------------------------------------------------------
+  # Unsafe deserialisation
+  # ---------------------------------------------------------------------------
+
+  - id: sentinel-yaml-load-unsafe
+    patterns:
+      - pattern: yaml.load($DATA)
+      - pattern-not: yaml.load($DATA, Loader=yaml.SafeLoader)
+      - pattern-not: yaml.load($DATA, Loader=yaml.BaseLoader)
+      - pattern-not: yaml.load($DATA, Loader=yaml.FullLoader)
+    message: >
+      yaml.load() without an explicit safe Loader can deserialise arbitrary
+      Python objects (CVE-2017-18342 class).  Use yaml.safe_load() or
+      yaml.load(..., Loader=yaml.SafeLoader).  (likely defect)
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: unsafe-deserialization
+
+  - id: sentinel-pickle-loads
+    patterns:
+      - pattern: pickle.loads(...)
+    message: >
+      pickle.loads() deserialises arbitrary Python objects and can execute
+      code.  Never unpickle data from an untrusted source.  (likely defect)
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: unsafe-deserialization
+
+  - id: sentinel-marshal-loads
+    patterns:
+      - pattern: marshal.loads(...)
+    message: >
+      marshal.loads() is not safe for untrusted data — it can crash the
+      interpreter and historically has had RCE bugs.  (likely defect)
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      subcategory: unsafe-deserialization
+
+  # ---------------------------------------------------------------------------
+  # Weak cryptography
+  # ---------------------------------------------------------------------------
+
+  - id: sentinel-hashlib-md5
+    patterns:
+      - pattern: hashlib.md5(...)
+    message: >
+      MD5 is cryptographically broken.  Do not use it for security-sensitive
+      purposes (passwords, signatures, integrity).  Use SHA-256 or stronger.
+      (likely defect)
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      subcategory: weak-cryptography
+
+  - id: sentinel-hashlib-sha1
+    patterns:
+      - pattern: hashlib.sha1(...)
+    message: >
+      SHA-1 is cryptographically weak (SHAttered collision, 2017).  Do not
+      use for security-sensitive purposes.  Use SHA-256 or stronger.
+      (likely defect)
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      subcategory: weak-cryptography
+
+  - id: sentinel-des-cipher
+    patterns:
+      - pattern: DES.new(...)
+    message: >
+      DES has a 56-bit key — exhaustively breakable.  Use AES-256-GCM or
+      ChaCha20-Poly1305 instead.  (likely defect)
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: weak-cryptography
+
+  - id: sentinel-random-not-crypto
+    patterns:
+      - pattern: random.random()
+    message: >
+      random.random() is NOT cryptographically secure.  For security tokens,
+      keys, or nonces use secrets.token_bytes() / secrets.token_hex().
+      (likely defect)
+    languages: [python]
+    severity: INFO
+    metadata:
+      category: security
+      subcategory: weak-cryptography
+
+  # ---------------------------------------------------------------------------
+  # Hardcoded credentials (structural patterns — not literal value scanning,
+  # which the F-005 secret detector handles for outbound text)
+  # ---------------------------------------------------------------------------
+
+  - id: sentinel-hardcoded-password-kwarg
+    patterns:
+      - pattern: $FUNC(..., password="...", ...)
+      - pattern-not: $FUNC(..., password="", ...)
+    message: >
+      Hardcoded password literal in a keyword argument.  Use an environment
+      variable or a secret manager instead.  (likely defect)
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: hardcoded-credential
+
+  - id: sentinel-hardcoded-secret-kwarg
+    patterns:
+      - pattern: $FUNC(..., secret="...", ...)
+      - pattern-not: $FUNC(..., secret="", ...)
+    message: >
+      Hardcoded secret literal in a keyword argument.  Use an environment
+      variable or a secret manager instead.  (likely defect)
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: hardcoded-credential
+
+  - id: sentinel-hardcoded-api-key-assign
+    patterns:
+      - pattern: $VAR = "sk-..."
+    message: >
+      String literal that looks like an API key assigned to a variable.
+      Store credentials in environment variables, never in source code.
+      (likely defect)
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: hardcoded-credential
+
+  # ---------------------------------------------------------------------------
+  # Path traversal
+  # ---------------------------------------------------------------------------
+
+  - id: sentinel-open-path-join-user-input
+    patterns:
+      - pattern: open(os.path.join(..., $USER_INPUT), ...)
+    message: >
+      File path constructed from potentially user-controlled input may allow
+      path traversal.  Validate and canonicalise the path before opening.
+      (likely defect)
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      subcategory: path-traversal
+
+  # ---------------------------------------------------------------------------
+  # Unsafe use of assert (stripped in optimised builds)
+  # ---------------------------------------------------------------------------
+
+  - id: sentinel-assert-for-security
+    patterns:
+      - pattern: |
+          assert $USER_INPUT == $EXPECTED
+    message: >
+      assert statements are removed when Python runs with -O / -OO (optimised
+      mode).  Never use assert for security checks.  Use explicit if/raise.
+      (likely defect)
+    languages: [python]
+    severity: INFO
+    metadata:
+      category: security
+      subcategory: assertion-bypass

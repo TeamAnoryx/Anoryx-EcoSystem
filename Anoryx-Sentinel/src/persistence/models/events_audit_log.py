@@ -88,6 +88,11 @@ VALID_EVENT_TYPES = frozenset(
         "batch_file_blocked",
         "batch_file_dead_lettered",
         "batch_completed",
+        # F-016 (ADR-0019 §10) — code-scan post-response detector variants.
+        "code_scan_passed",
+        "code_scan_warned",
+        "code_scan_blocked",
+        "code_scan_error",
     }
 )
 
@@ -155,6 +160,17 @@ ACTION_TAKEN_BY_EVENT_TYPE: dict[str, frozenset[str]] = {
     "batch_file_blocked": frozenset({"blocked"}),
     "batch_file_dead_lettered": frozenset({"logged"}),
     "batch_completed": frozenset({"logged"}),
+    # F-016 (ADR-0019 §10) — code-scan post-response detector variants.
+    # code_scan_blocked uses 'blocked' (BLOCK verdict rejects the non-streamed
+    # response body via policy_blocked 403). The other three use 'logged':
+    # code_scan_passed (PASS — no action), code_scan_warned (WARN — audit only,
+    # including would-BLOCK-on-stream cases), code_scan_error (scanner
+    # error/timeout → fail-safe WARN, never BLOCK). ck_eal_action_taken is
+    # UNCHANGED (all values already present).
+    "code_scan_passed": frozenset({"logged"}),
+    "code_scan_warned": frozenset({"logged"}),
+    "code_scan_blocked": frozenset({"blocked"}),
+    "code_scan_error": frozenset({"logged"}),
 }
 
 
@@ -294,7 +310,12 @@ class EventsAuditLog(Base):
             "'admin_config_updated','admin_audit_accessed',"
             # F-014 (ADR-0017 §10 D9) — kept in sync with migration 0015.
             "'operator_sso_login','operator_sso_denied',"
-            "'admin_breakglass_used','idp_config_changed')",
+            "'admin_breakglass_used','idp_config_changed',"
+            # F-015 (ADR-0018 §8 D7) — kept in sync with migration 0019.
+            "'batch_submitted','batch_file_processed',"
+            "'batch_file_blocked','batch_file_dead_lettered','batch_completed',"
+            # F-016 (ADR-0019 §10) — kept in sync with migration 0020.
+            "'code_scan_passed','code_scan_warned'," "'code_scan_blocked','code_scan_error')",
             name="ck_eal_event_type",
         ),
         CheckConstraint(

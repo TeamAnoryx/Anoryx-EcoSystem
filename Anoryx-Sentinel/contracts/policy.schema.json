@@ -8,7 +8,8 @@
   "oneOf": [
     { "$ref": "#/$defs/BudgetLimitPolicy" },
     { "$ref": "#/$defs/ModelAllowlistPolicy" },
-    { "$ref": "#/$defs/ModelDenylistPolicy" }
+    { "$ref": "#/$defs/ModelDenylistPolicy" },
+    { "$ref": "#/$defs/CodeScanPolicy" }
   ],
 
   "$comment": "Dispatch is normative via oneOf + the policy_type const on each variant under JSON Schema Draft 2020-12. The 'discriminator' keyword below is a NON-NORMATIVE hint for OpenAPI tooling ONLY; it is not a 2020-12 keyword and has NO validation effect under this dialect. Do not rely on it for correctness.",
@@ -206,6 +207,77 @@
           "type": "string",
           "maxLength": 256,
           "description": "Human-readable rationale for the denial (for audit-ready evidence)."
+        }
+      }
+    },
+
+    "CodeScanPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-tenant code-scanning posture (F-016, ADR-0019 §9). Enables the post-response code-scan detector within the signed scope and maps scanner finding severity onto the PASS|WARN|BLOCK verdict and a per-verdict action. Default-OFF, per-tenant opt-in (ADR-0019 Fork 4): an absent code_scan policy means scanning is disabled. The detector reads the stored policy_payload via the F-008 policy engine (src/code_scan/config.py::_parse_payload); this schema mirrors the payload shape that loader reads (enabled, thresholds.warn/block, actions.warn/block). HONEST-LANGUAGE / HONEST-SCOPE (ADR-0019 §4): a BLOCK verdict only rejects NON-STREAMED responses; for streamed responses the bytes are already on the wire, so the verdict degrades to WARN + audit (no honest block is possible). The scanner fails safe to WARN on any error/timeout. This is high-coverage detection of known patterns and risk reduction, not a guarantee that passing code is safe.",
+      "required": [
+        "policy_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "policy_id",
+        "policy_version",
+        "effective_from",
+        "signature",
+        "enabled",
+        "thresholds",
+        "actions"
+      ],
+      "properties": {
+        "policy_type": { "const": "code_scan" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "policy_id": { "$ref": "#/$defs/policy_id" },
+        "policy_version": { "$ref": "#/$defs/policy_version" },
+        "effective_from": { "$ref": "#/$defs/effective_from" },
+        "signature": { "$ref": "#/$defs/signature" },
+        "enabled": {
+          "type": "boolean",
+          "description": "Master switch for code scanning within the signed scope. false (or an absent policy) disables the detector cheaply with no scanner invocation (default-OFF, ADR-0019 Fork 4)."
+        },
+        "thresholds": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Severity boundaries (inclusive) that map the worst scanner finding onto the verdict. A finding whose severity is >= warn yields WARN; >= block yields BLOCK. block SHOULD be >= warn; severity order is low < medium < high < critical (ordering is enforced at runtime, not by this schema).",
+          "required": ["warn", "block"],
+          "properties": {
+            "warn": {
+              "type": "string",
+              "enum": ["low", "medium", "high", "critical"],
+              "description": "Minimum finding severity (inclusive) that yields a WARN verdict."
+            },
+            "block": {
+              "type": "string",
+              "enum": ["low", "medium", "high", "critical"],
+              "description": "Minimum finding severity (inclusive) that yields a BLOCK verdict (non-streamed only; see HONEST-SCOPE)."
+            }
+          }
+        },
+        "actions": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Per-verdict action mapping. \"audit\" records an event and lets the response pass unchanged; \"reject\" rejects a non-streamed response via the existing policy_blocked (403) envelope (no new error_code, ADR-0019 §8).",
+          "required": ["warn", "block"],
+          "properties": {
+            "warn": {
+              "type": "string",
+              "enum": ["audit", "reject"],
+              "description": "Action for a WARN verdict. Normally \"audit\" (observe only)."
+            },
+            "block": {
+              "type": "string",
+              "enum": ["audit", "reject"],
+              "description": "Action for a BLOCK verdict. \"reject\" enables a real block on non-streamed responses; \"audit\" downgrades even a BLOCK-threshold verdict to WARN + audit for tenants that want signal without rejection (ADR-0019 §9)."
+            }
+          }
         }
       }
     }

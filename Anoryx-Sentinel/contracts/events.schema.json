@@ -46,7 +46,11 @@
     { "$ref": "#/$defs/BatchFileProcessedEvent" },
     { "$ref": "#/$defs/BatchFileBlockedEvent" },
     { "$ref": "#/$defs/BatchFileDeadLetteredEvent" },
-    { "$ref": "#/$defs/BatchCompletedEvent" }
+    { "$ref": "#/$defs/BatchCompletedEvent" },
+    { "$ref": "#/$defs/CodeScanPassedEvent" },
+    { "$ref": "#/$defs/CodeScanWarnedEvent" },
+    { "$ref": "#/$defs/CodeScanBlockedEvent" },
+    { "$ref": "#/$defs/CodeScanErrorEvent" }
   ],
 
   "$comment": "Dispatch is normative via oneOf + the event_type const on each variant under JSON Schema Draft 2020-12. The 'discriminator' keyword below is a NON-NORMATIVE hint for OpenAPI tooling ONLY; it is not a 2020-12 keyword and has NO validation effect under this dialect. Do not rely on it for correctness.",
@@ -1469,6 +1473,88 @@
         "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
         "request_id": { "$ref": "#/$defs/request_id" },
         "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (batch-completion meta-audit record)." }
+      }
+    },
+    "CodeScanPassedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-016 (ADR-0019 §10) when the post-response code-scanning detector ran over fenced code blocks extracted from an LLM response and aggregated a PASS verdict (no finding crossed any tenant threshold). agent_id is the reserved slug 'code-scan'; tenant_id is ALWAYS the caller's real tenant — NEVER WILDCARD_UUID; team_id/project_id are the caller's REAL IDs. HARD RULE: metadata only — this event NEVER carries the scanned code content and NEVER a scanner stack trace.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "verdict", "language", "finding_count", "scanner"],
+      "properties": {
+        "event_type": { "const": "code_scan_passed" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "verdict": { "type": "string", "enum": ["pass", "warn", "block"], "description": "Aggregated code-scan verdict. On this variant the verdict is 'pass'." },
+        "language": { "type": "string", "maxLength": 64, "description": "Language tag of the scanned fenced code block(s) (e.g. 'python'). Bounded; a coarse label, never the code." },
+        "finding_count": { "type": "integer", "minimum": 0, "maximum": 1000000, "description": "Count of normalized findings the scanners reported across the scanned blocks. A count only — never the finding text or the offending code." },
+        "top_severity": { "type": "string", "enum": ["low", "medium", "high", "critical"], "description": "OPTIONAL on this PASS variant. Severity of the highest-severity finding that contributed to the verdict. OMITTED when finding_count == 0 (a clean PASS has no finding and therefore no top severity); present (lowercase enum) when finding_count > 0 (findings existed but none crossed a tenant threshold). On CodeScanWarnedEvent and CodeScanBlockedEvent it stays required (those verdicts always have at least one contributing finding)." },
+        "scanner": { "type": "string", "maxLength": 64, "description": "Scanner identifier that produced the verdict (e.g. 'semgrep', 'bandit', 'aggregate'). Bounded; never a credential, never a path." }
+      }
+    },
+    "CodeScanWarnedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-016 (ADR-0019 §10) when the post-response code-scanning detector aggregated a WARN verdict (audit-only; no response effect). Also carries the honest streamed would-block case: when a streamed response produces findings that WOULD cross the BLOCK threshold but cannot be blocked because the bytes are already on the wire, the optional 'block_suppressed_by_streaming' field is set true (ADR-0019 §4). agent_id is the reserved slug 'code-scan'; tenant_id is ALWAYS the caller's real tenant — NEVER WILDCARD_UUID; team_id/project_id are the caller's REAL IDs. HARD RULE: metadata only — NEVER the scanned code content, NEVER a scanner stack trace.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "verdict", "language", "finding_count", "top_severity", "scanner"],
+      "properties": {
+        "event_type": { "const": "code_scan_warned" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "verdict": { "type": "string", "enum": ["pass", "warn", "block"], "description": "Aggregated code-scan verdict. On this variant the verdict is 'warn' (audit-only; includes the streamed would-block case)." },
+        "language": { "type": "string", "maxLength": 64, "description": "Language tag of the scanned fenced code block(s) (e.g. 'python'). Bounded; a coarse label, never the code." },
+        "finding_count": { "type": "integer", "minimum": 0, "maximum": 1000000, "description": "Count of normalized findings the scanners reported across the scanned blocks. A count only — never the finding text or the offending code." },
+        "top_severity": { "type": "string", "enum": ["low", "medium", "high", "critical"], "description": "Severity of the highest-severity finding that contributed to the verdict." },
+        "scanner": { "type": "string", "maxLength": 64, "description": "Scanner identifier that produced the verdict (e.g. 'semgrep', 'bandit', 'aggregate'). Bounded; never a credential, never a path." },
+        "block_suppressed_by_streaming": { "type": "boolean", "description": "OPTIONAL. When true, this WARN records a verdict that WOULD have crossed the BLOCK threshold but could NOT block because the response was streamed (the bytes were already committed to the client before a complete code block existed to scan). Honest observability for the streamed would-block case (ADR-0019 §4); no false block is claimed. Present ONLY on this variant." }
+      }
+    },
+    "CodeScanBlockedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-016 (ADR-0019 §10) when the post-response code-scanning detector aggregated a BLOCK verdict on a NON-STREAMED response and the response body was rejected. The client-facing rejection reuses the existing Error envelope error_code 'policy_blocked' (403) — NO new error_code is introduced (ADR-0019 §8); precise attribution lives in this audit event. agent_id is the reserved slug 'code-scan'; tenant_id is ALWAYS the caller's real tenant — NEVER WILDCARD_UUID; team_id/project_id are the caller's REAL IDs. HARD RULE: metadata only — NEVER the scanned code content, NEVER a scanner stack trace.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "verdict", "language", "finding_count", "top_severity", "scanner"],
+      "properties": {
+        "event_type": { "const": "code_scan_blocked" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "verdict": { "type": "string", "enum": ["pass", "warn", "block"], "description": "Aggregated code-scan verdict. On this variant the verdict is 'block' (non-streamed response rejected via the existing policy_blocked envelope)." },
+        "language": { "type": "string", "maxLength": 64, "description": "Language tag of the scanned fenced code block(s) (e.g. 'python'). Bounded; a coarse label, never the code." },
+        "finding_count": { "type": "integer", "minimum": 0, "maximum": 1000000, "description": "Count of normalized findings the scanners reported across the scanned blocks. A count only — never the finding text or the offending code." },
+        "top_severity": { "type": "string", "enum": ["low", "medium", "high", "critical"], "description": "Severity of the highest-severity finding that contributed to the verdict." },
+        "scanner": { "type": "string", "maxLength": 64, "description": "Scanner identifier that produced the verdict (e.g. 'semgrep', 'bandit', 'aggregate'). Bounded; never a credential, never a path." }
+      }
+    },
+    "CodeScanErrorEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-016 (ADR-0019 §10) when a scanner errored, timed out, crashed, produced unparseable or oversized output, or the response was too large to scan in full. The detector FAILS SAFE TO WARN (no response effect, no PASS, no BLOCK) and records this distinct error event (ADR-0019 §6). agent_id is the reserved slug 'code-scan'; tenant_id is ALWAYS the caller's real tenant — NEVER WILDCARD_UUID; team_id/project_id are the caller's REAL IDs. HARD RULE: error_class is a BOUNDED classification label ONLY — this event NEVER carries a scanner stack trace and NEVER the offending code content.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "scanner", "error_class"],
+      "properties": {
+        "event_type": { "const": "code_scan_error" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "scanner": { "type": "string", "maxLength": 64, "description": "Scanner identifier that errored (e.g. 'semgrep', 'bandit', 'aggregate'). Bounded; never a credential, never a path." },
+        "error_class": { "type": "string", "maxLength": 128, "description": "Bounded classification of the failure (e.g. 'timeout', 'subprocess_crash', 'output_too_large', 'response_too_large', 'scanner_missing'). A coarse label ONLY — NEVER a stack trace, NEVER the offending code." }
       }
     }
   }
