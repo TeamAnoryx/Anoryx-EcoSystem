@@ -46,6 +46,13 @@ import time
 import uuid
 from typing import Any
 
+# F-016: MAX_TOTAL_BYTES cap for the stream accumulation buffer.
+# Imported lazily so missing optional does not prevent the module from loading.
+try:
+    from code_scan.extractor import MAX_TOTAL_BYTES as _CODE_SCAN_MAX_TOTAL_BYTES
+except ImportError:
+    _CODE_SCAN_MAX_TOTAL_BYTES = 524_288  # mirror the constant as a safe default
+
 import structlog
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -395,10 +402,31 @@ async def create_chat_completion(
             if hook_registry is not None and hook_context is not None and _HOOKS_AVAILABLE:
                 # Pass the serialized string to the hook so detection + deferred
                 # event storage work exactly as before.
-                response_text = json.dumps(completion.model_dump())
+                _completion_dict = completion.model_dump()
+                response_text = json.dumps(_completion_dict)
                 post_hook_context = _make_post_context(hook_context, is_stream=False)
+                # F-016: code-scan must see the RAW assistant message text (real
+                # newlines), NOT the JSON-serialized envelope.  json.dumps escapes
+                # newlines, so fenced ``` code blocks in response_text would never
+                # be extracted (the markdown fence needs real newlines).  Build the
+                # scan text from the assistant message content(s) instead.  The
+                # outbound-secret hook still scans the full serialized envelope.
+                _code_scan_text = "\n\n".join(
+                    str((choice.get("message") or {}).get("content") or "")
+                    for choice in (_completion_dict.get("choices") or [])
+                )
                 try:
                     await hook_registry.run_post_response(response_text, post_hook_context)
+                    # F-016 (ADR-0019 §4, Vector 10): run code-scan on the assistant
+                    # message text AFTER the outbound-secret hook, BEFORE the
+                    # JSONResponse is built.  Called unconditionally — a no-op
+                    # when code-scan is disabled (default-OFF) or the optional
+                    # extra is not installed (registry._code_scan_detector is None).
+                    # On BLOCK → HookBlockedError(error_code="policy_blocked") is
+                    # raised by run_code_scan; the existing except branch below
+                    # converts it to GatewayError("policy_blocked") → 403.
+                    # On scanner crash → HookFailSafeError → 500 internal_error.
+                    await hook_registry.run_code_scan(_code_scan_text, post_hook_context)
                 except HookFailSafeError:
                     raise GatewayError("internal_error") from None
                 except HookBlockedError:
@@ -615,6 +643,13 @@ async def _handle_stream(
         async with stream_slot(tenant_context.tenant_id):
             carried_tail: str = ""
             stream_blocked = False
+            # F-016 (ADR-0019 §4, Vector 11): accumulate the full response text
+            # for the post-completion code-scan call.  Hard-capped at
+            # MAX_TOTAL_BYTES (512 KiB) — the extractor/scanner handle oversize
+            # inputs honestly; we stop appending beyond the cap so memory is
+            # bounded even for very long streams.
+            _scan_buf: str = ""
+            _scan_buf_bytes: int = 0
 
             try:
                 # F-006: the router yields already-TRANSLATED OpenAI-shape SSE
@@ -769,6 +804,22 @@ async def _handle_stream(
                             combined = carried_tail + chunk_content
                             carried_tail = combined[-stream_buf_bytes:]
 
+                    # F-016: accumulate delta content for post-stream code-scan.
+                    # Extract the text content from the chunk (same helper used
+                    # by the sliding-window inspection above). Only append while
+                    # below the cap — once exhausted, subsequent content is
+                    # silently skipped (the extractor will see a truncated but
+                    # still well-formed accumulated text).
+                    _chunk_text = _extract_chunk_content(chunk)
+                    if _chunk_text and _scan_buf_bytes < _CODE_SCAN_MAX_TOTAL_BYTES:
+                        _remaining = _CODE_SCAN_MAX_TOTAL_BYTES - _scan_buf_bytes
+                        _encoded = _chunk_text.encode("utf-8", errors="replace")
+                        if len(_encoded) > _remaining:
+                            _encoded = _encoded[:_remaining]
+                            _chunk_text = _encoded.decode("utf-8", errors="replace")
+                        _scan_buf += _chunk_text
+                        _scan_buf_bytes += len(_encoded)
+
                     yield chunk
 
             finally:
@@ -790,6 +841,23 @@ async def _handle_stream(
                         "stream_audit_failed",
                         request_id=request_id,
                     )
+
+                # F-016 (ADR-0019 §4 / Fork 1, Vector 11): post-completion
+                # code-scan on accumulated stream text.  Called unconditionally
+                # (no-op when disabled / extra not installed).  The detector
+                # detects ctx._is_stream=True and NEVER raises HookBlockedError
+                # here (bytes already committed → WARN+audit with
+                # block_suppressed_by_streaming=True).  Any unexpected exception
+                # is caught and logged at ERROR level — the stream must close
+                # cleanly regardless.
+                if hook_registry is not None and post_hook_ctx is not None and _HOOKS_AVAILABLE:
+                    try:
+                        await hook_registry.run_code_scan(_scan_buf, post_hook_ctx)
+                    except Exception:
+                        log.error(
+                            "stream_code_scan_failed",
+                            request_id=request_id,
+                        )
 
     headers = _success_headers(request_id, rl_limit, rl_remaining, rl_reset)
     return StreamingResponse(

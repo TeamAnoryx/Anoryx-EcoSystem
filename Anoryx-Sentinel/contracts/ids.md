@@ -97,6 +97,15 @@ convention for Delta records — never a privilege or cross-tenant grant.
     `batch_file_blocked`, `batch_file_dead_lettered`, `batch_completed`). The `tenant_id` on
     these events is ALWAYS the real submitting tenant — NEVER `WILDCARD_UUID` (a batch belongs
     to a real tenant). See ADR-0018 §8.
+  - **`code-scan`** — the F-016 post-response code-scanning detector principal (ADR-0019 §10).
+    It is the detector's `detector_slug` and is carried as `agent_id` on every code-scan event
+    (`code_scan_passed`, `code_scan_warned`, `code_scan_blocked`, `code_scan_error`). It names
+    the EMITTING subsystem — the detector that scans fenced code blocks extracted from an LLM
+    response (Semgrep / Bandit, static analysis only). The `tenant_id` on these events is ALWAYS
+    the caller's real tenant — NEVER `WILDCARD_UUID` (a scan is always attributed to the real
+    caller whose response was inspected); `team_id` / `project_id` are the caller's REAL IDs.
+    These events carry metadata only — NEVER the scanned code content and NEVER a scanner stack
+    trace. See ADR-0019 §10.
 
 ## The `actor_id` attribution field (F-014 / ADR-0017 §10)
 
