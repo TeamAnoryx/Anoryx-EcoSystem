@@ -93,6 +93,11 @@ VALID_EVENT_TYPES = frozenset(
         "code_scan_warned",
         "code_scan_blocked",
         "code_scan_error",
+        # F-017 (ADR-0020 §9) — data-lock post-response detector variants.
+        "field_locked",
+        "field_unlocked",
+        "lock_condition_denied",
+        "data_lock_error",
     }
 )
 
@@ -171,6 +176,14 @@ ACTION_TAKEN_BY_EVENT_TYPE: dict[str, frozenset[str]] = {
     "code_scan_warned": frozenset({"logged"}),
     "code_scan_blocked": frozenset({"blocked"}),
     "code_scan_error": frozenset({"logged"}),
+    # F-017 (ADR-0020 §9) — data-lock variants. field_locked / lock_condition_denied
+    # / data_lock_error use 'blocked' (a field value was withheld, or fail-closed);
+    # field_unlocked uses 'logged' (a matched field's condition was met → released).
+    # ck_eal_action_taken is UNCHANGED — all values already present.
+    "field_locked": frozenset({"blocked"}),
+    "field_unlocked": frozenset({"logged"}),
+    "lock_condition_denied": frozenset({"blocked"}),
+    "data_lock_error": frozenset({"blocked"}),
 }
 
 
@@ -315,7 +328,9 @@ class EventsAuditLog(Base):
             "'batch_submitted','batch_file_processed',"
             "'batch_file_blocked','batch_file_dead_lettered','batch_completed',"
             # F-016 (ADR-0019 §10) — kept in sync with migration 0020.
-            "'code_scan_passed','code_scan_warned'," "'code_scan_blocked','code_scan_error')",
+            "'code_scan_passed','code_scan_warned','code_scan_blocked','code_scan_error',"
+            # F-017 (ADR-0020 §9) — kept in sync with migration 0023.
+            "'field_locked','field_unlocked','lock_condition_denied','data_lock_error')",
             name="ck_eal_event_type",
         ),
         CheckConstraint(

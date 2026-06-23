@@ -71,10 +71,14 @@ class HookRegistry:
         pre_request: list[PreRequestHook] | None = None,
         post_response: list[PostResponseHook] | None = None,
         code_scan_detector: PostResponseHook | None = None,
+        data_lock_detector: PostResponseHook | None = None,
     ) -> None:
         self._pre_request: list[PreRequestHook] = list(pre_request or [])
         self._post_response: list[PostResponseHook] = list(post_response or [])
         self._code_scan_detector: PostResponseHook | None = code_scan_detector
+        # F-017: data-lock detector — dedicated slot (NOT in the per-chunk chain),
+        # because withholding a field requires the COMPLETE response body.
+        self._data_lock_detector: PostResponseHook | None = data_lock_detector
 
     # -------------------------------------------------------------------------
     # Code-scan accessor
@@ -87,6 +91,11 @@ class HookRegistry:
         Gateway-core uses this for introspection / conditional call-site logic.
         """
         return self._code_scan_detector
+
+    @property
+    def data_lock_detector(self) -> PostResponseHook | None:
+        """The registered DataLockDetector, or None if not configured (F-017)."""
+        return self._data_lock_detector
 
     # -------------------------------------------------------------------------
     # Pre-request chain
@@ -249,6 +258,80 @@ class HookRegistry:
         return content
 
     # -------------------------------------------------------------------------
+    # Data-lock phase (F-017 / ADR-0020)
+    # -------------------------------------------------------------------------
+
+    async def run_data_lock(self, content: str, context: Any) -> str:
+        """Run the DataLockDetector once on the complete non-streamed response.
+
+        Called by gateway-core AFTER run_post_response / run_code_scan, on the
+        current body string (post secret-redaction if any), BEFORE the Response is
+        built.  Returns the (possibly field-withheld) body string.
+
+        - action="mask"  → returns the withheld body (modified_payload).
+        - action="block" → raises HookBlockedError(error_code="policy_blocked")
+          so the caller returns 403 (fail-closed; ADR-0020 §4 tier-2).  The
+          detector already emitted its event inside inspect(); we do NOT re-emit
+          (a second row would corrupt the append-only hash chain — same rule as
+          run_code_scan).
+        - action="pass"  → returns content unchanged.
+
+        No-op (returns content) when the detector is not configured.  Unexpected
+        exceptions are wrapped in HookFailSafeError (D3) → 500, never a silent pass.
+        """
+        if self._data_lock_detector is None:
+            return content
+
+        result = await self._run_hook(self._data_lock_detector, content, context)
+
+        if result.action == "block":
+            log.info(
+                "orchestration.data_lock.blocked",
+                detector=self._data_lock_detector.detector_slug,
+                request_id=getattr(context, "request_id", "unknown"),
+            )
+            # event=None: the detector already emitted its data_lock_error event
+            # inside inspect() (same rule as run_code_scan) — re-emitting would
+            # write a duplicate row and corrupt the append-only hash chain.
+            raise HookBlockedError(error_code="policy_blocked", event=None)
+
+        if result.action == "mask" and result.modified_payload is not None:
+            return result.modified_payload
+
+        return content
+
+    async def run_data_lock_stream_preflight(self, context: Any) -> None:
+        """Streaming pre-flight: block before the first byte if data-lock is armed.
+
+        A field cannot be withheld from already-streamed bytes (ADR-0020 §5), so an
+        armed tenant's streamed request — or a fail-closed config-load error — is
+        rejected here, before _handle_stream commits the 200.  No-op when the
+        detector is not configured or the tenant is not armed.  The detector emits
+        its own event; on block we raise HookBlockedError (→ 403 policy_blocked).
+        """
+        detector = self._data_lock_detector
+        if detector is None:
+            return
+        try:
+            result = await detector.evaluate_stream_preflight(context)  # type: ignore[attr-defined]
+        except (HookBlockedError, HookFailSafeError):
+            raise
+        except Exception as exc:
+            log.error(
+                "orchestration.data_lock.preflight_unexpected_exception",
+                request_id=getattr(context, "request_id", "unknown"),
+                exc_type=type(exc).__name__,
+            )
+            raise HookFailSafeError(exc) from exc
+        if result.action == "block":
+            log.info(
+                "orchestration.data_lock.stream_blocked",
+                request_id=getattr(context, "request_id", "unknown"),
+            )
+            # event already emitted by the detector — do not re-emit (hash chain).
+            raise HookBlockedError(error_code="policy_blocked", event=None)
+
+    # -------------------------------------------------------------------------
     # Internal: safe single-hook executor (D3 fail-safe wrapper)
     # -------------------------------------------------------------------------
 
@@ -340,8 +423,21 @@ def build_default_registry(settings: Any | None = None) -> HookRegistry:
     except ImportError:
         pass  # code-scan extra not installed — no-op, not an error
 
+    # F-017: DataLockDetector in its own dedicated slot.  Default-OFF (per-tenant
+    # opt-in via a data_lock policy); the detector itself gates on tenant config,
+    # so we always register it when importable.  Unlike code-scan it has no heavy
+    # optional dependency, but we still guard the import for symmetry / safety.
+    data_lock: PostResponseHook | None = None
+    try:
+        from data_lock.detector import DataLockDetector  # noqa: PLC0415
+
+        data_lock = DataLockDetector()
+    except ImportError:
+        pass
+
     return HookRegistry(
         pre_request=pre_hooks,
         post_response=post_hooks,
         code_scan_detector=code_scan,
+        data_lock_detector=data_lock,
     )

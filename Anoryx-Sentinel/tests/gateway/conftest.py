@@ -15,6 +15,28 @@ import pytest
 from gateway.config import _reset_settings
 from gateway.middleware.rate_limit import reset_state_for_testing
 
+
+@pytest.fixture(autouse=True)
+def _data_lock_off():
+    """F-017: gateway pipeline tests (F-004/F-005/F-006) do not exercise data-lock.
+
+    The default registry now includes the fail-closed DataLockDetector. These
+    tests drive non-stream /v1/chat/completions with a MagicMock tenant session
+    that cannot serve the data_lock config query, which the detector — correctly,
+    per ADR-0020 §4 — treats as a fail-closed block (403). That is orthogonal to
+    what these tests verify, exactly like the existing model/budget/routing stubs.
+    Treat data-lock as not-armed here; the REAL persist→load→withhold path is
+    covered non-stubbed by tests/data_lock/test_e2e_nonstubbed.py (vector 12).
+    """
+    from data_lock.config import DataLockConfig
+
+    with patch(
+        "data_lock.detector.load_data_lock_config",
+        new=AsyncMock(return_value=DataLockConfig(armed=False)),
+    ):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Canonical test IDs (server-resolved values — what the key row returns)
 # ---------------------------------------------------------------------------
