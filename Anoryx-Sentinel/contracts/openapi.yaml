@@ -889,6 +889,57 @@ paths:
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /admin/tenants/{tenant_id}/shadow-ai/candidates:
+    get:
+      tags: [admin]
+      operationId: adminGetTenantShadowAiCandidates
+      summary: Read a target tenant's shadow-AI review candidates (admin/operator)
+      description: |
+        Returns the TARGET tenant's shadow-AI REVIEW CANDIDATES (F-018, ADR-0021
+        §8), read inside the target tenant's RLS session. Co-located with the
+        `/admin/tenants/{tenant_id}/audit` admin read.
+
+        DETECT-ONLY — these are review candidates for a human, NOT verdicts and NOT
+        enforcement. F-018 (and the F-007 seam it builds on) never block.
+
+        HONESTY BOUNDARY (returned verbatim in `disclaimer`): coverage is limited to
+        traffic that flows THROUGH Sentinel to a known model provider that is NOT on
+        the tenant's allow-list (disallowed known-provider egress). It does NOT
+        detect tools that bypass Sentinel (a personal device, a browser tab, any
+        client not routed through the gateway — that needs a CASB or network/DNS
+        control, out of scope), and it does not yet observe Bedrock/aioboto3 egress
+        (inherited F-007 gap). Each candidate is a CONFIDENCE-BANDED, attributed,
+        explainable claim — a likely shadow-AI use surfaced to a team for human
+        review, which may be a false positive — never a verdict, violation, or
+        certification. A risk-reduction / high-coverage control, not comprehensive
+        shadow-AI coverage.
+
+        Candidates are classified + attributed over the tenant's raw
+        `shadow_ai_detected_outbound` rows; attribution uses the server-stamped
+        identity, never a client-supplied claim. Metadata only; no payloads, prompt
+        content, PII, or secrets.
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+      responses:
+        "200":
+          description: |
+            The target tenant's shadow-AI review candidates (confidence-banded,
+            attributed, explainable) plus the verbatim honesty disclaimer. Detect-only
+            review candidates, not verdicts. Metadata only.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminShadowAiCandidateList"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /admin/tenants/{tenant_id}/config:
     get:
       tags: [admin]
@@ -3039,6 +3090,112 @@ components:
           type: integer
           minimum: 0
           description: Number of policy records returned (length of `policies`).
+
+    AdminShadowAiCandidateList:
+      type: object
+      description: |
+        The TARGET tenant's shadow-AI REVIEW CANDIDATES (F-018, ADR-0021 §8),
+        returned by GET /admin/tenants/{tenant_id}/shadow-ai/candidates. FLAT shape
+        (NOT an {object, data} envelope). DETECT-ONLY: every row is a review
+        candidate labelled "candidate" with a confidence band — never a verdict,
+        violation, or certification. The `disclaimer` carries the honesty boundary
+        verbatim and MUST be surfaced (non-removable) wherever the candidates are
+        rendered. Coverage is limited to disallowed known-provider egress flowing
+        THROUGH Sentinel; bypass traffic is not detected (CASB/DNS, out of scope) and
+        Bedrock/aioboto3 egress is not yet observed (inherited F-007 gap). Metadata
+        only; no payloads, prompt content, PII, or secrets.
+      required: [candidates, disclaimer]
+      additionalProperties: false
+      properties:
+        candidates:
+          type: array
+          items: { $ref: "#/components/schemas/AdminShadowAiCandidate" }
+        disclaimer:
+          type: string
+          maxLength: 2048
+          description: |
+            The honesty boundary, carried verbatim: shadow-AI detection covers only
+            traffic through Sentinel to a known provider not on the tenant's
+            allow-list; it does not detect bypass traffic, does not yet observe
+            Bedrock egress, and these are confidence-scored review candidates for a
+            human, not verdicts. Risk-reduction / high-coverage, not comprehensive.
+
+    AdminShadowAiCandidate:
+      type: object
+      description: |
+        One shadow-AI REVIEW CANDIDATE (F-018, ADR-0021 §5/§6): a (team, project,
+        endpoint) group of disallowed known-provider egress, classified to a
+        confidence band with the exact signals that fired. Attribution is the
+        server-stamped identity, never a client-supplied claim. `label` is always
+        "candidate" — a confidence-scored claim for human review, never a verdict.
+      required:
+        - team_id
+        - project_id
+        - endpoint
+        - provider
+        - call_count
+        - first_seen
+        - last_seen
+        - confidence_band
+        - fired_signals
+        - label
+      additionalProperties: false
+      properties:
+        team_id:
+          type: string
+          format: uuid
+          maxLength: 64
+          description: Server-stamped team the candidate is attributed to (UUID v4). Not a client claim.
+        project_id:
+          type: string
+          maxLength: 64
+          description: Server-stamped project the candidate is attributed to (may be WILDCARD_UUID per contracts/ids.md). Not a client claim.
+        endpoint:
+          type: string
+          maxLength: 256
+          pattern: "^[^?#@\\s]+$"
+          description: |
+            Host (and optionally path) of the disallowed-provider endpoint ONLY. No
+            query string, fragment, or userinfo (structurally forbidden via the '?',
+            '#', '@', whitespace exclusion), so keys/tokens/PII cannot ride along.
+        provider:
+          type: string
+          enum: [openai, anthropic, bedrock]
+          description: The disallowed upstream provider the grouped egress targeted. Never a model name; never a credential.
+        call_count:
+          type: integer
+          minimum: 0
+          maximum: 1000000000
+          description: Grouped egress call count for this candidate over the analysis window.
+        first_seen:
+          type: string
+          format: date-time
+          maxLength: 64
+          description: Earliest observation in the candidate's window (RFC 3339 / ISO 8601 date-time, UTC).
+        last_seen:
+          type: string
+          format: date-time
+          maxLength: 64
+          description: Latest observation in the candidate's window (RFC 3339 / ISO 8601 date-time, UTC).
+        confidence_band:
+          type: string
+          enum: [low, medium, high]
+          description: |
+            Banded, explainable confidence: Low (only disallowed_provider), Medium
+            (+volume or +frequency), High (volume AND frequency). A band on a review
+            candidate, never a verdict.
+        fired_signals:
+          type: array
+          maxItems: 3
+          uniqueItems: true
+          items:
+            type: string
+            enum: [disallowed_provider, volume, frequency]
+          description: Explainability — the exact heuristic signals that fired, so a reviewer can see why this was surfaced.
+        label:
+          type: string
+          enum: [candidate]
+          description: Always "candidate". A confidence-scored claim for human review — never "confirmed", "verdict", or "violation".
 
     AdminGenerateEvidenceRequest:
       type: object

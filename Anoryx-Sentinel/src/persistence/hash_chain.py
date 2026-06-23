@@ -137,6 +137,16 @@ def canonical_json(data: dict[str, Any]) -> bytes:
     # into every historical row's recomputed hash and break the chain).
     if data.get("actor_id") is not None:
         filtered["actor_id"] = data["actor_id"]
+    # F-018 (ADR-0021 §7): the shadow_ai_candidate_detected variant fields follow
+    # the SAME opt-in-when-present rule as actor_id. They are NOT in CANONICAL_FIELDS;
+    # each is appended ONLY when set (non-None). Every pre-F-018 row and every
+    # non-candidate event has these absent/None, so its canonical JSON is byte-for-byte
+    # the pre-F-018 form — stored hashes stay valid and validate_chain() passes over
+    # all historical data. A candidate row binds its band/signals/key into the hash:
+    # altering them post-write breaks verification (tamper-evident when present).
+    for _f018_field in ("confidence_band", "fired_signals", "candidate_key"):
+        if data.get(_f018_field) is not None:
+            filtered[_f018_field] = data[_f018_field]
     return json.dumps(filtered, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
         "utf-8"
     )

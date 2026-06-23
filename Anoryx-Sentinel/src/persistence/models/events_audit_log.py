@@ -98,6 +98,8 @@ VALID_EVENT_TYPES = frozenset(
         "field_unlocked",
         "lock_condition_denied",
         "data_lock_error",
+        # F-018 (ADR-0021 §7) — shadow-AI candidate detection variant.
+        "shadow_ai_candidate_detected",
     }
 )
 
@@ -184,6 +186,10 @@ ACTION_TAKEN_BY_EVENT_TYPE: dict[str, frozenset[str]] = {
     "field_unlocked": frozenset({"logged"}),
     "lock_condition_denied": frozenset({"blocked"}),
     "data_lock_error": frozenset({"blocked"}),
+    # F-018 (ADR-0021 §7) — shadow-AI candidate detection variant. Uses 'logged'
+    # only (action_taken="logged", detection-only; no blocking at this stage).
+    # ck_eal_action_taken is UNCHANGED — 'logged' already present.
+    "shadow_ai_candidate_detected": frozenset({"logged"}),
 }
 
 
@@ -288,6 +294,14 @@ class EventsAuditLog(Base):
     # NULL — see hash_chain.canonical_json() for the backward-compat rule.
     actor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # F-018 (ADR-0021 §7) — shadow-AI candidate detection variant columns.
+    # Reuses detected_endpoint / traffic_volume / first_seen_at / selected_provider
+    # from the shadow_ai_detected variant for the candidate payload; new columns
+    # below carry F-018-specific signal metadata only.
+    confidence_band: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    fired_signals: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    candidate_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     # -----------------------------------------------------------------------
     # Hash-chain columns
     # -----------------------------------------------------------------------
@@ -330,7 +344,9 @@ class EventsAuditLog(Base):
             # F-016 (ADR-0019 §10) — kept in sync with migration 0020.
             "'code_scan_passed','code_scan_warned','code_scan_blocked','code_scan_error',"
             # F-017 (ADR-0020 §9) — kept in sync with migration 0023.
-            "'field_locked','field_unlocked','lock_condition_denied','data_lock_error')",
+            "'field_locked','field_unlocked','lock_condition_denied','data_lock_error',"
+            # F-018 (ADR-0021 §7) — kept in sync with migration 0024.
+            "'shadow_ai_candidate_detected')",
             name="ck_eal_event_type",
         ),
         CheckConstraint(
@@ -418,6 +434,11 @@ class EventsAuditLog(Base):
             "judge_outcome IN ('verdict','degraded','failed','policy_denied')",
             name="ck_eal_judge_outcome",
         ),
+        # F-018 (ADR-0021 §7) — shadow-AI candidate confidence band constraint.
+        CheckConstraint(
+            "confidence_band IS NULL OR confidence_band IN ('low','medium','high')",
+            name="ck_eal_confidence_band",
+        ),
         # row_hash and prev_hash must be 64-char hex strings.
         CheckConstraint("length(row_hash) = 64", name="ck_eal_row_hash_len"),
         CheckConstraint("length(prev_hash) = 64", name="ck_eal_prev_hash_len"),
@@ -431,6 +452,8 @@ class EventsAuditLog(Base):
             "sequence_number",
             postgresql_using="brin",
         ),
+        # F-018 (ADR-0021 §7) — composite index for dedup lookups on candidate_key.
+        Index("ix_eal_candidate_key", "tenant_id", "candidate_key"),
     )
 
     def __repr__(self) -> str:

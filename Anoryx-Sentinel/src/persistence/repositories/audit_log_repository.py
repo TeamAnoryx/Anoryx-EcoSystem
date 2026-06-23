@@ -140,6 +140,12 @@ def _row_to_hash_data(row: EventsAuditLog) -> dict[str, Any]:
         # F-014 (ADR-0017 §10 D9) — actor_id: passed through so canonical_json()
         # can apply the opt-in-when-present rule (included in hash iff not None).
         "actor_id": row.actor_id,
+        # F-018 (ADR-0021 §7) — shadow_ai_candidate_detected variant fields. Passed
+        # through so canonical_json() applies the same opt-in-when-present rule
+        # (included in hash iff not None; None for every non-candidate row).
+        "confidence_band": row.confidence_band,
+        "fired_signals": row.fired_signals,
+        "candidate_key": row.candidate_key,
         "prev_hash": row.prev_hash,
     }
 
@@ -298,6 +304,10 @@ class AuditLogRepository:
             # applies the opt-in-when-present rule: None → omitted from hash;
             # non-None UUID → included in hash (tamper-evident).
             actor_id=row_data.get("actor_id"),
+            # F-018 (ADR-0021 §7) — shadow_ai_candidate_detected variant columns.
+            confidence_band=row_data.get("confidence_band"),
+            fired_signals=row_data.get("fired_signals"),
+            candidate_key=row_data.get("candidate_key"),
             # chain fields
             prev_hash=prev_hash,
             row_hash=row_hash,
@@ -457,6 +467,34 @@ class AuditLogRepository:
             .where(EventsAuditLog.tenant_id == tenant_id)
             .where(EventsAuditLog.sequence_number > after_sequence)
             .order_by(EventsAuditLog.sequence_number.asc())
+            .limit(effective_limit)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_for_tenant_by_event_type(
+        self,
+        tenant_id: str,
+        event_type: str,
+        *,
+        limit: int = _LIST_DEFAULT_LIMIT,
+    ) -> list[EventsAuditLog]:
+        """Return a tenant's rows of one event_type, newest first (bounded).
+
+        F-018 (ADR-0021 §5/§6): the shadow-AI candidate analysis reads recent
+        `shadow_ai_detected_outbound` rows (and `shadow_ai_candidate_detected`
+        rows for dedup) on the TARGET tenant session. Pure read — RLS plus an
+        explicit WHERE tenant_id scope it to the caller (vector 10). Default
+        limit 100, hard max 1000, values <= 0 rejected.
+        """
+        if limit <= 0:
+            raise ValueError(f"limit must be > 0, got {limit}")
+        effective_limit = min(limit, _LIST_MAX_LIMIT)
+        stmt = (
+            select(EventsAuditLog)
+            .where(EventsAuditLog.tenant_id == tenant_id)
+            .where(EventsAuditLog.event_type == event_type)
+            .order_by(EventsAuditLog.sequence_number.desc())
             .limit(effective_limit)
         )
         result = await self._session.execute(stmt)

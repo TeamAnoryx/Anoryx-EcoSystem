@@ -147,3 +147,39 @@ export interface OperatorEvidenceResponse {
   totals: OperatorEvidenceTotals;
   disclaimer: string;
 }
+
+// --- F-018 shadow-AI candidate types --------------------------------------- //
+
+/**
+ * A single shadow-AI review candidate from
+ * `GET /tenants/{id}/shadow-ai/candidates`. Each row is a grouped detection
+ * — disallowed known-provider egress through Sentinel — enriched with a
+ * confidence band and the fired signals that produced it. Never a verdict.
+ * (ADR-0021 §8)
+ */
+export interface ShadowAiCandidate {
+  team_id: string;
+  project_id: string;
+  endpoint: string;
+  provider: string;
+  call_count: number;
+  first_seen: string;
+  last_seen: string;
+  /** "low" | "medium" | "high" — how confident the heuristic is. */
+  confidence_band: "low" | "medium" | "high";
+  /** The explainable signals that fired (e.g. ["disallowed_provider", "volume"]). */
+  fired_signals: string[];
+  /** Always "candidate" — the backend enforces this (R3: never "verdict"). */
+  label: "candidate";
+}
+
+/**
+ * Response envelope for `GET /tenants/{id}/shadow-ai/candidates`.
+ * `disclaimer` is the honesty boundary text from `HONESTY_DISCLAIMER` in the
+ * backend constants — it must be rendered verbatim and non-removably (ADR-0021
+ * §4 / R1).
+ */
+export interface ShadowAiCandidatesResponse {
+  candidates: ShadowAiCandidate[];
+  disclaimer: string;
+}

@@ -49,3 +49,9 @@ jobs:
         run: npm run check:token
       - name: Unit tests (vitest)
         run: npm test
+      # Render lane (jsdom): mounts the shadow-AI panel and asserts the honesty
+      # disclaimer renders in the live DOM (F-018, ADR-0021 §9 vector 1). Separate
+      # config (jsdom env) from the node unit lane — must be gated explicitly so the
+      # disclaimer-renders test cannot pass locally yet silently skip CI.
+      - name: Render tests (vitest jsdom — honesty disclaimer / vector 1)
+        run: npm run test:render
