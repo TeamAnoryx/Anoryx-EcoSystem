@@ -13,6 +13,7 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:render": "vitest run --config vitest.render.config.ts",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "check:token": "node scripts/check-token-absence.mjs"
@@ -25,12 +26,15 @@
   },
   "devDependencies": {
     "@playwright/test": "1.46.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/node": "20.14.10",
     "@types/react": "18.3.3",
     "@types/react-dom": "18.3.0",
     "autoprefixer": "10.4.20",
     "eslint": "8.57.0",
     "eslint-config-next": "^14.2.35",
+    "jsdom": "^29.1.1",
     "postcss": "8.4.41",
     "tailwindcss": "3.4.10",
     "typescript": "5.5.3",

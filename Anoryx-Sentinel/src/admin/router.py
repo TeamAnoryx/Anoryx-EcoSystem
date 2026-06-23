@@ -14,6 +14,7 @@ from admin.audit_log import audit_log_router
 from admin.auth import ADMIN_PRINCIPAL, require_admin
 from admin.control import control_router
 from admin.keys import keys_router
+from admin.shadow_ai import shadow_ai_router
 from admin.sso.breakglass_routes import breakglass_router
 from admin.sso.idp_routes import idp_router
 from admin.tenants import tenants_router
@@ -43,6 +44,7 @@ async def whoami(request: Request) -> dict[str, str]:
 admin_router.include_router(tenants_router)
 admin_router.include_router(keys_router)
 admin_router.include_router(audit_log_router)
+admin_router.include_router(shadow_ai_router)
 admin_router.include_router(control_router)
 admin_router.include_router(idp_router)
 admin_router.include_router(breakglass_router)

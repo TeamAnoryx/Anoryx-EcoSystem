@@ -25,6 +25,7 @@
     { "$ref": "#/$defs/ClassifierDegradedEvent" },
     { "$ref": "#/$defs/ClassifierInvocationFailedEvent" },
     { "$ref": "#/$defs/ShadowAiDetectedOutboundEvent" },
+    { "$ref": "#/$defs/ShadowAiCandidateDetectedEvent" },
     { "$ref": "#/$defs/RecursiveInjectionAttemptEvent" },
     { "$ref": "#/$defs/JudgeBillingEvent" },
     { "$ref": "#/$defs/RateLimitDegradedEvent" },
@@ -881,6 +882,87 @@
           "type": "string",
           "enum": ["logged"],
           "description": "Disposition: 'logged' (detect-and-audit only; the monitor does not block)."
+        }
+      }
+    },
+    "ShadowAiCandidateDetectedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-018 (ADR-0021) shadow-AI detection: a read-triggered classification + attribution layer over the F-007 egress seam. Groups the tenant's raw shadow_ai_detected_outbound rows by (team, agent, endpoint), applies bounded explainable heuristics (disallowed_provider/volume/frequency), and surfaces a deduped review CANDIDATE with a confidence band — NEVER a verdict. Detect-and-audit only: it does NOT block. Emitted by the shadow-AI detector, so agent_id is 'shadow-ai'; selected_provider is the disallowed provider the grouped egress targeted, never a credential. Attribution is the server-stamped identity (the four IDs), not a client claim. SCOPE: covers only disallowed known-provider egress flowing THROUGH Sentinel; it does not detect bypass traffic (CASB/DNS, out of scope) and does not yet observe Bedrock/aioboto3 egress (inherited F-007 gap).",
+      "required": [
+        "event_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "event_id",
+        "event_timestamp",
+        "request_id",
+        "detected_endpoint",
+        "traffic_volume",
+        "first_seen_at",
+        "selected_provider",
+        "confidence_band",
+        "fired_signals",
+        "candidate_key",
+        "action_taken"
+      ],
+      "properties": {
+        "event_type": { "const": "shadow_ai_candidate_detected" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "detected_endpoint": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^[^?#@\\s]+$",
+          "description": "PII-SAFETY: host (and optionally path) of the detected shadow AI endpoint ONLY. Emitters MUST NOT log full URLs: query strings and fragments may carry API keys, tokens, or PII. Strip query params, fragments, and userinfo before emission. Structurally enforced: the value MUST NOT contain '?', '#', '@', or whitespace, so query strings, fragments, and userinfo cannot ride along. Bounded to 256 chars to cap inspection cost."
+        },
+        "traffic_volume": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000,
+          "description": "Grouped request count for this candidate (the aggregate of the underlying shadow_ai_detected_outbound rows) over the analysis window."
+        },
+        "first_seen_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64,
+          "description": "Start of the analysis window for this candidate (RFC 3339 / ISO 8601 date-time, UTC)."
+        },
+        "selected_provider": {
+          "type": "string",
+          "enum": ["openai", "anthropic", "bedrock"],
+          "description": "The disallowed upstream provider the grouped egress targeted. Never a model name; never a credential."
+        },
+        "confidence_band": {
+          "type": "string",
+          "enum": ["low", "medium", "high"],
+          "description": "Banded, explainable confidence for this candidate: Low (only disallowed_provider fired), Medium (+volume or +frequency), High (volume AND frequency). A confidence band on a review CANDIDATE, never a verdict."
+        },
+        "fired_signals": {
+          "type": "array",
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["disallowed_provider", "volume", "frequency"]
+          },
+          "description": "Explainability: the exact list of heuristic signals that fired for this candidate, so a reviewer can see why it was surfaced. Bounded to the three defined signals."
+        },
+        "candidate_key": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Stable dedup digest over (tenant_id, team_id, project_id, detected_endpoint, selected_provider, window_bucket). The service skips emission when a candidate with this key already exists in the window (ADR-0021 §6)."
+        },
+        "action_taken": {
+          "type": "string",
+          "enum": ["logged"],
+          "description": "Disposition: 'logged' (detect-and-audit only; F-018 surfaces review candidates and does not block)."
         }
       }
     },

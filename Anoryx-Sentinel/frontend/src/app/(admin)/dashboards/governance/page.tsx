@@ -5,17 +5,21 @@ import { SelectTenantNotice } from "@/components/dashboards/empty-state";
 import { ShadowAiFeed } from "@/components/dashboards/shadow-ai-feed";
 import { ErrorBanner } from "@/components/ui/error-banner";
 import { adminApi } from "@/lib/admin-client";
-import { PROVIDERS, filterShadowAiEvents } from "@/lib/dashboards";
-import { fetchRecentAudit } from "@/lib/dashboards-server";
+import { PROVIDERS } from "@/lib/dashboards";
 import { toFriendlyError } from "@/lib/errors";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Governance dashboard (F-013). Scoped to ?tenant=. Shows the (partial) model
- * inventory — the static provider set + the tenant's configured classifier (full
- * inventory deferred, ADR-0016 2d) — reuses ConfigForm for classifier/audit/RPM
- * adjust, and renders the progressive shadow-AI detection feed.
+ * Governance dashboard (F-013 + F-018). Scoped to ?tenant=.
+ *
+ * Model inventory: the static provider set + the tenant's configured classifier
+ * (full inventory deferred, ADR-0016 2d).
+ *
+ * Shadow-AI panel (F-018): replaced the thin audit-event feed with a live
+ * polling island that calls `GET tenants/{id}/shadow-ai/candidates` through the
+ * existing BFF. The island owns its own polling and renders the backend-supplied
+ * honesty disclaimer non-removably (ADR-0021 §4 / R1).
  */
 export default async function GovernanceDashboardPage({
   searchParams,
@@ -29,11 +33,7 @@ export default async function GovernanceDashboardPage({
     body = <SelectTenantNotice />;
   } else {
     try {
-      const [config, recent] = await Promise.all([
-        adminApi.getConfig(tenant),
-        fetchRecentAudit(tenant, 200),
-      ]);
-      const shadow = [...filterShadowAiEvents(recent.events)].reverse();
+      const config = await adminApi.getConfig(tenant);
       body = (
         <div className="space-y-8">
           <section className="space-y-2" aria-label="Model inventory">
@@ -63,7 +63,13 @@ export default async function GovernanceDashboardPage({
             <ConfigForm tenantId={tenant} initial={config} />
           </section>
 
-          <ShadowAiFeed events={shadow} />
+          {/*
+            F-018: The ShadowAiFeed island manages its own polling via usePoll +
+            clientApi.get. key={tenant} ensures the island remounts on tenant
+            switch, clearing all prior-tenant state (ADR-0021 isolation / R3).
+            No audit events are pre-fetched here — the island owns the data path.
+          */}
+          <ShadowAiFeed key={tenant} tenantId={tenant} />
         </div>
       );
     } catch (e) {
