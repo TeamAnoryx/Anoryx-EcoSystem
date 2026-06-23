@@ -106,6 +106,15 @@ convention for Delta records — never a privilege or cross-tenant grant.
     caller whose response was inspected); `team_id` / `project_id` are the caller's REAL IDs.
     These events carry metadata only — NEVER the scanned code content and NEVER a scanner stack
     trace. See ADR-0019 §10.
+  - **`data-lock`** — the F-017 post-response data-lock detector principal (ADR-0020 §10).
+    It is the detector's `detector_slug` and is carried as `agent_id` on every data-lock event
+    (`field_locked`, `field_unlocked`, `lock_condition_denied`, `data_lock_error`). It names the
+    EMITTING subsystem — the detector that evaluates JSON data-lock rules over fields in an LLM
+    response (time / permission conditions, fail-closed on unevaluable rulesets). The `tenant_id`
+    on these events is ALWAYS the caller's real tenant — NEVER `WILDCARD_UUID` (a lock evaluation
+    is always attributed to the real caller whose response was inspected); `team_id` / `project_id`
+    are the caller's REAL IDs. These events carry metadata only — NEVER a locked field VALUE and
+    NEVER a response payload. See ADR-0020 §10.
 
 ## The `actor_id` attribution field (F-014 / ADR-0017 §10)
 

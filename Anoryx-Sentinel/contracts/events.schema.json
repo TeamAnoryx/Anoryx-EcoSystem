@@ -50,7 +50,11 @@
     { "$ref": "#/$defs/CodeScanPassedEvent" },
     { "$ref": "#/$defs/CodeScanWarnedEvent" },
     { "$ref": "#/$defs/CodeScanBlockedEvent" },
-    { "$ref": "#/$defs/CodeScanErrorEvent" }
+    { "$ref": "#/$defs/CodeScanErrorEvent" },
+    { "$ref": "#/$defs/FieldLockedEvent" },
+    { "$ref": "#/$defs/FieldUnlockedEvent" },
+    { "$ref": "#/$defs/LockConditionDeniedEvent" },
+    { "$ref": "#/$defs/DataLockErrorEvent" }
   ],
 
   "$comment": "Dispatch is normative via oneOf + the event_type const on each variant under JSON Schema Draft 2020-12. The 'discriminator' keyword below is a NON-NORMATIVE hint for OpenAPI tooling ONLY; it is not a 2020-12 keyword and has NO validation effect under this dialect. Do not rely on it for correctness.",
@@ -1555,6 +1559,82 @@
         "request_id": { "$ref": "#/$defs/request_id" },
         "scanner": { "type": "string", "maxLength": 64, "description": "Scanner identifier that errored (e.g. 'semgrep', 'bandit', 'aggregate'). Bounded; never a credential, never a path." },
         "error_class": { "type": "string", "maxLength": 128, "description": "Bounded classification of the failure (e.g. 'timeout', 'subprocess_crash', 'output_too_large', 'response_too_large', 'scanner_missing'). A coarse label ONLY — NEVER a stack trace, NEVER the offending code." }
+      }
+    },
+    "FieldLockedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-017 (ADR-0020 §10) when the post-response JSON data-lock detector evaluated a lock rule against a field in an LLM response and WITHHELD that field's value because its release condition was not yet met (e.g. a 'time' lock whose unlock_at is in the future). The field value is removed/blocked from the response; precise attribution lives in this audit event. agent_id is the reserved slug 'data-lock'; tenant_id is ALWAYS the caller's real tenant — NEVER WILDCARD_UUID; team_id/project_id are the caller's REAL IDs. HARD RULE: metadata only — this event carries the locked field PATH (pattern_name) and the condition KIND (violation_type), and NEVER the locked field VALUE and NEVER a response payload.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "pattern_name", "violation_type", "action_taken"],
+      "properties": {
+        "event_type": { "const": "field_locked" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "pattern_name": { "type": "string", "maxLength": 128, "description": "The locked field's dotted path (e.g. 'result.ssn', 'a.b[].c'). A field LOCATION only — NEVER the field value, NEVER any response content." },
+        "violation_type": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$", "maxLength": 128, "description": "The lock condition kind whose criterion was not met (e.g. 'time', 'permission'). Charset restricted to [A-Za-z0-9._-] to forbid control characters and whitespace (log-injection defense). NEVER the field value." },
+        "action_taken": { "type": "string", "enum": ["blocked"], "description": "Disposition: 'blocked' (the field value was withheld from the response)." }
+      }
+    },
+    "FieldUnlockedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-017 (ADR-0020 §10) when the post-response JSON data-lock detector evaluated a lock rule against a matched field and its release condition WAS met (e.g. a 'time' lock whose unlock_at has passed, or a 'permission' allow-list that matched the caller), so the field value was RELEASED unchanged. Audit-only: the response passes unchanged. agent_id is the reserved slug 'data-lock'; tenant_id is ALWAYS the caller's real tenant — NEVER WILDCARD_UUID; team_id/project_id are the caller's REAL IDs. HARD RULE: metadata only — this event carries the field PATH (pattern_name) and the condition KIND (violation_type), and NEVER the field VALUE and NEVER a response payload.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "pattern_name", "violation_type", "action_taken"],
+      "properties": {
+        "event_type": { "const": "field_unlocked" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "pattern_name": { "type": "string", "maxLength": 128, "description": "The matched field's dotted path (e.g. 'result.ssn', 'a.b[].c'). A field LOCATION only — NEVER the field value, NEVER any response content." },
+        "violation_type": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$", "maxLength": 128, "description": "The lock condition kind whose criterion was met and released the field (e.g. 'time', 'permission'). Charset restricted to [A-Za-z0-9._-] to forbid control characters and whitespace (log-injection defense). NEVER the field value." },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (the condition was met; the field value was released unchanged)." }
+      }
+    },
+    "LockConditionDeniedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-017 (ADR-0020 §10) when the post-response JSON data-lock detector evaluated a 'permission' lock rule and the allow-list did NOT match the caller's scope (team_id / project_id / agent_id), so the matched field's value was WITHHELD. Distinguishes a permission denial from a not-yet-time lock (field_locked). agent_id is the reserved slug 'data-lock'; tenant_id is ALWAYS the caller's real tenant — NEVER WILDCARD_UUID; team_id/project_id are the caller's REAL IDs. HARD RULE: metadata only — this event carries the field PATH (pattern_name) and the condition KIND (violation_type), and NEVER the field VALUE and NEVER the allow-list contents.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "pattern_name", "violation_type", "action_taken"],
+      "properties": {
+        "event_type": { "const": "lock_condition_denied" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "pattern_name": { "type": "string", "maxLength": 128, "description": "The matched field's dotted path (e.g. 'result.ssn', 'a.b[].c'). A field LOCATION only — NEVER the field value, NEVER any response content." },
+        "violation_type": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$", "maxLength": 128, "description": "The lock condition kind that denied release; on this variant it is 'permission' (the allow-list did not match the caller). Charset restricted to [A-Za-z0-9._-] to forbid control characters and whitespace (log-injection defense). NEVER the field value or the allow-list contents." },
+        "action_taken": { "type": "string", "enum": ["blocked"], "description": "Disposition: 'blocked' (the permission allow-list did not match; the field value was withheld)." }
+      }
+    },
+    "DataLockErrorEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-017 (ADR-0020 §10) when the post-response JSON data-lock detector could NOT evaluate the lock ruleset (e.g. a malformed/unevaluable rule config, a field-path traversal budget exhausted, or a streamed response whose bytes were already on the wire). FAIL-CLOSED (ADR-0020 §6): the whole response is BLOCKED rather than released with an unverifiable lock. agent_id is the reserved slug 'data-lock'; tenant_id is ALWAYS the caller's real tenant — NEVER WILDCARD_UUID; team_id/project_id are the caller's REAL IDs. HARD RULE: violation_type is a BOUNDED fail-closed-reason label ONLY — this event NEVER carries a field VALUE, a response payload, or a stack trace.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "violation_type", "action_taken"],
+      "properties": {
+        "event_type": { "const": "data_lock_error" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "pattern_name": { "type": "string", "maxLength": 128, "description": "OPTIONAL locked field's dotted path implicated in the failure, when one is resolvable (e.g. 'result.ssn'). A field LOCATION only — NEVER the field value. OMITTED when no single field is implicated (e.g. a whole-ruleset config error)." },
+        "violation_type": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$", "maxLength": 128, "description": "Bounded fail-closed reason (e.g. 'config_error', 'traversal_budget', 'streaming_not_supported'). A coarse label ONLY — NEVER a stack trace, NEVER a field value or response content. Charset restricted to [A-Za-z0-9._-] to forbid control characters and whitespace (log-injection defense)." },
+        "action_taken": { "type": "string", "enum": ["blocked"], "description": "Disposition: 'blocked' (fail-closed: the ruleset was unevaluable, so the whole response was blocked rather than released unverified)." }
       }
     }
   }

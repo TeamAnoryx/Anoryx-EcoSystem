@@ -9,7 +9,8 @@
     { "$ref": "#/$defs/BudgetLimitPolicy" },
     { "$ref": "#/$defs/ModelAllowlistPolicy" },
     { "$ref": "#/$defs/ModelDenylistPolicy" },
-    { "$ref": "#/$defs/CodeScanPolicy" }
+    { "$ref": "#/$defs/CodeScanPolicy" },
+    { "$ref": "#/$defs/DataLockPolicy" }
   ],
 
   "$comment": "Dispatch is normative via oneOf + the policy_type const on each variant under JSON Schema Draft 2020-12. The 'discriminator' keyword below is a NON-NORMATIVE hint for OpenAPI tooling ONLY; it is not a 2020-12 keyword and has NO validation effect under this dialect. Do not rely on it for correctness.",
@@ -278,6 +279,114 @@
               "description": "Action for a BLOCK verdict. \"reject\" enables a real block on non-streamed responses; \"audit\" downgrades even a BLOCK-threshold verdict to WARN + audit for tenants that want signal without rejection (ADR-0019 §9)."
             }
           }
+        }
+      }
+    },
+
+    "DataLockPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-tenant JSON data-lock posture (F-017, ADR-0020 §9). Enables the post-response data-lock detector within the signed scope. The detector evaluates each rule against a field in the LLM response identified by a dotted field_path; if the rule's release condition is not met the field VALUE is withheld (field_locked / lock_condition_denied), otherwise it is released unchanged (field_unlocked). Default-OFF, per-tenant opt-in: an absent data_lock policy means data-locking is disabled. The detector reads the stored policy_payload via the F-008 policy engine; this schema mirrors the payload shape that loader reads (enabled, rules[].field_path, rules[].condition). FAIL-CLOSED (ADR-0020 §6): if the ruleset is unevaluable the whole response is blocked (data_lock_error). V1 SUPPORTS ONLY the 'time' and 'permission' condition types; an approval-based condition is DEFERRED. This is high-coverage field-level gating of known JSON shapes and risk reduction, not a guarantee that an unlocked field is safe to release.",
+      "required": [
+        "policy_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "policy_id",
+        "policy_version",
+        "effective_from",
+        "signature",
+        "enabled",
+        "rules"
+      ],
+      "properties": {
+        "policy_type": { "const": "data_lock" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "policy_id": { "$ref": "#/$defs/policy_id" },
+        "policy_version": { "$ref": "#/$defs/policy_version" },
+        "effective_from": { "$ref": "#/$defs/effective_from" },
+        "signature": { "$ref": "#/$defs/signature" },
+        "enabled": {
+          "type": "boolean",
+          "description": "Master switch for data-locking within the signed scope. false (or an absent policy) disables the detector cheaply with no field traversal (default-OFF)."
+        },
+        "rules": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "One data-lock rule: a field path plus the release condition gating that field's value.",
+            "required": ["field_path", "condition"],
+            "properties": {
+              "field_path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "pattern": "^[A-Za-z0-9_-]+(\\[\\])?(\\.[A-Za-z0-9_-]+(\\[\\])?){0,15}$",
+                "description": "Dotted path to the locked field within the JSON response (e.g. 'result.ssn', 'a.b[].c' where '[]' matches each element of an array). DIALECT (bounded dotted-path, NOT JSONPath; mirrors src/data_lock/selector.py::parse_path): each '.'-separated segment is one or more chars of [A-Za-z0-9_-] optionally followed by '[]' (array wildcard); empty segments ('a..b'), leading/trailing dots, and other characters ('a.$x') are rejected. Bounded to <=16 segments by the pattern's {0,15} quantifier so a contract-valid path never exceeds the runtime MAX_PATH_SEGMENTS cap (R7) and is always processable (no fail-closed self-DoS for an over-long path). maxLength 256 is a backstop. The detector still traverses under a bounded traversal-node budget; on budget exhaustion it fails closed (data_lock_error / 'traversal_budget'). A field LOCATION only — never a field value."
+              },
+              "condition": {
+                "description": "Release condition gating the field value. V1 supports ONLY 'time' and 'permission' (approval-based conditions are deferred).",
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "Time lock: the field value is withheld until unlock_at, then released.",
+                    "required": ["type", "unlock_at"],
+                    "properties": {
+                      "type": { "const": "time" },
+                      "unlock_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "maxLength": 64,
+                        "description": "When the field unlocks (RFC 3339 / ISO 8601 date-time, UTC). Before this instant the field value is withheld (field_locked); at or after it the value is released (field_unlocked)."
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "Permission lock: the field value is released ONLY when the caller's scope matches the allow-list; otherwise it is withheld (lock_condition_denied). An allow array that is present and non-empty constrains that dimension; an omitted dimension is unconstrained.",
+                    "required": ["type", "allow"],
+                    "properties": {
+                      "type": { "const": "permission" },
+                      "allow": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "description": "Allow-list of caller scopes permitted to receive the field value. At least one dimension SHOULD be specified; an empty object permits no caller (ordering/emptiness semantics are enforced at runtime, not by this schema).",
+                        "properties": {
+                          "team_id": {
+                            "type": "array",
+                            "maxItems": 256,
+                            "items": { "type": "string", "format": "uuid", "maxLength": 64 },
+                            "description": "OPTIONAL allow-list of team_id values (UUID v4) permitted to receive the field value. Bounded to 256 entries to match the runtime cap (src/data_lock/conditions.py::_MAX_ALLOW_VALUES_PER_ATTR, R7); a contract-valid allow-list is always processable and never fail-closed-blocked for exceeding the runtime cap."
+                          },
+                          "project_id": {
+                            "type": "array",
+                            "maxItems": 256,
+                            "items": { "type": "string", "format": "uuid", "maxLength": 64 },
+                            "description": "OPTIONAL allow-list of project_id values (UUID v4) permitted to receive the field value. Bounded to 256 entries to match the runtime cap (src/data_lock/conditions.py::_MAX_ALLOW_VALUES_PER_ATTR, R7); a contract-valid allow-list is always processable and never fail-closed-blocked for exceeding the runtime cap."
+                          },
+                          "agent_id": {
+                            "type": "array",
+                            "maxItems": 256,
+                            "items": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$", "maxLength": 64 },
+                            "description": "OPTIONAL allow-list of agent_id slugs permitted to receive the field value. Bounded to 256 entries to match the runtime cap (src/data_lock/conditions.py::_MAX_ALLOW_VALUES_PER_ATTR, R7); a contract-valid allow-list is always processable and never fail-closed-blocked for exceeding the runtime cap."
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "description": "Data-lock rules evaluated against the response. Bounded to 100 entries to cap intake cost."
         }
       }
     }

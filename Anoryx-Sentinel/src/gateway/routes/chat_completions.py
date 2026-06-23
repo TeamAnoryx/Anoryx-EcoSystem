@@ -353,6 +353,20 @@ async def create_chat_completion(
         # reused here for the Step 8 router dispatch.
 
         if validated.stream:
+            # F-017 (ADR-0020 §5): data-lock stream pre-flight. A locked field
+            # cannot be withheld from bytes already on the wire, so an armed
+            # tenant's streamed request is fail-closed BLOCKED before the 200 is
+            # committed. No-op when data-lock is not configured or the tenant is
+            # not armed. On block → 403 policy_blocked (HookBlockedError); on a
+            # fail-closed config error → also blocked.
+            if hook_registry is not None and hook_context is not None and _HOOKS_AVAILABLE:
+                try:
+                    await hook_registry.run_data_lock_stream_preflight(hook_context)
+                except HookFailSafeError:
+                    raise GatewayError("internal_error") from None
+                except HookBlockedError:
+                    raise GatewayError("policy_blocked") from None
+
             # Streaming path (ADR-0006 Decision 7).
             # Note: stream_slot() now only DECREMENTS (MED-1 fix: check_rate_limit
             # already incremented the counter atomically at admission).
@@ -435,10 +449,18 @@ async def create_chat_completion(
                 # A secret was found iff the hook stored a deferred event.
                 secret_found = getattr(post_hook_context, "_deferred_event", None) is not None
 
-            # Determine the body to send to the client.
+            # Build the response body ONCE through a single pipeline so secret
+            # redaction (F-005) and F-017 data-lock withholding both apply and the
+            # HIGH-B deferred-secret emit happens only after the FINAL body is
+            # confirmed valid JSON.
+            #
+            #   completion → (secret redact on parsed structure) → serialize →
+            #   (data-lock field withhold) → emit deferred secret event → Response
+            #
+            # SEC-ENT: secret redaction runs on the PARSED dict (_redact_in_place)
+            # so structural JSON chars are never consumed by the replacement.
+            parsed_body = completion.model_dump()
             if secret_found and post_hook_context is not None:
-                # Masking occurred — redact on the PARSED structure so no
-                # structural JSON chars are consumed by the replacement.
                 _orch = get_orchestration_settings()
                 _min_len = _orch.min_token_length_for_entropy
                 _threshold = _orch.entropy_threshold
@@ -450,56 +472,38 @@ async def create_chat_completion(
                         entropy_threshold=_threshold,
                     )
 
-                parsed = completion.model_dump()
-                redacted_parsed = _redact_in_place(parsed, _redact_fn)
+                parsed_body = _redact_in_place(parsed_body, _redact_fn)
 
-                # json.dumps of a dict round-tripped through model_dump() is
-                # always valid JSON; we still guard against non-serializable
-                # objects (e.g. custom fields injected by a future hook) so the
-                # fail-safe path remains correct.
+            # Serialize once. Guard against a non-serializable structure (e.g. a
+            # field injected by a future hook): fail safe to 500 and do NOT emit
+            # the deferred secret_leaked event (HIGH-B fail-safe).
+            try:
+                body_str = json.dumps(parsed_body)
+            except (TypeError, ValueError):
+                raise GatewayError("internal_error") from None
+
+            # F-017 (ADR-0020 §4): data-lock field-level withholding on the
+            # complete non-streamed body. No-op when disabled / not installed /
+            # tenant not armed. action=mask → withheld body; action=block →
+            # fail-closed 403 (policy_blocked); unexpected error → 500. Runs AFTER
+            # secret redaction so both protections compose on the final body.
+            if hook_registry is not None and post_hook_context is not None and _HOOKS_AVAILABLE:
                 try:
-                    redacted_text = json.dumps(redacted_parsed)
-                except (TypeError, ValueError):
-                    # Non-serializable structure — fail safe to 500 and do NOT
-                    # emit the secret_leaked event (HIGH-B fail-safe).
+                    body_str = await hook_registry.run_data_lock(body_str, post_hook_context)
+                except HookFailSafeError:
                     raise GatewayError("internal_error") from None
+                except HookBlockedError:
+                    raise GatewayError("policy_blocked") from None
 
-                # Redacted body is valid JSON — emit deferred secret_leaked event.
+            # The body is final and valid JSON — emit the deferred secret_leaked
+            # event now (HIGH-B: only after a valid serializable body exists).
+            if secret_found and post_hook_context is not None:
                 deferred = getattr(post_hook_context, "_deferred_event", None)
                 if deferred is not None:
                     deferred_ev, deferred_slug = deferred
                     await post_hook_context.emit(deferred_ev, detector_slug=deferred_slug)
 
-                # Audit (success path) — must happen before returning.
-                await emit_terminal_record(
-                    request_id=request_id,
-                    tenant_context=tenant_context,
-                    model=model,
-                    tokens_in=tokens_in,
-                    tokens_out=tokens_out,
-                    start_time=start_time,
-                )
-                request.state.audit_emitted = True
-
-                # F-009: record metrics (pure addition, no semantic change — R2).
-                # Non-stream path has no StreamRouteResult; provider is 'none' until
-                # STEP 3b wires the resolved provider through the response context.
-                record_request("none", "2xx")
-                observe_request_duration(
-                    "/v1/chat/completions",
-                    "none",
-                    time.monotonic() - start_time,
-                )
-
-                headers = _success_headers(request_id, rl_limit, rl_remaining, rl_reset)
-                return Response(
-                    content=redacted_text,
-                    media_type="application/json",
-                    status_code=200,
-                    headers=headers,
-                )
-
-            # No masking — standard success path.
+            # Audit (success path) — must happen before returning.
             await emit_terminal_record(
                 request_id=request_id,
                 tenant_context=tenant_context,
@@ -522,8 +526,9 @@ async def create_chat_completion(
             )
 
             headers = _success_headers(request_id, rl_limit, rl_remaining, rl_reset)
-            return JSONResponse(
-                content=completion.model_dump(),
+            return Response(
+                content=body_str,
+                media_type="application/json",
                 status_code=200,
                 headers=headers,
             )
