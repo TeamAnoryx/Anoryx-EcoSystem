@@ -24,9 +24,15 @@ from sqlalchemy import DateTime, and_, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from persistence.models.events_audit_log import EventsAuditLog
+from persistence.repositories.model_inventory_repository import ModelInventoryRepository
 from persistence.repositories.policy_repository import PolicyRepository
 from policy.constants import WILDCARD_AGENT, WILDCARD_UUID
-from policy.variants import BudgetLimitPolicy, ModelAllowlistPolicy, ModelDenylistPolicy
+from policy.variants import (
+    BudgetLimitPolicy,
+    ModelAllowlistPolicy,
+    ModelApprovalPolicy,
+    ModelDenylistPolicy,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +66,7 @@ class ModelAllow:
 @dataclass(frozen=True, slots=True)
 class ModelDeny:
     policy_id: str
-    reason: str  # "model_denied" | "model_not_in_allowlist"
+    reason: str  # "model_denied" | "model_not_in_allowlist" | "model_not_approved"
 
 
 ModelDecision = ModelAllow | ModelDeny
@@ -84,7 +90,7 @@ BudgetDecision = BudgetOk | BudgetExceeded
 # Pure matching helpers
 # --------------------------------------------------------------------------- #
 def model_matches_scope(
-    view: ModelAllowlistPolicy | ModelDenylistPolicy, scope: RequestScope
+    view: ModelAllowlistPolicy | ModelDenylistPolicy | ModelApprovalPolicy, scope: RequestScope
 ) -> bool:
     """Wildcard-aware match for a MODEL policy (tenant exact; sub-ids exact-or-wildcard)."""
     return (
@@ -95,7 +101,9 @@ def model_matches_scope(
     )
 
 
-def model_specificity(view: ModelAllowlistPolicy | ModelDenylistPolicy) -> int:
+def model_specificity(
+    view: ModelAllowlistPolicy | ModelDenylistPolicy | ModelApprovalPolicy,
+) -> int:
     """Number of non-wildcard sub-tenant ids (0-3); higher = more specific."""
     return (
         int(view.team_id != WILDCARD_UUID)
@@ -207,14 +215,41 @@ async def budget_period_used(
     return int(row[0] or 0), float(row[1] or 0.0)
 
 
+def _select_approval_policy(
+    approval_views: list[ModelApprovalPolicy],
+) -> ModelApprovalPolicy | None:
+    """The most-specific active model_approval policy for the scope, or None.
+
+    When any active model_approval policy matches the request scope, that scope is in
+    F-019 default-deny mode (ADR-0022 §5.3). Highest specificity wins (tie-break
+    policy_version, then policy_id) — mirrors the allow-list selection so a narrower
+    approval policy overrides a broader one consistently.
+    """
+    if not approval_views:
+        return None
+    return max(
+        approval_views,
+        key=lambda v: (model_specificity(v), v.policy_version, v.policy_id),
+    )
+
+
 async def evaluate_model_policies(
     session: AsyncSession, scope: RequestScope, model_id: str, *, now: datetime | None = None
 ) -> ModelDecision:
-    """Read active model allow/deny policies for the scope and resolve a decision.
+    """Read active model allow/deny/approval policies for the scope and resolve a decision.
 
     Allow-lists past their optional effective_until expiry are excluded (contract);
     deny-lists never expire. effective_from is filtered in SQL; effective_until lives
     in the policy_payload, so it is filtered here on the parsed view.
+
+    F-019 (ADR-0022 §5.3) layers a DEFAULT-DENY gate on top of F-008: when a
+    model_approval policy is active for the scope, a model is allowed ONLY if its row
+    in the per-tenant model_inventory is in state 'approved'; pending / denied /
+    unknown -> DENY, and any inventory-load error -> DENY (fail-closed, R3). This runs
+    AFTER the F-008 resolution, so an explicit deny still wins and an allow-list is not
+    weakened — it ADDS a default-deny gate, never removes one. The resulting ModelDeny
+    (reason='model_not_approved') flows through the existing _policy_deny ->
+    policy_blocked 403 seam unchanged (no new gateway wiring).
     """
     now = now or datetime.now(UTC)
     repo = PolicyRepository(session)
@@ -230,7 +265,37 @@ async def evaluate_model_policies(
         for v in (ModelAllowlistPolicy(**json.loads(r.policy_payload)) for r in allow_rows)
         if model_matches_scope(v, scope) and allowlist_active(v, now)
     ]
-    return resolve_model_decision(allow_views, deny_views, model_id)
+    decision = resolve_model_decision(allow_views, deny_views, model_id)
+    if isinstance(decision, ModelDeny):
+        # An explicit F-008 deny (deny-list / not-in-allow-list) is absolute — the
+        # default-deny gate would only re-deny, so short-circuit.
+        return decision
+
+    # F-019 default-deny gate.
+    approval_rows = await repo.get_active_policies_for_scope(scope.tenant_id, "model_approval")
+    # NOTE: model_approval has NO effective_until — a default-deny switch is active
+    # whenever it matches the scope. Reusing allowlist_active here would be FAIL-OPEN
+    # (a malformed expiry would silently disable the gate). Match on scope only.
+    approval_views = [
+        v
+        for v in (ModelApprovalPolicy(**json.loads(r.policy_payload)) for r in approval_rows)
+        if model_matches_scope(v, scope)
+    ]
+    approval = _select_approval_policy(approval_views)
+    if approval is None:
+        # Not in approval mode -> the F-008 result stands (ModelAllow, opt-in).
+        return decision
+
+    try:
+        state = await ModelInventoryRepository(session).get_state(scope.tenant_id, model_id)
+    except Exception:
+        # Fail CLOSED (R3): an inventory-load / approval-check error DENIES the
+        # request rather than allowing an un-vetted model on error.
+        return ModelDeny(policy_id=approval.policy_id, reason="model_not_approved")
+    if state != "approved":
+        # pending / denied / unknown -> default-deny.
+        return ModelDeny(policy_id=approval.policy_id, reason="model_not_approved")
+    return ModelAllow(policy_id=approval.policy_id)
 
 
 async def load_active_budgets(

@@ -20,10 +20,12 @@ from typing import Any
 from policy.variants.allowlist import ModelAllowlistPolicy
 from policy.variants.budget import BudgetLimitPolicy
 from policy.variants.denylist import ModelDenylistPolicy
+from policy.variants.model_approval import ModelApprovalPolicy
 
 __all__ = [
     "BudgetLimitPolicy",
     "ModelAllowlistPolicy",
+    "ModelApprovalPolicy",
     "ModelDenylistPolicy",
     "parse_variant",
 ]
@@ -32,12 +34,13 @@ _VIEW_BY_TYPE = {
     "budget_limit": BudgetLimitPolicy,
     "model_allowlist": ModelAllowlistPolicy,
     "model_denylist": ModelDenylistPolicy,
+    "model_approval": ModelApprovalPolicy,
 }
 
 
 def parse_variant(
     payload: dict[str, Any],
-) -> BudgetLimitPolicy | ModelAllowlistPolicy | ModelDenylistPolicy:
+) -> BudgetLimitPolicy | ModelAllowlistPolicy | ModelDenylistPolicy | ModelApprovalPolicy:
     """Build the typed view for a validated policy payload (dispatched on policy_type)."""
     policy_type = payload.get("policy_type")
     view = _VIEW_BY_TYPE.get(policy_type)

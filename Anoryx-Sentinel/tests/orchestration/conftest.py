@@ -11,12 +11,43 @@ from __future__ import annotations
 
 import uuid
 from contextlib import asynccontextmanager
+from typing import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import pytest_asyncio
 
 from gateway.context import TenantContext
 from orchestration.config import _reset_orchestration_settings
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _reset_db_engine_caches() -> AsyncIterator[None]:
+    """Dispose + null persistence.database engine singletons before AND after each
+    test, so a fake-host APP_DATABASE_URL engine built here (these tests monkeypatch
+    it) never leaks into a later package's real connect, and a leaked engine from a
+    prior test is never reused here (f-019)."""
+
+    async def _dispose() -> None:
+        import persistence.database as _db
+
+        for _engine_attr, _factory_attr in (
+            ("_app_engine", "_app_session_factory"),
+            ("_privileged_engine", "_privileged_session_factory"),
+        ):
+            _engine = getattr(_db, _engine_attr, None)
+            if _engine is not None:
+                try:
+                    await _engine.dispose()
+                except Exception:
+                    pass
+            setattr(_db, _engine_attr, None)
+            setattr(_db, _factory_attr, None)
+
+    await _dispose()
+    yield
+    await _dispose()
+
 
 # ---------------------------------------------------------------------------
 # Synthetic test IDs (no real PII — purely synthetic UUIDs).

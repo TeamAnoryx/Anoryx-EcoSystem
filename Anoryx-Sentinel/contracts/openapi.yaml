@@ -1034,6 +1034,118 @@ paths:
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /admin/tenants/{tenant_id}/models:
+    get:
+      tags: [admin]
+      operationId: adminListTenantModels
+      summary: List a tenant's model inventory + approval state (admin/operator)
+      description: |
+        Returns a page of the TARGET tenant's model inventory and per-model
+        approval state (F-019, ADR-0022) via the existing read path. READ ONLY —
+        no model is created, approved, or denied here. Read inside the target
+        tenant's RLS session. Emits `admin_audit_accessed` (cross-tenant read).
+        Inventory metadata only; never model weights, secrets, or PII.
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+        - $ref: "#/components/parameters/AdminModelLimit"
+        - $ref: "#/components/parameters/AdminModelOffset"
+      responses:
+        "200":
+          description: A page of the tenant's model inventory (metadata only).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminModelInventoryList"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/tenants/{tenant_id}/models/approve:
+    post:
+      tags: [admin]
+      operationId: adminApproveTenantModel
+      summary: Approve a tenant's model (admin/operator)
+      description: |
+        Transitions the named model to the `approved` state for the TARGET tenant
+        (F-019, ADR-0022). The transition is validated against the inventory's
+        allowed state-machine edges; an illegal edge or a model already in the
+        requested state is rejected with 409 (`invalid_model_transition`). Runs
+        inside the target tenant's RLS session. Emits an `admin_*` audit event
+        attributing the decision to the `admin-console` principal and the target
+        tenant. The target tenant is the PATH parameter — there is NO `tenant_id`
+        field in the body. Inventory metadata only; never weights, secrets, or PII.
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminModelDecisionRequest"
+      responses:
+        "200":
+          description: The model inventory item after the approve transition.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminModelInventoryItem"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/ModelTransitionConflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/tenants/{tenant_id}/models/deny:
+    post:
+      tags: [admin]
+      operationId: adminDenyTenantModel
+      summary: Deny a tenant's model (admin/operator)
+      description: |
+        Transitions the named model to the `denied` state for the TARGET tenant
+        (F-019, ADR-0022). The transition is validated against the inventory's
+        allowed state-machine edges; an illegal edge or a model already in the
+        requested state is rejected with 409 (`invalid_model_transition`). Runs
+        inside the target tenant's RLS session. Emits an `admin_*` audit event
+        attributing the decision to the `admin-console` principal and the target
+        tenant. The target tenant is the PATH parameter — there is NO `tenant_id`
+        field in the body. Inventory metadata only; never weights, secrets, or PII.
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminModelDecisionRequest"
+      responses:
+        "200":
+          description: The model inventory item after the deny transition.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminModelInventoryItem"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/ModelTransitionConflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /admin/tenants/{tenant_id}/compliance/evidence:
     post:
       tags: [admin]
@@ -1895,6 +2007,33 @@ components:
         default: 100
       example: 100
 
+    AdminModelLimit:
+      name: limit
+      in: query
+      required: false
+      description: |
+        Maximum number of model-inventory items to return in this page (F-019,
+        ADR-0022). Bounded to cap scan/response cost (fail-safe sizing).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 200
+      example: 200
+
+    AdminModelOffset:
+      name: offset
+      in: query
+      required: false
+      description: |
+        Zero-based offset into the tenant's model inventory for this page (F-019,
+        ADR-0022).
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+      example: 0
+
   headers:
     XRateLimitLimit:
       description: |
@@ -2077,6 +2216,22 @@ components:
             error_code: internal_error
             message: "An internal error occurred. The request was not processed."
             request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    ModelTransitionConflict:
+      description: |
+        The requested model-approval transition is not allowed (F-019, ADR-0022).
+        Returned when the model is already in the requested state, or the requested
+        edge is illegal under the inventory's approval state machine. The decision
+        is rejected and no state change is persisted. The body never echoes request
+        content or PII; correlate via request_id.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: invalid_model_transition
+            message: "The requested model-approval transition is not allowed."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
     SsoUnavailable:
       description: |
         Uniform SSO-unavailable response for an SSO login/initiate route (F-014,
@@ -2179,6 +2334,7 @@ components:
             - rate_limit_exceeded
             - not_found
             - internal_error
+            - invalid_model_transition
         message:
           type: string
           description: |
@@ -2196,6 +2352,7 @@ components:
             - "Rate limit exceeded. Retry after the window resets."
             - "The requested resource was not found."
             - "An internal error occurred. The request was not processed."
+            - "The requested model-approval transition is not allowed."
         request_id:
           type: string
           description: Correlation id; matches the X-Request-Id response header.
@@ -3090,6 +3247,109 @@ components:
           type: integer
           minimum: 0
           description: Number of policy records returned (length of `policies`).
+
+    AdminModelInventoryItem:
+      type: object
+      description: |
+        One model-inventory record for the target tenant (F-019, ADR-0022): the
+        model and its current per-tenant approval state. Returned as a list item by
+        GET /admin/tenants/{tenant_id}/models and as the single body of the
+        approve/deny decision routes. Metadata only — never model weights, secrets,
+        or PII. `approved_by` / `approved_at` are null until a decision is recorded;
+        the timestamp fields are null when unset.
+      required:
+        - model_id
+        - model_type
+        - state
+        - approved_by
+        - approved_at
+        - created_at
+        - updated_at
+      additionalProperties: false
+      properties:
+        model_id:
+          type: string
+          maxLength: 256
+          description: Identifier of the model in the tenant's inventory.
+        model_type:
+          type: string
+          enum: [base, fine_tune]
+          description: Whether the model is a base model or a tenant fine-tune.
+        state:
+          type: string
+          enum: [pending, approved, denied]
+          description: Current per-tenant approval state of the model.
+        approved_by:
+          type: [string, "null"]
+          maxLength: 64
+          description: |
+            The operator principal that recorded the most recent decision, or null
+            when no decision has been recorded.
+        approved_at:
+          type: [string, "null"]
+          format: date-time
+          maxLength: 64
+          description: |
+            When the most recent decision was recorded (RFC 3339 / ISO 8601, UTC),
+            or null when no decision has been recorded.
+        created_at:
+          type: [string, "null"]
+          format: date-time
+          maxLength: 64
+          description: |
+            When this inventory record was created (RFC 3339 / ISO 8601, UTC), or
+            null when unset.
+        updated_at:
+          type: [string, "null"]
+          format: date-time
+          maxLength: 64
+          description: |
+            When this inventory record was last updated (RFC 3339 / ISO 8601, UTC),
+            or null when unset.
+
+    AdminModelInventoryList:
+      type: object
+      description: |
+        A page of model-inventory records for a tenant (F-019, ADR-0022), returned
+        by GET /admin/tenants/{tenant_id}/models. FLAT shape (NOT an {object, data}
+        envelope). Read-only metadata; no model weights, secrets, or PII.
+      required: [tenant_id, models, count]
+      additionalProperties: false
+      properties:
+        tenant_id:
+          type: string
+          maxLength: 64
+          description: The target tenant the inventory belongs to (echoes the path parameter).
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/AdminModelInventoryItem" }
+        count:
+          type: integer
+          minimum: 0
+          description: Number of inventory items returned in this page (length of `models`).
+
+    AdminModelDecisionRequest:
+      type: object
+      description: |
+        Request body for POST /admin/tenants/{tenant_id}/models/approve and
+        .../deny (F-019, ADR-0022). Closed schema (additionalProperties: false):
+        only the fields below are accepted; unknown keys are rejected with 400. The
+        target tenant is the PATH parameter — there is NO `tenant_id` field here.
+        An illegal transition (already in the requested state, or an illegal edge)
+        is rejected with 409 (`invalid_model_transition`).
+      required: [model_id]
+      additionalProperties: false
+      properties:
+        model_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: Identifier of the model to approve or deny within the tenant's inventory.
+        model_type:
+          type: string
+          enum: [base, fine_tune]
+          default: base
+          description: Whether the addressed model is a base model or a tenant fine-tune.
 
     AdminShadowAiCandidateList:
       type: object

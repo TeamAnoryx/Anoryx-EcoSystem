@@ -31,6 +31,8 @@ from persistence.repositories.audit_log_repository import AuditLogRepository
 from policy.constants import WILDCARD_UUID
 
 # Admin event types (must match VALID_EVENT_TYPES + ck_eal_event_type, migration 0013).
+# F-019 (ADR-0022 §5.4) adds three operator-action variants carrying a model_id in
+# the `model` field — see migration 0027 + events_audit_log.VALID_EVENT_TYPES.
 ADMIN_EVENT_TYPES = frozenset(
     {
         "admin_tenant_created",
@@ -39,6 +41,9 @@ ADMIN_EVENT_TYPES = frozenset(
         "admin_key_revoked",
         "admin_config_updated",
         "admin_audit_accessed",
+        "model_approved",
+        "model_denied",
+        "model_adopted",
     }
 )
 
@@ -57,6 +62,7 @@ async def emit_admin_event(
     team_id: str = WILDCARD_UUID,
     project_id: str = WILDCARD_UUID,
     actor_id: str | None = None,
+    model: str | None = None,
 ) -> None:
     """Append an admin-attributed audit event on the caller's privileged session.
 
@@ -98,4 +104,9 @@ async def emit_admin_event(
     # F-014 rows. The value is the opaque admin_users.id — never PII, never secret.
     if actor_id is not None:
         event_data["actor_id"] = actor_id
+    # F-019 (ADR-0022 §5.4): the model identifier for model_approved/denied/adopted
+    # rides in the existing `model` column (no new audit column). Added only when
+    # provided so non-model admin events keep their exact prior canonical form.
+    if model is not None:
+        event_data["model"] = model
     await AuditLogRepository(session).append(event_data)

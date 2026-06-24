@@ -1,12 +1,14 @@
-"""DB readiness for the data_lock test package (F-017).
+"""DB readiness for the model_approval test package (F-019).
 
-Self-provisioning, mirroring tests/code_scan/conftest.py and tests/bulk/conftest.py:
-this package provisions the schema (alembic upgrade head) + the sentinel_app
-password before its DB-gated tests run, so it works on a fresh CI DB and when run
-in isolation (memory: a new DB-test package needs its own DB-gated provisioning).
+Self-provisioning, mirroring tests/data_lock/conftest.py and tests/code_scan/
+conftest.py: this package provisions the schema (alembic upgrade head) + the
+sentinel_app password before its DB-gated tests run, so it works on a fresh CI DB
+and when run in isolation (memory: a new DB-test package needs its own DB-gated
+provisioning, AND its own per-function engine-cache reset or asyncio_mode=auto
+yields 'Event loop is closed' / InvalidPassword across packages).
 
 DB-GATED: a no-op when DATABASE_URL/APP_DATABASE_URL are absent or Postgres is
-unreachable, so the pure-unit data_lock tests run without a database.
+unreachable, so the pure-unit model_approval tests run without a database.
 
 Requires (same as all real-DB tests):
   - DATABASE_URL (superuser) + APP_DATABASE_URL (sentinel_app) in root .env
@@ -46,7 +48,7 @@ async def _reset_db_engine_caches() -> AsyncIterator[None]:
     privileged engines are bound to the loop of first use, so a later test in a
     fresh loop would hit 'Event loop is closed' on the stale pool. Resetting the
     caches per test makes each test create engines in its own loop (mirrors
-    tests/code_scan/conftest.py + bulk/compliance/admin).
+    tests/data_lock/conftest.py + code_scan/bulk/compliance/admin).
     """
 
     async def _dispose() -> None:
@@ -76,7 +78,7 @@ async def _reset_db_engine_caches() -> AsyncIterator[None]:
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
-async def _ensure_data_lock_db_ready() -> AsyncIterator[None]:
+async def _ensure_model_approval_db_ready() -> AsyncIterator[None]:
     """Session-autouse: provision schema + sentinel_app before DB tests run."""
     db_url_raw = os.environ.get("DATABASE_URL", "")
     app_url_raw = os.environ.get("APP_DATABASE_URL", "")
@@ -120,7 +122,9 @@ async def _ensure_data_lock_db_ready() -> AsyncIterator[None]:
         timeout=60,
     )
     if result.returncode != 0:
-        pytest.fail(f"_ensure_data_lock_db_ready: alembic upgrade head failed:\n{result.stderr}")
+        pytest.fail(
+            f"_ensure_model_approval_db_ready: alembic upgrade head failed:\n{result.stderr}"
+        )
 
     # 2) Provision sentinel_app password (SCRAM verifier — plaintext never in SQL).
     app_pw_m = re.match(r"postgresql(?:\+asyncpg)?://[^:]+:([^@]+)@", app_url_raw)

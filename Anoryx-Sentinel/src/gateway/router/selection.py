@@ -187,9 +187,12 @@ async def _enforce_policies_pre_request(tenant_context: TenantContext, body):
 
     scope = scope_from_context(tenant_context)
     async with get_tenant_session(tenant_context.tenant_id) as session:
-        async with session.begin():
-            model_decision = await evaluate_model_policies(session, scope, body.model)
-            budgets = await load_active_budgets(session, scope)
+        # get_tenant_session autobegins (its set_config opens the tx). These are
+        # READS, so no nested begin() — a nested session.begin() here raises
+        # "transaction already begun" and the request fails closed with 500
+        # (F-019 vector-12 caught this latent F-008 double-begin; ADR-0022 §9 note).
+        model_decision = await evaluate_model_policies(session, scope, body.model)
+        budgets = await load_active_budgets(session, scope)
     # Scale the cost estimate by n too (conservative — slightly over-counts shared
     # input cost, but the budget gate must not under-count n>1 parallel completions).
     est_cost = estimate_pre_request(body, _guess_provider(body.model), body.model) * max(
@@ -219,12 +222,13 @@ async def _resolve_policy(tenant_context: TenantContext):
     )
 
     async with get_tenant_session(tenant_context.tenant_id) as session:
-        async with session.begin():
-            repo = TenantRoutingPolicyRepository(session)
-            return await repo.get_for_tenant(
-                tenant_context.tenant_id,
-                caller_tenant_id=tenant_context.tenant_id,
-            )
+        # get_tenant_session autobegins; this is a READ, so no nested begin()
+        # (same latent double-begin fix as _enforce_policies_pre_request above).
+        repo = TenantRoutingPolicyRepository(session)
+        return await repo.get_for_tenant(
+            tenant_context.tenant_id,
+            caller_tenant_id=tenant_context.tenant_id,
+        )
 
 
 def _effective_chain(
