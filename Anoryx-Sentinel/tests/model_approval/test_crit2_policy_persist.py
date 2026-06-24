@@ -27,16 +27,19 @@ Postgres is unreachable. SENTINEL_PROVISION_APP_ROLE=1 required (all real-DB tes
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
 import re
+import socket
 import uuid
 from datetime import datetime, timezone
 
 import asyncpg
 import pytest
 import pytest_asyncio
+import sqlalchemy.exc
 from dotenv import load_dotenv
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -93,6 +96,45 @@ def _model_approval_payload(*, policy_id, tenant_id, team_id, project_id, agent_
         "policy_version": 1,
         "enforcement_mode": "default_deny",
     }
+
+
+# Transient connection-establishment faults only. The CI runner has intermittently
+# failed THIS test (and only this one) at get_tenant_session's connect with
+# `socket.gaierror: [Errno -3] Temporary failure in name resolution` — a DNS/FD
+# hiccup under load, not a logic fault (every other real-DB F-019 test on the same
+# get_tenant_session passes the same run). These four classes are all connect/transport
+# failures; none overlaps a CRIT-2 regression, which surfaces as an empty load
+# (AssertionError) or a CHECK violation (IntegrityError) — neither is retried.
+_TRANSIENT_CONNECT_ERRORS = (
+    socket.gaierror,  # name-resolution hiccup (the observed CI flake)
+    ConnectionError,  # refused / reset / aborted while connecting
+    sqlalchemy.exc.InterfaceError,  # DBAPI-level "cannot connect" wrapper
+    sqlalchemy.exc.OperationalError,  # server closed / connection lost
+)
+
+
+async def _load_back_with_retry(tenant_id: str, *, attempts: int = 3, base_delay: float = 0.25):
+    """Load the model_approval policy back via the RLS session, retrying ONLY a
+    transient connection-establishment failure with a short exponential backoff.
+
+    Retries are scoped to _TRANSIENT_CONNECT_ERRORS so a real CRIT-2 regression
+    (missing row, constraint violation, parse failure) still fails deterministically
+    on the first attempt — this hardens the harness, never the result. Mirrors no
+    production retry: get_tenant_session itself is left untouched.
+    """
+    from persistence.database import get_tenant_session
+    from persistence.repositories.policy_repository import PolicyRepository
+
+    for attempt in range(attempts):
+        try:
+            async with get_tenant_session(tenant_id) as session:
+                return await PolicyRepository(session).get_active_policies_for_scope(
+                    tenant_id, "model_approval"
+                )
+        except _TRANSIENT_CONNECT_ERRORS:
+            if attempt == attempts - 1:
+                raise
+            await asyncio.sleep(base_delay * (2**attempt))
 
 
 @pytest_asyncio.fixture()
@@ -155,7 +197,6 @@ async def seeded_tenant():
 
 async def test_model_approval_policy_persists_and_loads(seeded_tenant) -> None:
     """Vector 9: real upsert('model_approval') → real RLS load → default-deny view."""
-    from persistence.database import get_tenant_session
     from persistence.repositories.policy_repository import PolicyRepository
     from policy.variants import ModelApprovalPolicy, parse_variant
     from policy.variants.model_approval import ModelApprovalPolicy as DirectView
@@ -199,11 +240,11 @@ async def test_model_approval_policy_persists_and_loads(seeded_tenant) -> None:
     assert version.policy_type == "model_approval"
     await engine.dispose()
 
-    # Load back through the REAL RLS-scoped session (production load path).
-    async with get_tenant_session(tenant_id) as session:
-        rows = await PolicyRepository(session).get_active_policies_for_scope(
-            tenant_id, "model_approval"
-        )
+    # Load back through the REAL RLS-scoped session (production load path). The
+    # connect step is wrapped in a transient-only retry (see _load_back_with_retry):
+    # a CI name-resolution hiccup must not mask the storability guarantee, but a
+    # genuinely missing row is NOT retried — it still fails the assertion below.
+    rows = await _load_back_with_retry(tenant_id)
     assert len(rows) == 1, "model_approval policy did not load back — feature would be inert"
     loaded = json.loads(rows[0].policy_payload)
 
