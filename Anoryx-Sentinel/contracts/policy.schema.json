@@ -8,6 +8,7 @@
   "oneOf": [
     { "$ref": "#/$defs/BudgetLimitPolicy" },
     { "$ref": "#/$defs/ModelAllowlistPolicy" },
+    { "$ref": "#/$defs/ModelApprovalPolicy" },
     { "$ref": "#/$defs/ModelDenylistPolicy" },
     { "$ref": "#/$defs/CodeScanPolicy" },
     { "$ref": "#/$defs/DataLockPolicy" }
@@ -164,6 +165,39 @@
           "format": "date-time",
           "maxLength": 64,
           "description": "OPTIONAL expiry of the allow-list (RFC 3339 / ISO 8601 date-time, UTC). Omit for no expiry."
+        }
+      }
+    },
+
+    "ModelApprovalPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-tenant default-deny SWITCH for model usage (F-019, ADR-0022). The PRESENCE of a model_approval policy within the signed scope flips that scope to deny-unless-approved: any model not explicitly approved in the separate model-approval inventory is denied at request routing in contracts/openapi.yaml. By design this is a MINIMAL payload: it carries NO per-model list (unlike ModelAllowlistPolicy's allowed_model_ids) because approval state lives in a separate inventory, NOT in the policy record; the policy is only the switch. enforcement_mode is the explicit default-deny marker (const 'default_deny'). This switch is NOT time-bound: it has no expiry field by design, because a malformed/expired expiry on a default-deny switch would be a fail-OPEN path that silently disables enforcement (see ADR-0022 / F-019 code-review). The scope returns to its prior posture only by explicit removal of this signed policy record, never by clock. This is risk reduction via default-deny gating, not a guarantee that every approved model is safe.",
+      "required": [
+        "policy_type",
+        "tenant_id",
+        "team_id",
+        "project_id",
+        "agent_id",
+        "policy_id",
+        "policy_version",
+        "effective_from",
+        "signature",
+        "enforcement_mode"
+      ],
+      "properties": {
+        "policy_type": { "const": "model_approval" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "policy_id": { "$ref": "#/$defs/policy_id" },
+        "policy_version": { "$ref": "#/$defs/policy_version" },
+        "effective_from": { "$ref": "#/$defs/effective_from" },
+        "signature": { "$ref": "#/$defs/signature" },
+        "enforcement_mode": {
+          "const": "default_deny",
+          "description": "Explicit default-deny marker. const 'default_deny': the presence of this policy flips the signed scope to deny-unless-approved. The value is fixed (only 'default_deny' is valid in v1) so the switch is unambiguous and a record cannot silently carry a non-deny mode."
         }
       }
     },

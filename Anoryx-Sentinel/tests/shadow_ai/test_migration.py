@@ -60,13 +60,18 @@ async def test_migration_reversible():
     if not _db_available():
         pytest.skip("DATABASE_URL not set — skipping migration reversibility test")
 
-    # Step 1: ensure at head
+    # Step 1: bring the DB to 0024. 0024 is no longer the head (F-019 added
+    # 0025-0027), and `alembic upgrade <rev>` only moves FORWARD — so go to head
+    # first, then DOWNGRADE to 0024. Keeps this F-018 0024<->0023 reversibility test
+    # correct regardless of later migrations.
     result = _run_alembic("upgrade", "head")
     assert result.returncode == 0, f"upgrade head failed:\n{result.stderr}"
+    result = _run_alembic("downgrade", "0024")
+    assert result.returncode == 0, f"downgrade to 0024 failed:\n{result.stderr}"
 
     current = _run_alembic("current")
     combined = current.stdout + current.stderr
-    assert "0024" in combined, f"Expected head at 0024 before downgrade, got: {combined[:300]}"
+    assert "0024" in combined, f"Expected revision 0024 before downgrade, got: {combined[:300]}"
 
     # Step 2: downgrade -1 (0024 -> 0023)
     result_down = _run_alembic("downgrade", "-1")
@@ -78,15 +83,16 @@ async def test_migration_reversible():
         "0023" in combined_after_down
     ), f"Expected head at 0023 after downgrade -1, got: {combined_after_down[:300]}"
 
-    # Step 3: upgrade back to head (0023 -> 0024)
+    # Step 3: upgrade back to the real head (0027) so the DB is left complete for
+    # subsequent tests.
     result_up = _run_alembic("upgrade", "head")
     assert result_up.returncode == 0, f"upgrade head after downgrade -1 failed:\n{result_up.stderr}"
 
     current_after_up = _run_alembic("current")
     combined_after_up = current_after_up.stdout + current_after_up.stderr
     assert (
-        "0024" in combined_after_up
-    ), f"Expected head at 0024 after re-upgrade, got: {combined_after_up[:300]}"
+        "0027" in combined_after_up
+    ), f"Expected head at 0027 after re-upgrade, got: {combined_after_up[:300]}"
 
 
 def test_migration_0024_is_documented_reversible():

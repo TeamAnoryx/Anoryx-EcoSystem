@@ -45,11 +45,11 @@ def _run_alembic(*args: str) -> subprocess.CompletedProcess:
 
 
 @pytest.mark.integration
-def test_current_head_is_0024() -> None:
-    """Alembic current should report head at revision 0024 (F-018 shadow_ai_candidate_detected)."""
+def test_current_head_is_0027() -> None:
+    """Alembic current should report head at revision 0027 (F-019 model_approval event variants)."""
     result = _run_alembic("current")
     assert result.returncode == 0, f"alembic current failed:\n{result.stderr}"
-    assert "0024" in result.stdout or "0024" in result.stderr
+    assert "0027" in result.stdout or "0027" in result.stderr
 
 
 @pytest.mark.integration
@@ -63,7 +63,7 @@ def test_migration_downgrade_and_reapply() -> None:
     assert result_up.returncode == 0, f"upgrade head after downgrade failed:\n{result_up.stderr}"
     # Confirm head is back.
     result_current = _run_alembic("current")
-    assert "0024" in result_current.stdout or "0024" in result_current.stderr
+    assert "0027" in result_current.stdout or "0027" in result_current.stderr
 
 
 @pytest.mark.integration
@@ -72,7 +72,7 @@ def test_incremental_downgrade() -> None:
 
     Always re-applies to head at the end to leave the DB in a valid state.
     """
-    num_revisions = 24  # 0001 through 0024
+    num_revisions = 27  # 0001 through 0027
 
     try:
         for _step in range(num_revisions):

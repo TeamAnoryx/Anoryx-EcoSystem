@@ -100,6 +100,12 @@ VALID_EVENT_TYPES = frozenset(
         "data_lock_error",
         # F-018 (ADR-0021 §7) — shadow-AI candidate detection variant.
         "shadow_ai_candidate_detected",
+        # F-019 (ADR-0022 §5.4) — model-approval operator action variants.
+        # (Runtime use-denials are audited via the existing policy_decision_deny
+        # with reason='model_not_approved' — no separate runtime event, no double-log.)
+        "model_approved",
+        "model_denied",
+        "model_adopted",
     }
 )
 
@@ -190,6 +196,13 @@ ACTION_TAKEN_BY_EVENT_TYPE: dict[str, frozenset[str]] = {
     # only (action_taken="logged", detection-only; no blocking at this stage).
     # ck_eal_action_taken is UNCHANGED — 'logged' already present.
     "shadow_ai_candidate_detected": frozenset({"logged"}),
+    # F-019 (ADR-0022 §5.4) — model-approval operator actions. All three are
+    # operator administrative decisions (state transitions), not runtime request
+    # blocks, so they use action_taken='logged'. ck_eal_action_taken is UNCHANGED.
+    # The model_id rides in the existing `model` column (no new audit column).
+    "model_approved": frozenset({"logged"}),
+    "model_denied": frozenset({"logged"}),
+    "model_adopted": frozenset({"logged"}),
 }
 
 
@@ -346,7 +359,9 @@ class EventsAuditLog(Base):
             # F-017 (ADR-0020 §9) — kept in sync with migration 0023.
             "'field_locked','field_unlocked','lock_condition_denied','data_lock_error',"
             # F-018 (ADR-0021 §7) — kept in sync with migration 0024.
-            "'shadow_ai_candidate_detected')",
+            "'shadow_ai_candidate_detected',"
+            # F-019 (ADR-0022 §5.4) — kept in sync with migration 0027.
+            "'model_approved','model_denied','model_adopted')",
             name="ck_eal_event_type",
         ),
         CheckConstraint(

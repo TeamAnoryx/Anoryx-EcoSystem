@@ -50,6 +50,7 @@ class Policy(Base):
 
     # policy_type discriminator:
     # "budget_limit" | "model_allowlist" | "model_denylist" | "code_scan" | "data_lock"
+    #   | "model_approval"
     policy_type: Mapped[str] = mapped_column(String(64), nullable=False)
 
     # Four stable IDs — server-side cross-check only (F-008 resolves authoritative scope).
@@ -91,7 +92,8 @@ class Policy(Base):
     __table_args__ = (
         CheckConstraint(
             "policy_type IN ("
-            "'budget_limit', 'model_allowlist', 'model_denylist', 'code_scan', 'data_lock')",
+            "'budget_limit', 'model_allowlist', 'model_denylist', 'code_scan', "
+            "'data_lock', 'model_approval')",
             name="ck_policies_policy_type",
         ),
         CheckConstraint(
@@ -155,7 +157,8 @@ class PolicyVersion(Base):
         CheckConstraint("policy_version >= 1", name="ck_pv_version_positive"),
         CheckConstraint(
             "policy_type IN ("
-            "'budget_limit', 'model_allowlist', 'model_denylist', 'code_scan', 'data_lock')",
+            "'budget_limit', 'model_allowlist', 'model_denylist', 'code_scan', "
+            "'data_lock', 'model_approval')",
             name="ck_pv_policy_type",
         ),
         CheckConstraint(
