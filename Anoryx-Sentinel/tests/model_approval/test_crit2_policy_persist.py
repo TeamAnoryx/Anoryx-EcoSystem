@@ -200,32 +200,10 @@ async def test_model_approval_policy_persists_and_loads(seeded_tenant) -> None:
     await engine.dispose()
 
     # Load back through the REAL RLS-scoped session (production load path).
-    # DIAGNOSTIC (temporary, CI FD-exhaustion probe): capture the process open-FD
-    # count before the connect; on the CI OSError (EAI_AGAIN) print FD count +
-    # RLIMIT_NOFILE so we can confirm/deny FD exhaustion. No retry / behavior change.
-    # `resource` is imported only in the except (it is unix-only; the local Windows
-    # happy path never raises here, so it never imports it).
-    try:
-        _fd_before = len(os.listdir("/proc/self/fd"))
-    except OSError:
-        _fd_before = -1
-    try:
-        async with get_tenant_session(tenant_id) as session:
-            rows = await PolicyRepository(session).get_active_policies_for_scope(
-                tenant_id, "model_approval"
-            )
-    except OSError as exc:
-        import resource
-
-        try:
-            _fd_at = len(os.listdir("/proc/self/fd"))
-        except OSError:
-            _fd_at = -1
-        _soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-        raise AssertionError(
-            f"DIAG load-back connect failed: open_fds_before={_fd_before} "
-            f"open_fds_at_fail={_fd_at} rlimit_nofile soft={_soft} hard={_hard} err={exc!r}"
-        ) from exc
+    async with get_tenant_session(tenant_id) as session:
+        rows = await PolicyRepository(session).get_active_policies_for_scope(
+            tenant_id, "model_approval"
+        )
     assert len(rows) == 1, "model_approval policy did not load back — feature would be inert"
     loaded = json.loads(rows[0].policy_payload)
 
