@@ -243,3 +243,134 @@ class OperatorEvidenceRequest(BaseModel):
         if v not in ("SOC2", "ISO27001"):
             raise ValueError("framework must be SOC2 or ISO27001")
         return v
+
+
+# --- Webhook config CRUD (F-020, ADR-0023 §5.2) ----------------------------
+#
+# Outbound webhook configuration for the integration suite (Slack/Jira/Splunk).
+# CREDENTIAL HANDLING (R4/R6, non-negotiables #4/#6):
+#   credential / signing_secret are accepted in create/update bodies as PLAINTEXT
+#   (over TLS) and are encrypted IMMEDIATELY by the router (admin.sso.secret_box)
+#   before any persistence. The RESPONSE model never echoes them — only the
+#   booleans has_credential / has_signing_secret reveal presence, never value.
+#   Neither secret is ever logged, returned, or placed on an event (D1).
+
+_WEBHOOK_PROVIDERS = ("slack", "jira", "splunk")
+_WEBHOOK_SEVERITIES = ("high", "critical")
+
+
+class WebhookConfigCreate(BaseModel):
+    """Create-webhook-config body. Secrets are write-only plaintext (encrypted at write).
+
+    target_url is additionally SSRF-validated by the router via the F-020 url_guard
+    BEFORE persistence (config-time rejection); the Pydantic check here only bounds
+    the shape (length + https scheme), not the resolved-IP safety.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = Field(min_length=1, max_length=16)
+    target_url: str = Field(min_length=1, max_length=4096)
+    # Write-only secrets — accepted as plaintext, encrypted immediately, never echoed.
+    credential: str | None = Field(default=None, max_length=4096)
+    signing_secret: str | None = Field(default=None, max_length=4096)
+    min_severity: str = Field(default="high", max_length=16)
+    enabled: bool = True
+    # Optional scope. NULL = tenant-wide (all teams / all projects).
+    team_id: str | None = Field(default=None, max_length=64)
+    project_id: str | None = Field(default=None, max_length=64)
+
+    @field_validator("provider")
+    @classmethod
+    def _provider(cls, v: str) -> str:
+        if v not in _WEBHOOK_PROVIDERS:
+            raise ValueError(f"provider must be one of {_WEBHOOK_PROVIDERS}")
+        return v
+
+    @field_validator("min_severity")
+    @classmethod
+    def _min_severity(cls, v: str) -> str:
+        if v not in _WEBHOOK_SEVERITIES:
+            raise ValueError(f"min_severity must be one of {_WEBHOOK_SEVERITIES}")
+        return v
+
+    @field_validator("target_url")
+    @classmethod
+    def _target_url_shape(cls, v: str) -> str:
+        # Cheap boundary check only; the authoritative SSRF guard runs in the router.
+        if not v.lower().startswith("https://"):
+            raise ValueError("target_url must be an https:// URL")
+        return v
+
+    @field_validator("team_id", "project_id")
+    @classmethod
+    def _scope_uuid(cls, v: str | None) -> str | None:
+        if v is not None and not _UUID_RE.match(v):
+            raise ValueError("must be a UUID")
+        return v
+
+
+class WebhookConfigUpdate(BaseModel):
+    """Partial update. Only provided fields change (model_fields_set).
+
+    target_url (re-SSRF-validated by the router), min_severity, enabled, and the
+    rotate-able secrets credential / signing_secret may be updated. provider and
+    scope are immutable post-create (create a new config to change them).
+    A provided credential / signing_secret is re-encrypted and replaces the stored
+    ciphertext (rotation); omit them to leave the stored secret unchanged.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_url: str | None = Field(default=None, max_length=4096)
+    credential: str | None = Field(default=None, max_length=4096)
+    signing_secret: str | None = Field(default=None, max_length=4096)
+    min_severity: str | None = Field(default=None, max_length=16)
+    enabled: bool | None = Field(default=None)
+
+    @field_validator("min_severity")
+    @classmethod
+    def _min_severity(cls, v: str | None) -> str | None:
+        if v is not None and v not in _WEBHOOK_SEVERITIES:
+            raise ValueError(f"min_severity must be one of {_WEBHOOK_SEVERITIES}")
+        return v
+
+    @field_validator("target_url")
+    @classmethod
+    def _target_url_shape(cls, v: str | None) -> str | None:
+        if v is not None and not v.lower().startswith("https://"):
+            raise ValueError("target_url must be an https:// URL")
+        return v
+
+
+class WebhookConfigResponse(BaseModel):
+    """A webhook config as returned by the admin API — METADATA ONLY (R4/R6).
+
+    NEVER echoes credential or signing_secret. Their PRESENCE is surfaced via the
+    booleans has_credential / has_signing_secret so an operator can see whether a
+    secret is configured without the value ever leaving the gateway (D1/non-neg #6).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    config_id: str
+    tenant_id: str
+    provider: str
+    target_url: str
+    min_severity: str
+    enabled: bool
+    team_id: str | None
+    project_id: str | None
+    has_credential: bool
+    has_signing_secret: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class WebhookConfigListResponse(BaseModel):
+    """A list of a tenant's webhook config metadata (never secrets)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    configs: list[WebhookConfigResponse]
+    count: int

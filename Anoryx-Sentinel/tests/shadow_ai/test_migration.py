@@ -83,16 +83,17 @@ async def test_migration_reversible():
         "0023" in combined_after_down
     ), f"Expected head at 0023 after downgrade -1, got: {combined_after_down[:300]}"
 
-    # Step 3: upgrade back to the real head (0027) so the DB is left complete for
-    # subsequent tests.
+    # Step 3: upgrade back to the real head (0030) so the DB is left complete for
+    # subsequent tests. F-020 added migrations 0028/0029/0030 after F-018, so
+    # head is now 0030.
     result_up = _run_alembic("upgrade", "head")
     assert result_up.returncode == 0, f"upgrade head after downgrade -1 failed:\n{result_up.stderr}"
 
     current_after_up = _run_alembic("current")
     combined_after_up = current_after_up.stdout + current_after_up.stderr
     assert (
-        "0027" in combined_after_up
-    ), f"Expected head at 0027 after re-upgrade, got: {combined_after_up[:300]}"
+        "0030" in combined_after_up
+    ), f"Expected head at 0030 after re-upgrade, got: {combined_after_up[:300]}"
 
 
 def test_migration_0024_is_documented_reversible():

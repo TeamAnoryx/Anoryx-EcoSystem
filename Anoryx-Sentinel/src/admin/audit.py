@@ -44,6 +44,10 @@ ADMIN_EVENT_TYPES = frozenset(
         "model_approved",
         "model_denied",
         "model_adopted",
+        # F-020 (ADR-0023 §5.4) — admin CRUD on a tenant's outbound webhook config.
+        # Carries webhook_provider + config_action (created|updated|deleted); never
+        # the target URL, credential, or signing-secret material (D1 — metadata-only).
+        "webhook_config_updated",
     }
 )
 
@@ -63,6 +67,8 @@ async def emit_admin_event(
     project_id: str = WILDCARD_UUID,
     actor_id: str | None = None,
     model: str | None = None,
+    webhook_provider: str | None = None,
+    config_action: str | None = None,
 ) -> None:
     """Append an admin-attributed audit event on the caller's privileged session.
 
@@ -109,4 +115,17 @@ async def emit_admin_event(
     # provided so non-model admin events keep their exact prior canonical form.
     if model is not None:
         event_data["model"] = model
+    # F-020 (ADR-0023 §5.4): webhook_config_updated carries the provider label and the
+    # CRUD action. BOTH ride in dedicated nullable columns (migration 0030, hash-folded
+    # by the repository) and are emitted under their EXACT contract field names —
+    # contracts/events.schema.json WebhookConfigUpdatedEvent is additionalProperties:false
+    # and lists webhook_provider + config_action as required, so the key names must match
+    # (no violation_type passthrough). Both are bounded metadata labels — NEVER a URL,
+    # credential, or signing-secret (D1/non-neg #6). Added only when provided so every
+    # non-webhook admin event keeps its exact prior canonical form (no spurious null keys
+    # in the historical hash chain).
+    if webhook_provider is not None:
+        event_data["webhook_provider"] = webhook_provider
+    if config_action is not None:
+        event_data["config_action"] = config_action
     await AuditLogRepository(session).append(event_data)

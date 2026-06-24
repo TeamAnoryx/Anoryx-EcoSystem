@@ -147,6 +147,25 @@ def canonical_json(data: dict[str, Any]) -> bytes:
     for _f018_field in ("confidence_band", "fired_signals", "candidate_key"):
         if data.get(_f018_field) is not None:
             filtered[_f018_field] = data[_f018_field]
+    # F-020 (ADR-0023 §5.4): webhook_provider, failure_class, and config_action follow
+    # the SAME opt-in-when-present rule as actor_id / F-018 fields. None of them are in
+    # CANONICAL_FIELDS; each is appended ONLY when set (non-None). Every pre-F-020 row
+    # and every non-webhook event has all three as None, so their canonical JSON is
+    # byte-for-byte the pre-F-020 form — stored hashes stay valid across the full
+    # historical chain.
+    # - webhook_provider: stable provider label bound into the hash on all webhook events.
+    #   Changing or nulling it post-write breaks verification (tamper-evident when present).
+    # - failure_class: terminal failure classification on webhook_delivery_failed events.
+    #   Immutable terminal value — binding it gives tamper-evidence over the failure reason.
+    # - config_action: CRUD verb on webhook_config_updated events. Immutable terminal value.
+    # - delivery_attempts is NOT hash-folded — it is a mutable bounded counter; see the
+    #   comment in audit_log_repository._row_to_hash_data() for the rationale.
+    if data.get("webhook_provider") is not None:
+        filtered["webhook_provider"] = data["webhook_provider"]
+    if data.get("failure_class") is not None:
+        filtered["failure_class"] = data["failure_class"]
+    if data.get("config_action") is not None:
+        filtered["config_action"] = data["config_action"]
     return json.dumps(filtered, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
         "utf-8"
     )
