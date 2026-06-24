@@ -224,21 +224,31 @@ async def cleanup_bulk_after(db_url: str) -> AsyncIterator[None]:
 @pytest_asyncio.fixture(autouse=True)
 async def _reset_db_engine_caches() -> AsyncIterator[None]:
     """Dispose persistence.database engine caches after each test (per-fn loop)."""
-    yield
-    import persistence.database as _db
 
-    for _engine_attr, _factory_attr in (
-        ("_app_engine", "_app_session_factory"),
-        ("_privileged_engine", "_privileged_session_factory"),
-    ):
-        _engine = getattr(_db, _engine_attr, None)
-        if _engine is not None:
-            try:
-                await _engine.dispose()
-            except Exception:
-                pass
-        setattr(_db, _engine_attr, None)
-        setattr(_db, _factory_attr, None)
+    async def _dispose() -> None:
+        import persistence.database as _db
+
+        for _engine_attr, _factory_attr in (
+            ("_app_engine", "_app_session_factory"),
+            ("_privileged_engine", "_privileged_session_factory"),
+        ):
+            _engine = getattr(_db, _engine_attr, None)
+            if _engine is not None:
+                try:
+                    await _engine.dispose()
+                except Exception:
+                    pass
+            setattr(_db, _engine_attr, None)
+            setattr(_db, _factory_attr, None)
+
+    # SETUP reset: dispose any engine singleton leaked from a prior package/test
+    # (a gateway/orchestration test monkeypatches APP_DATABASE_URL to a fake host
+    # and builds the singleton; the env reverts at teardown but the cached engine
+    # does NOT — f-019). Reset here so THIS test builds a fresh engine from the
+    # current env in its own loop, regardless of what ran before.
+    await _dispose()
+    yield
+    await _dispose()
 
 
 # ---------------------------------------------------------------------------
