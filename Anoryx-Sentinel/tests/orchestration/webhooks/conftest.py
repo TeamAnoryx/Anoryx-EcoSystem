@@ -221,3 +221,69 @@ def _reset_webhook_settings() -> None:
     _reset_webhook_settings_for_testing()
     yield
     _reset_webhook_settings_for_testing()
+
+
+# ---------------------------------------------------------------------------
+# Per-test DB isolation: truncate webhook + audit tables after each test.
+#
+# WHY THIS IS NEEDED (battle-tested lesson):
+#   Tests in this package (TestV11HashChainIntegrity, TestV9CredentialsAtRest,
+#   TestV16AdminAuthz) write COMMITTED rows to events_audit_log, webhook_config,
+#   and webhook_delivery.  Alphabetically these tests run BEFORE
+#   tests/persistence/test_audit_chain.py and tests/persistence/test_migrations.py.
+#
+#   test_audit_chain::test_empty_chain_is_valid asserts rows_checked==0;
+#   leftover events_audit_log rows cause it to fail.
+#   test_migrations::test_migration_downgrade_and_reapply does a full downgrade
+#   to base; the downgrade for migration 0030 drops the action_taken CHECK
+#   constraint, but any leftover rows with action_taken IN ('delivered','failed')
+#   trigger a CheckViolation on downgrade.
+#
+# PATTERN: matches tests/compliance/conftest.py + tests/admin/conftest.py.
+#   autouse=True so every test in this package cleans up, not just DB-gated ones.
+#   No-op when DATABASE_URL is absent.
+#   events_audit_log has a BEFORE DELETE trigger (append-only); TRUNCATE bypasses it.
+#   webhook_delivery has FK -> webhook_config; we truncate child-before-parent.
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _truncate_webhook_tables_after() -> AsyncIterator[None]:
+    """Yield, then TRUNCATE webhook_delivery / webhook_config / events_audit_log.
+
+    autouse so every test in this package leaves the shared DB clean.
+    No-op when DATABASE_URL is absent (pure-unit tests run without a DB).
+    """
+    import re as _re
+
+    from sqlalchemy import text as _text
+    from sqlalchemy.ext.asyncio import create_async_engine as _create_engine
+
+    yield  # run the test first
+
+    raw = os.environ.get("DATABASE_URL", "")
+    if not raw:
+        return
+
+    url = _re.sub(r"^postgresql\+psycopg://", "postgresql+asyncpg://", raw)
+    url = _re.sub(r"^postgresql://", "postgresql+asyncpg://", url)
+
+    engine = _create_engine(
+        url,
+        pool_pre_ping=True,
+        echo=False,
+        connect_args={"server_settings": {"app.session_kind": "privileged"}},
+    )
+    try:
+        async with engine.begin() as conn:
+            # Child-before-parent to satisfy FK constraints; CASCADE as a belt-
+            # and-suspenders safety net for any future FK additions.
+            await conn.execute(
+                _text("TRUNCATE webhook_delivery, webhook_config, events_audit_log CASCADE")
+            )
+    except Exception:
+        # No-op if tables do not yet exist (schema not provisioned) — the test
+        # itself will have been skipped by _skip_if_no_db() in that case.
+        pass
+    finally:
+        await engine.dispose()

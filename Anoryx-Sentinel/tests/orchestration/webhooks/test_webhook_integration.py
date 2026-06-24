@@ -1274,6 +1274,10 @@ class TestV12NonStubbedE2E:
         config.enabled = True
         config.credential = None
         config.signing_secret = None
+        # NULL scope = tenant-wide: must be None so process_candidate's scope
+        # confinement filter (ADR-0023 §5.2) does not reject this config.
+        config.team_id = None
+        config.project_id = None
 
         msg = CandidateMessage(
             event_type="pii_blocked",
@@ -1394,6 +1398,10 @@ class TestV12NonStubbedE2E:
         config.enabled = True
         config.credential = None
         config.signing_secret = None
+        # NULL scope = tenant-wide: must be None so process_candidate's scope
+        # confinement filter (ADR-0023 §5.2) does not reject this config.
+        config.team_id = None
+        config.project_id = None
 
         msg = CandidateMessage(
             event_type="pii_blocked",
