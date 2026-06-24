@@ -171,6 +171,55 @@ class HookContext:
                 event_id=stamped.get("event_id"),
                 request_id=self.request_id,
             )
+
+            # F-020 emit-seam tap (ADR-0023 §5.3 / Affu Option 1).
+            # AFTER a successful audit append, XADD a bounded metadata-only
+            # projection to webhook:candidates so the webhook-dispatcher can
+            # pick it up for outbound delivery.
+            #
+            # THREE HARD REQUIREMENTS (non-negotiable):
+            #   1. Fork A integrity: project ONLY the sanitized metadata fields —
+            #      NEVER event content (prompt/response/PII). The stamped dict is
+            #      the closed events.schema.json envelope but we project explicitly
+            #      so no arbitrary keys can slip through.
+            #   2. Fail-open: the entire XADD block is swallow-all (try/except: pass)
+            #      — Redis down or XADD error MUST NOT raise into the request path
+            #      and MUST NOT change emit()'s return value.
+            #   3. Gating: XADD only when severity in {high, critical} AND the
+            #      F-020 enable flag is on. Off-by-default; low/info events never
+            #      hit the stream.
+            try:
+                from orchestration.webhooks.config import (  # noqa: PLC0415
+                    get_webhook_settings,
+                )
+
+                _wh_settings = get_webhook_settings()
+                if _wh_settings.webhook_dispatch_enabled:
+                    _severity = stamped.get("severity", "")
+                    if _severity in ("high", "critical"):
+                        # Fork A projection — ONLY metadata fields, NEVER payload.
+                        _candidate_fields: dict[str, str] = {
+                            "event_type": str(stamped.get("event_type") or ""),
+                            "severity": str(_severity),
+                            "tenant_id": str(stamped.get("tenant_id") or ""),
+                            "team_id": str(stamped.get("team_id") or ""),
+                            "project_id": str(stamped.get("project_id") or ""),
+                            "agent_id": str(stamped.get("agent_id") or ""),
+                            "event_id": str(stamped.get("event_id") or ""),
+                            "event_timestamp": str(stamped.get("event_timestamp") or ""),
+                            "request_id": str(stamped.get("request_id") or ""),
+                            "action_taken": str(stamped.get("action_taken") or ""),
+                            "violation_type": str(stamped.get("violation_type") or ""),
+                            "webhook_provider": str(stamped.get("webhook_provider") or ""),
+                        }
+                        from orchestration.webhooks.queue import (  # noqa: PLC0415
+                            xadd_candidate,
+                        )
+
+                        await xadd_candidate(_candidate_fields)
+            except Exception:
+                pass  # XADD MUST NEVER affect emit() semantics (Requirement 2)
+
             return True
         except Exception:
             log.error(

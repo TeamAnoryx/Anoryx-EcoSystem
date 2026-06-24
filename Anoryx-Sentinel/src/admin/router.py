@@ -19,6 +19,7 @@ from admin.shadow_ai import shadow_ai_router
 from admin.sso.breakglass_routes import breakglass_router
 from admin.sso.idp_routes import idp_router
 from admin.tenants import tenants_router
+from admin.webhooks import webhooks_router
 
 admin_router = APIRouter(
     prefix="/admin",
@@ -48,5 +49,6 @@ admin_router.include_router(audit_log_router)
 admin_router.include_router(shadow_ai_router)
 admin_router.include_router(control_router)
 admin_router.include_router(model_approval_router)
+admin_router.include_router(webhooks_router)
 admin_router.include_router(idp_router)
 admin_router.include_router(breakglass_router)

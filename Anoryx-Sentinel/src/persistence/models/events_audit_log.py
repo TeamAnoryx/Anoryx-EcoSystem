@@ -29,6 +29,7 @@ from sqlalchemy import (
     CheckConstraint,
     Index,
     Numeric,
+    SmallInteger,
     String,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -106,6 +107,13 @@ VALID_EVENT_TYPES = frozenset(
         "model_approved",
         "model_denied",
         "model_adopted",
+        # F-020 (ADR-0023 §5.4) — outbound webhook delivery + config audit variants.
+        # webhook_delivered / webhook_delivery_failed: emitted by the webhook-dispatcher
+        # worker on terminal delivery outcome; best-effort, out-of-band (D5).
+        # webhook_config_updated: emitted by the F-012a admin surface on config CRUD.
+        "webhook_delivered",
+        "webhook_delivery_failed",
+        "webhook_config_updated",
     }
 )
 
@@ -203,6 +211,15 @@ ACTION_TAKEN_BY_EVENT_TYPE: dict[str, frozenset[str]] = {
     "model_approved": frozenset({"logged"}),
     "model_denied": frozenset({"logged"}),
     "model_adopted": frozenset({"logged"}),
+    # F-020 (ADR-0023 §5.4) — outbound webhook delivery + config audit variants.
+    # webhook_delivered uses action_taken='delivered' (NEW value in ck_eal_action_taken).
+    # webhook_delivery_failed uses action_taken='failed' (NEW value in ck_eal_action_taken).
+    # webhook_config_updated uses action_taken='logged' (already present).
+    # Fail-open (D5/§4.1): delivery events are best-effort, out-of-band — they
+    # NEVER gate or block the user's request path (scoped exception to non-negotiable #5).
+    "webhook_delivered": frozenset({"delivered"}),
+    "webhook_delivery_failed": frozenset({"failed"}),
+    "webhook_config_updated": frozenset({"logged"}),
 }
 
 
@@ -315,6 +332,28 @@ class EventsAuditLog(Base):
     fired_signals: Mapped[str | None] = mapped_column(String(128), nullable=True)
     candidate_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # F-020 (ADR-0023 §5.2/§5.4) — outbound webhook delivery + config audit columns.
+    # webhook_provider: bounded provider label ('slack'|'jira'|'splunk'). Set on
+    #   webhook_delivered, webhook_delivery_failed, and webhook_config_updated events.
+    #   NEVER a target URL, NEVER a credential (D1 — metadata-only).
+    # delivery_attempts: number of attempts before the terminal outcome. Set on
+    #   webhook_delivered and webhook_delivery_failed. SMALLINT ≤ 100 (bounded).
+    # failure_class: terminal failure classification on webhook_delivery_failed events.
+    #   Matches WebhookDeliveryFailedEvent.failure_class in contracts/events.schema.json.
+    #   NULL for all non-failure events. Folded into the row hash when non-NULL via the
+    #   opt-in-when-present rule in canonical_json() (see hash_chain.py).
+    # config_action: CRUD verb ('created'|'updated'|'deleted') on webhook_config_updated.
+    #   Matches WebhookConfigUpdatedEvent.config_action in contracts/events.schema.json.
+    #   NULL for all non-config events. Folded into the row hash when non-NULL via the
+    #   opt-in-when-present rule in canonical_json() (see hash_chain.py).
+    # webhook_provider and failure_class/config_action are folded into the row hash only
+    # when non-NULL — follows the F-014 actor_id opt-in-when-present rule.
+    # delivery_attempts is NOT hash-folded (mutable counter — see hash_chain.py comment).
+    webhook_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    delivery_attempts: Mapped[int | None] = mapped_column(SmallInteger(), nullable=True)
+    failure_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    config_action: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
     # -----------------------------------------------------------------------
     # Hash-chain columns
     # -----------------------------------------------------------------------
@@ -361,7 +400,9 @@ class EventsAuditLog(Base):
             # F-018 (ADR-0021 §7) — kept in sync with migration 0024.
             "'shadow_ai_candidate_detected',"
             # F-019 (ADR-0022 §5.4) — kept in sync with migration 0027.
-            "'model_approved','model_denied','model_adopted')",
+            "'model_approved','model_denied','model_adopted',"
+            # F-020 (ADR-0023 §5.4) — kept in sync with migration 0030.
+            "'webhook_delivered','webhook_delivery_failed','webhook_config_updated')",
             name="ck_eal_event_type",
         ),
         CheckConstraint(
@@ -407,10 +448,12 @@ class EventsAuditLog(Base):
         ),
         # action_taken: union of valid values across all event variants.
         # F-006 adds 'routed','failed_over' (routing_decision); 'blocked' already present.
+        # F-020 (ADR-0023 §5.4) adds 'delivered' (webhook_delivered) and
+        # 'failed' (webhook_delivery_failed). Kept in sync with migration 0030.
         CheckConstraint(
             "action_taken IS NULL OR action_taken IN ("
             "'masked','tokenized','blocked','logged','throttled','warned',"
-            "'routed','failed_over')",
+            "'routed','failed_over','delivered','failed')",
             name="ck_eal_action_taken",
         ),
         # routing_decision variant bounds (F-006, ADR-0008 §5.6).
@@ -453,6 +496,26 @@ class EventsAuditLog(Base):
         CheckConstraint(
             "confidence_band IS NULL OR confidence_band IN ('low','medium','high')",
             name="ck_eal_confidence_band",
+        ),
+        # F-020 (ADR-0023 §5.2) — webhook signal column constraints.
+        # Kept in sync with migration 0030 (ck_eal_webhook_provider /
+        # ck_eal_delivery_attempts / ck_eal_failure_class / ck_eal_config_action).
+        CheckConstraint(
+            "webhook_provider IS NULL OR webhook_provider IN ('slack', 'jira', 'splunk')",
+            name="ck_eal_webhook_provider",
+        ),
+        CheckConstraint(
+            "delivery_attempts IS NULL OR " "(delivery_attempts >= 1 AND delivery_attempts <= 100)",
+            name="ck_eal_delivery_attempts",
+        ),
+        CheckConstraint(
+            "failure_class IS NULL OR failure_class IN ("
+            "'url_guard_rejected','transport_error','http_error','dead_lettered')",
+            name="ck_eal_failure_class",
+        ),
+        CheckConstraint(
+            "config_action IS NULL OR config_action IN ('created','updated','deleted')",
+            name="ck_eal_config_action",
         ),
         # row_hash and prev_hash must be 64-char hex strings.
         CheckConstraint("length(row_hash) = 64", name="ck_eal_row_hash_len"),

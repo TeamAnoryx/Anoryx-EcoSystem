@@ -115,6 +115,16 @@ convention for Delta records — never a privilege or cross-tenant grant.
     is always attributed to the real caller whose response was inspected); `team_id` / `project_id`
     are the caller's REAL IDs. These events carry metadata only — NEVER a locked field VALUE and
     NEVER a response payload. See ADR-0020 §10.
+  - **`webhook-dispatcher`** — the F-020 outbound webhook-delivery worker principal (ADR-0023 §5.4).
+    Carried as `agent_id` on every webhook DELIVERY-outcome event (`webhook_delivered`,
+    `webhook_delivery_failed`). It names the EMITTING subsystem — the worker that dispatches a
+    notification to a tenant's configured third-party provider (Slack / Jira / Splunk). The
+    `tenant_id` on these events is ALWAYS the real owning tenant — NEVER `WILDCARD_UUID` (a delivery
+    belongs to a real tenant whose config and finding triggered it); `team_id` / `project_id` are the
+    triggering finding's REAL IDs. These events carry metadata only — NEVER the target URL, NEVER
+    credential or signing-secret material, NEVER a payload (R6). (The bounded admin CRUD over webhook
+    config — `webhook_config_updated` — is NOT emitted by this slug; it reuses the `admin-console`
+    operator principal above, since it is a tenant-level admin act, not a delivery.) See ADR-0023 §5.4.
 
 ## The `actor_id` attribution field (F-014 / ADR-0017 §10)
 

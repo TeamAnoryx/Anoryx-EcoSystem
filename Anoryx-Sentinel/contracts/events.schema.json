@@ -58,7 +58,10 @@
     { "$ref": "#/$defs/FieldLockedEvent" },
     { "$ref": "#/$defs/FieldUnlockedEvent" },
     { "$ref": "#/$defs/LockConditionDeniedEvent" },
-    { "$ref": "#/$defs/DataLockErrorEvent" }
+    { "$ref": "#/$defs/DataLockErrorEvent" },
+    { "$ref": "#/$defs/WebhookDeliveredEvent" },
+    { "$ref": "#/$defs/WebhookDeliveryFailedEvent" },
+    { "$ref": "#/$defs/WebhookConfigUpdatedEvent" }
   ],
 
   "$comment": "Dispatch is normative via oneOf + the event_type const on each variant under JSON Schema Draft 2020-12. The 'discriminator' keyword below is a NON-NORMATIVE hint for OpenAPI tooling ONLY; it is not a 2020-12 keyword and has NO validation effect under this dialect. Do not rely on it for correctness.",
@@ -1786,6 +1789,65 @@
         "pattern_name": { "type": "string", "maxLength": 128, "description": "OPTIONAL locked field's dotted path implicated in the failure, when one is resolvable (e.g. 'result.ssn'). A field LOCATION only — NEVER the field value. OMITTED when no single field is implicated (e.g. a whole-ruleset config error)." },
         "violation_type": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$", "maxLength": 128, "description": "Bounded fail-closed reason (e.g. 'config_error', 'traversal_budget', 'streaming_not_supported'). A coarse label ONLY — NEVER a stack trace, NEVER a field value or response content. Charset restricted to [A-Za-z0-9._-] to forbid control characters and whitespace (log-injection defense)." },
         "action_taken": { "type": "string", "enum": ["blocked"], "description": "Disposition: 'blocked' (fail-closed: the ruleset was unevaluable, so the whole response was blocked rather than released unverified)." }
+      }
+    },
+    "WebhookDeliveredEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-020 (ADR-0023 §5.4) by the webhook-dispatcher worker when an outbound webhook delivery to a tenant-configured third party (Slack / Jira / Splunk) succeeded. Best-effort, out-of-band egress (D5): a delivery NEVER touches the user's request path. Carries the four stable IDs of the SOURCE event (the event being forwarded), so attribution joins back to the originating finding; agent_id is the reserved slug 'webhook-dispatcher'; tenant_id is ALWAYS the source event's real tenant — NEVER WILDCARD_UUID; team_id/project_id are the source event's REAL IDs. HARD RULE: metadata only — this event carries the provider, the disposition, and a bounded attempt count, and NEVER the target URL, NEVER a response body, NEVER prompt/response payload or PII (the webhook body is itself a metadata-only event record — D1).",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "webhook_provider", "action_taken", "delivery_attempts"],
+      "properties": {
+        "event_type": { "const": "webhook_delivered" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "webhook_provider": { "type": "string", "enum": ["slack", "jira", "splunk"], "description": "The third-party provider the delivery targeted. A provider label ONLY — NEVER the target URL, NEVER a credential." },
+        "action_taken": { "type": "string", "const": "delivered", "description": "Disposition: 'delivered' (the outbound webhook POST succeeded)." },
+        "delivery_attempts": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Number of delivery attempts made before this success (1 = delivered on the first attempt). Bounded to cap inspection cost." }
+      }
+    },
+    "WebhookDeliveryFailedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-020 (ADR-0023 §5.4) by the webhook-dispatcher worker when an outbound webhook delivery to a tenant-configured third party (Slack / Jira / Splunk) failed — the SSRF URL guard rejected the target, transport errored, the provider returned an error status, or the job was dead-lettered after exhausting bounded retries. Best-effort, fail-OPEN (D5): a delivery failure NEVER touches the user's request path. Carries the four stable IDs of the SOURCE event; agent_id is the reserved slug 'webhook-dispatcher'; tenant_id is ALWAYS the source event's real tenant — NEVER WILDCARD_UUID; team_id/project_id are the source event's REAL IDs. HARD RULE: failure_class is a BOUNDED classification label ONLY — this event carries the provider, a bounded attempt count, and the failure class, and NEVER the target URL, NEVER a response body, NEVER a transport error message or stack trace, NEVER prompt/response payload or PII.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "webhook_provider", "action_taken", "delivery_attempts", "failure_class"],
+      "properties": {
+        "event_type": { "const": "webhook_delivery_failed" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "webhook_provider": { "type": "string", "enum": ["slack", "jira", "splunk"], "description": "The third-party provider the delivery targeted. A provider label ONLY — NEVER the target URL, NEVER a credential." },
+        "action_taken": { "type": "string", "const": "failed", "description": "Disposition: 'failed' (the outbound webhook delivery did not succeed; retried/DLQ'd per D5, never blocking the request path)." },
+        "delivery_attempts": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Number of delivery attempts made before this failure was recorded. Bounded to cap inspection cost." },
+        "failure_class": { "type": "string", "enum": ["url_guard_rejected", "transport_error", "http_error", "dead_lettered"], "description": "Bounded failure classification ONLY: 'url_guard_rejected' (the SSRF URL guard refused the target), 'transport_error' (connect/TLS/timeout), 'http_error' (the provider returned an error status), 'dead_lettered' (retries exhausted, moved to the DLQ). A coarse label ONLY — NEVER raw error text, NEVER a response body, NEVER an HTTP status detail string." }
+      }
+    },
+    "WebhookConfigUpdatedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-020 (ADR-0023 §5.4) via the F-012a admin surface when the admin/operator principal creates, updates, or deletes a tenant's outbound webhook configuration (provider target, credentials, severity threshold, enabled state) through a bounded admin CRUD. Honest admin attribution (mirrors admin_config_updated): agent_id is the reserved slug 'admin-console'; tenant_id is the TARGET tenant whose webhook config changed (NEVER WILDCARD_UUID, NEVER the system, NEVER the tenant's own id as principal); team_id = project_id = WILDCARD_UUID because the action is tenant-level, not scoped to a team/project (contracts/ids.md documented WILDCARD_UUID use). actor_id names the SPECIFIC operator (the admin_users.id) and is OPTIONAL/nullable — absent when the change is performed via break-glass (which has no operator identity), set to the operator principal otherwise (same treatment as idp_config_changed; F-014 / ADR-0017 §10). HARD RULE: metadata only — this event carries the provider and the config action, and NEVER the target URL, NEVER credential or signing-secret material, NEVER a payload (R6).",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken", "webhook_provider", "config_action"],
+      "properties": {
+        "event_type": { "const": "webhook_config_updated" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "actor_id": { "$ref": "#/$defs/actor_id" },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (admin meta-audit record of a bounded webhook-config CRUD; engine logic untouched)." },
+        "webhook_provider": { "type": "string", "enum": ["slack", "jira", "splunk"], "description": "The third-party provider whose configuration changed. A provider label ONLY — NEVER the target URL, NEVER credential or signing-secret material." },
+        "config_action": { "type": "string", "enum": ["created", "updated", "deleted"], "description": "The bounded CRUD action the operator performed on the webhook configuration." }
       }
     }
   }

@@ -146,6 +146,14 @@ def _row_to_hash_data(row: EventsAuditLog) -> dict[str, Any]:
         "confidence_band": row.confidence_band,
         "fired_signals": row.fired_signals,
         "candidate_key": row.candidate_key,
+        # F-020 (ADR-0023 §5.4) — webhook_provider, failure_class, and config_action are
+        # hash-folded via the opt-in-when-present rule in canonical_json(); all three MUST
+        # be read back here so validate_chain() recomputes the identical canonical form that
+        # append() hashed. delivery_attempts is intentionally NOT returned/folded here because
+        # it is a mutable counter (cross-ref hash_chain.canonical_json()).
+        "webhook_provider": row.webhook_provider,
+        "failure_class": row.failure_class,
+        "config_action": row.config_action,
         "prev_hash": row.prev_hash,
     }
 
@@ -308,6 +316,17 @@ class AuditLogRepository:
             confidence_band=row_data.get("confidence_band"),
             fired_signals=row_data.get("fired_signals"),
             candidate_key=row_data.get("candidate_key"),
+            # F-020 (ADR-0023 §5.2/§5.4) — outbound-webhook signal columns. Without
+            # mapping webhook_provider/failure_class/config_action here, those columns
+            # would store NULL while compute_row_hash() above folded the non-null values
+            # into row_hash, breaking validate_chain() at the first webhook event (the
+            # chain stores a hash computed WITH the values but recomputes WITHOUT them).
+            # All three are mapped on both append (store) and _row_to_hash_data (verify)
+            # so the two paths agree. delivery_attempts is NOT hash-folded (mutable counter).
+            webhook_provider=row_data.get("webhook_provider"),
+            delivery_attempts=row_data.get("delivery_attempts"),
+            failure_class=row_data.get("failure_class"),
+            config_action=row_data.get("config_action"),
             # chain fields
             prev_hash=prev_hash,
             row_hash=row_hash,
