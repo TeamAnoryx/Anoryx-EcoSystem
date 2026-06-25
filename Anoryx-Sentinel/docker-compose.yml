@@ -1,4 +1,4 @@
-# docker-compose.yml — Anoryx Sentinel local dev stack (F-009, ADR-0011)
+# docker-compose.yml — Anoryx Sentinel local dev stack (F-009/F-010, ADR-0011/0012)
 #
 # Secrets / passwords:
 #   Local-dev defaults are supplied via ${VAR:-default} substitution.
@@ -10,9 +10,12 @@
 #   Production: set REDIS_URL=redis://:password@host:6379/0 in Vault/KMS and
 #   inject at pod startup. Do not add requirepass to this file.
 #
-# Bring up full stack:        docker compose up -d
-# Bring up redis only:        docker compose up -d redis
-#   (use when sentinel-postgres already runs standalone on host port 5432)
+# QUICK START (F-010 Part 1 compose demo):
+#   1. bash deploy/secrets/gen-dev-secrets.sh   (or .ps1 on Windows)
+#   2. docker compose up -d --build
+#   3. Wait for all services healthy + seed exited 0
+#   4. Admin console: http://localhost:3000  (login = value in deploy/secrets/admin_token)
+#   5. Virtual API key: cat deploy/seed/.seeded-key
 #
 # Teardown:                   docker compose down
 # Teardown + remove volumes:  docker compose down -v
@@ -61,10 +64,10 @@ services:
       - minio-data:/data
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
     restart: unless-stopped
     networks:
       - sentinel-net
@@ -85,11 +88,14 @@ services:
     networks:
       - sentinel-net
 
+  # D1: host port 5433 (avoids clash with standalone sentinel-postgres on :5432).
+  # container_name sentinel-postgres-stack (avoids clash with solo dev container).
+  # Internal port stays 5432; POSTGRES_HOST=postgres resolves inside the stack.
   postgres:
     image: postgres:16-alpine
-    container_name: sentinel-postgres
+    container_name: sentinel-postgres-stack
     ports:
-      - "5432:5432"
+      - "5433:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-sentinel}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sentinel}
@@ -99,9 +105,12 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sentinel} -d ${POSTGRES_DB:-sentinel_dev}"]
       interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
+      timeout: 5s
+      retries: 12
+      # First boot runs initdb, which is slow on Docker Desktop (Windows/macOS bind
+      # I/O) — observed ~60s. A short start_period false-fails the fresh `up`
+      # (dependency failed to start) before the DB finishes initializing.
+      start_period: 90s
     restart: unless-stopped
     networks:
       - sentinel-net
@@ -112,6 +121,7 @@ services:
   # assembles DATABASE_URL / APP_DATABASE_URL / REDIS_URL). Passwords are   #
   # NEVER set as environment variables here — only mounted as secret files  #
   # (threat vector 8: `docker inspect` env must contain no *_PASSWORD).     #
+  # admin_token secret: exposes SENTINEL_ADMIN_TOKEN for /admin/* gating.   #
   # ----------------------------------------------------------------------- #
   sentinel-app:
     build:
@@ -135,6 +145,11 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-sentinel_dev}
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      # MinIO / bulk storage (worker shares these; gateway needs them for presign).
+      BULK_STORAGE_ENDPOINT: http://minio:9000
+      BULK_STORAGE_BUCKET: ${BULK_STORAGE_BUCKET:-sentinel-bulk}
+      BULK_STORAGE_ACCESS_KEY: ${BULK_STORAGE_ACCESS_KEY:-minioadmin}
+      BULK_STORAGE_SECRET_KEY: ${BULK_STORAGE_SECRET_KEY:-minioadmin}
       # Wire app spans to the bundled OTel Collector via OTLP/HTTP (ADR-0012 §5).
       # HTTP (:4318) is the core default; gRPC (:4317) needs the [otlp-grpc] extra
       # + OTEL_EXPORTER_OTLP_PROTOCOL=grpc.
@@ -149,6 +164,7 @@ services:
       - postgres_password
       - redis_password
       - sentinel_key_secret
+      - admin_token
     ports:
       - "8000:8000"
     healthcheck:
@@ -157,6 +173,157 @@ services:
       timeout: 5s
       retries: 5
       start_period: 40s
+    restart: unless-stopped
+    networks:
+      - sentinel-net
+
+  # ----------------------------------------------------------------------- #
+  # F-015 bulk worker. Reuses the gateway image (same Python env).          #
+  # Owns NO migrations (RUN_MIGRATIONS=0 — gateway owns them).              #
+  # SENTINEL_PROVISION_APP_ROLE is unset (0) — provisioning already done.  #
+  # Waits for sentinel-app healthy so the role + migrations are in place.   #
+  # ----------------------------------------------------------------------- #
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "0.10.0"
+        # The MinIO storage backend (bulk pipeline) needs boto3/aioboto3. There is
+        # NO `bulk` extra in pyproject — the `bedrock` extra provides exactly those
+        # two deps, so install it here. Build with: docker compose build worker
+        INSTALL_EXTRAS: "bedrock"
+    image: anoryx-sentinel:0.10.0-bulk
+    container_name: sentinel-worker
+    volumes:
+      - ./deploy/worker:/worker:ro
+    command: ["python", "/worker/run_worker.py"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      sentinel-app:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-sentinel}
+      POSTGRES_DB: ${POSTGRES_DB:-sentinel_dev}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      BULK_STORAGE_ENDPOINT: http://minio:9000
+      BULK_STORAGE_BUCKET: ${BULK_STORAGE_BUCKET:-sentinel-bulk}
+      BULK_STORAGE_ACCESS_KEY: ${BULK_STORAGE_ACCESS_KEY:-minioadmin}
+      BULK_STORAGE_SECRET_KEY: ${BULK_STORAGE_SECRET_KEY:-minioadmin}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      ENABLE_OTEL: "true"
+      RUN_MIGRATIONS: "0"
+      SENTINEL_PROVISION_APP_ROLE: "0"
+      # GatewaySettings fields required by redis_client.init() and get_settings().
+      # The worker uses the gateway image and calls redis_init(get_settings()),
+      # so all required fields must be present (UPSTREAM_BASE_URL is required).
+      UPSTREAM_BASE_URL: ${UPSTREAM_BASE_URL:-https://api.openai.com/v1}
+    secrets:
+      - postgres_password
+      - redis_password
+      - sentinel_key_secret
+    # The worker does not run uvicorn — disable the gateway image's /readyz probe.
+    # Process-alive check: any exit-0 command (python --version) confirms it's up.
+    healthcheck:
+      test: ["CMD", "python", "--version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - sentinel-net
+
+  # ----------------------------------------------------------------------- #
+  # One-shot seed (restart: no). Runs AFTER sentinel-app is healthy         #
+  # (migrations + role already provisioned). Bind-mounts deploy/seed/ since #
+  # that directory is NOT COPYed into the gateway image (deploy/ is not in  #
+  # the Dockerfile COPY list). Writes the seeded key to /seed/.seeded-key   #
+  # (bind-mount makes it available on the host at deploy/seed/.seeded-key). #
+  # ----------------------------------------------------------------------- #
+  seed:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "0.10.0"
+    image: anoryx-sentinel:0.10.0
+    container_name: sentinel-seed
+    command: ["python", "/seed/seed.py"]
+    volumes:
+      - ./deploy/seed:/seed
+    depends_on:
+      sentinel-app:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-sentinel}
+      POSTGRES_DB: ${POSTGRES_DB:-sentinel_dev}
+      RUN_MIGRATIONS: "0"
+      SENTINEL_PROVISION_APP_ROLE: "0"
+    secrets:
+      - postgres_password
+      - sentinel_key_secret
+    restart: "no"
+    networks:
+      - sentinel-net
+
+  # ----------------------------------------------------------------------- #
+  # Admin console (Next.js standalone). NODE_ENV=development required so    #
+  # cookieSecure() returns false over plain http://localhost:3000 — without  #
+  # this the Secure flag on the session cookie is silently dropped and the  #
+  # login flow loops. NEVER set NODE_ENV=development in production (TLS).   #
+  # Secrets injected via entrypoint override: never in `environment:` block  #
+  # (threat vector 8 — docker inspect must not expose secret values).       #
+  # ----------------------------------------------------------------------- #
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: anoryx-sentinel-frontend
+    container_name: sentinel-frontend
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        export SENTINEL_ADMIN_TOKEN=$(cat /run/secrets/admin_token)
+        export SESSION_SECRET=$(cat /run/secrets/session_secret)
+        exec node server.js
+    depends_on:
+      sentinel-app:
+        condition: service_healthy
+    environment:
+      SENTINEL_API_URL: http://sentinel-app:8000
+      NODE_ENV: development
+      PORT: "3000"
+      # Override Docker's auto-set HOSTNAME so Next.js standalone listens on
+      # 0.0.0.0 (all interfaces), not just the container's assigned IP.
+      # Without this the healthcheck's connect to 127.0.0.1:3000 fails.
+      HOSTNAME: "0.0.0.0"
+    secrets:
+      - admin_token
+      - session_secret
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://localhost:3000/login',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
     networks:
       - sentinel-net
@@ -213,7 +380,7 @@ volumes:
 
 # F-010 (ADR-0012 §3) — file-based Docker secrets (native secrets = β). The
 # sentinel-app entrypoint reads these at /run/secrets/* and assembles the
-# connection URLs. Generate the files first: see deploy/secrets/README.md.
+# connection URLs. Generate the files first: bash deploy/secrets/gen-dev-secrets.sh
 # (For the bundled passwordless Redis, leave redis_password EMPTY — the shim
 # then builds a password-less REDIS_URL. R3: the redis service is unchanged.)
 secrets:
@@ -223,3 +390,7 @@ secrets:
     file: ./deploy/secrets/redis_password
   sentinel_key_secret:
     file: ./deploy/secrets/sentinel_key_secret
+  admin_token:
+    file: ./deploy/secrets/admin_token
+  session_secret:
+    file: ./deploy/secrets/session_secret
