@@ -189,3 +189,69 @@ async def test_state_machine_valid_and_invalid_edges(two_tenants) -> None:
             await repo.transition(a, "no-such-model", "approved", operator_id="op", now=now)
 
         await sess.commit()
+
+
+async def test_retirement_persists_and_loads(two_tenants) -> None:
+    """F-021 vector 8: set/clear_retirement round-trips through the REAL repo path.
+
+    A non-stubbed persist test: set a deadline on an approved model, reload it and see
+    retire_at; clear it and see NULL. Plus the guards: only an approved model can be
+    retired, only a retiring model can be un-retired, and both reject an absent model.
+    """
+    from datetime import timedelta
+
+    from persistence.database import get_tenant_session
+    from persistence.repositories.model_inventory_repository import (
+        InvalidModelTransitionError,
+        ModelInventoryNotFoundError,
+        ModelInventoryRepository,
+    )
+
+    a = two_tenants["a"]
+    model = "gpt-4o-retire"
+    now = datetime.now(timezone.utc)
+    deadline = now + timedelta(days=7)
+
+    async with get_tenant_session(a) as sess:
+        repo = ModelInventoryRepository(sess)
+        await repo.adopt(a, model, "base")
+        await repo.transition(a, model, "approved", operator_id="op", now=now)
+
+        # Schedule retirement on the approved model → retire_at persists.
+        row = await repo.set_retirement(a, model, deadline, now=now)
+        assert row.retire_at == deadline
+        await sess.commit()
+
+    # Reload on a fresh session → retire_at survived the commit.
+    async with get_tenant_session(a) as sess:
+        repo = ModelInventoryRepository(sess)
+        reloaded = await repo.get_row(a, model)
+        assert reloaded is not None and reloaded.retire_at == deadline
+        assert reloaded.state == "approved"  # retirement is NOT a state change
+
+        # Cancel retirement → retire_at clears to NULL.
+        cleared = await repo.clear_retirement(a, model, now=now)
+        assert cleared.retire_at is None
+        await sess.commit()
+
+    async with get_tenant_session(a) as sess:
+        repo = ModelInventoryRepository(sess)
+        again = await repo.get_row(a, model)
+        assert again is not None and again.retire_at is None
+
+        # Guards: cannot un-retire a model with no scheduled retirement.
+        with pytest.raises(InvalidModelTransitionError):
+            await repo.clear_retirement(a, model, now=now)
+
+        # Guards: only an APPROVED model can be retired (move it to denied first).
+        await repo.transition(a, model, "denied", operator_id="op", now=now)
+        with pytest.raises(InvalidModelTransitionError):
+            await repo.set_retirement(a, model, deadline, now=now)
+
+        # Guards: an absent model is not found for either action.
+        with pytest.raises(ModelInventoryNotFoundError):
+            await repo.set_retirement(a, "no-such-model", deadline, now=now)
+        with pytest.raises(ModelInventoryNotFoundError):
+            await repo.clear_retirement(a, "no-such-model", now=now)
+
+        await sess.commit()

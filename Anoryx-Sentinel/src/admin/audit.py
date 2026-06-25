@@ -48,6 +48,11 @@ ADMIN_EVENT_TYPES = frozenset(
         # Carries webhook_provider + config_action (created|updated|deleted); never
         # the target URL, credential, or signing-secret material (D1 — metadata-only).
         "webhook_config_updated",
+        # F-021 (ADR-0024) — operator schedules / cancels model retirement (a grace
+        # deadline on an approved model). Carries the model_id in `model`; the deadline
+        # lives on the model_inventory row, not the event (action-only audit).
+        "model_retirement_scheduled",
+        "model_retirement_cancelled",
     }
 )
 

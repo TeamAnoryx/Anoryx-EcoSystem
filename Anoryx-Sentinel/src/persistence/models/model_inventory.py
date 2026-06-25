@@ -68,6 +68,14 @@ class ModelInventory(Base):
     approved_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # F-021 (ADR-0024): grace deadline after which this APPROVED model is denied at
+    # the gateway (src/policy/enforcement.py, fail-closed). NULL = not scheduled for
+    # retirement. A row with state='approved' and a non-NULL retire_at is "retiring":
+    # usable until this instant, then denied. Only meaningful on approved rows; set by
+    # the retire operator action, cleared by un-retire. The `state` CHECK is unchanged
+    # — "retiring" is a UI-derived view of (approved + retire_at), not a stored state.
+    retire_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
