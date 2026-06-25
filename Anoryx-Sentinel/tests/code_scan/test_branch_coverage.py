@@ -448,7 +448,7 @@ class TestConfigBranches:
         @asynccontextmanager
         async def _boom(tid: str):
             raise RuntimeError("DB connection refused")
-            yield  # noqa: unreachable
+            yield  # noqa
 
         with patch("code_scan.config.get_tenant_session", _boom):
             result = await load_code_scan_config("tenant-boom")

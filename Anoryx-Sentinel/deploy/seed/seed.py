@@ -39,15 +39,18 @@ SEED_DIR = Path("/seed")
 KEY_FILE = SEED_DIR / ".seeded-key"
 
 # Fixed deterministic IDs for the demo tenant (stable across re-runs / restarts).
-DEMO_TENANT_ID  = "d0000000-0000-4000-a000-000000000001"
-DEMO_TEAM_ID    = "d0000000-0000-4000-a000-000000000002"
+DEMO_TENANT_ID = "d0000000-0000-4000-a000-000000000001"
+DEMO_TEAM_ID = "d0000000-0000-4000-a000-000000000002"
 DEMO_PROJECT_ID = "d0000000-0000-4000-a000-000000000003"
-DEMO_AGENT_ID   = "gateway-core"  # reserved slug per contracts/ids.md
+DEMO_AGENT_ID = "gateway-core"  # reserved slug per contracts/ids.md
 
 
 def _check_env() -> None:
-    missing = [v for v in ("DATABASE_URL", "APP_DATABASE_URL", "SENTINEL_KEY_SECRET")
-               if not os.environ.get(v)]
+    missing = [
+        v
+        for v in ("DATABASE_URL", "APP_DATABASE_URL", "SENTINEL_KEY_SECRET")
+        if not os.environ.get(v)
+    ]
     if missing:
         print(f"seed.py: ERROR: missing required env vars: {missing}", file=sys.stderr)
         sys.exit(1)
@@ -57,13 +60,14 @@ async def _seed() -> None:
     _check_env()
 
     # Import here so PYTHONPATH=/app/src is already set by the entrypoint.
+    from sqlalchemy import select
+
     from persistence.database import get_privileged_session, get_tenant_session
-    from persistence.models.tenant import Tenant
-    from persistence.models.team import Team
     from persistence.models.project import Project
+    from persistence.models.team import Team
+    from persistence.models.tenant import Tenant
     from persistence.models.virtual_api_key import VirtualApiKey
     from persistence.repositories.virtual_api_key_repository import VirtualApiKeyRepository
-    from sqlalchemy import select
 
     # ----------------------------------------------------------------
     # Step 1: Create tenant / team / project via privileged session.
@@ -71,9 +75,9 @@ async def _seed() -> None:
     # ----------------------------------------------------------------
     async with get_privileged_session() as priv:
         # Tenant
-        row = (await priv.execute(
-            select(Tenant).where(Tenant.tenant_id == DEMO_TENANT_ID)
-        )).scalar_one_or_none()
+        row = (
+            await priv.execute(select(Tenant).where(Tenant.tenant_id == DEMO_TENANT_ID))
+        ).scalar_one_or_none()
         if row is None:
             tenant = Tenant(
                 tenant_id=DEMO_TENANT_ID,
@@ -88,9 +92,9 @@ async def _seed() -> None:
             print("seed.py: tenant 'demo' already exists")
 
         # Team
-        t_row = (await priv.execute(
-            select(Team).where(Team.team_id == DEMO_TEAM_ID)
-        )).scalar_one_or_none()
+        t_row = (
+            await priv.execute(select(Team).where(Team.team_id == DEMO_TEAM_ID))
+        ).scalar_one_or_none()
         if t_row is None:
             team = Team(
                 team_id=DEMO_TEAM_ID,
@@ -106,9 +110,9 @@ async def _seed() -> None:
             print("seed.py: team 'demo-team' already exists")
 
         # Project
-        p_row = (await priv.execute(
-            select(Project).where(Project.project_id == DEMO_PROJECT_ID)
-        )).scalar_one_or_none()
+        p_row = (
+            await priv.execute(select(Project).where(Project.project_id == DEMO_PROJECT_ID))
+        ).scalar_one_or_none()
         if p_row is None:
             project = Project(
                 project_id=DEMO_PROJECT_ID,
@@ -130,12 +134,14 @@ async def _seed() -> None:
     # Step 2: Check if a key already exists for the demo tenant.
     # ----------------------------------------------------------------
     async with get_privileged_session() as priv2:
-        existing = (await priv2.execute(
-            select(VirtualApiKey).where(
-                VirtualApiKey.tenant_id == DEMO_TENANT_ID,
-                VirtualApiKey.is_active.is_(True),
+        existing = (
+            await priv2.execute(
+                select(VirtualApiKey).where(
+                    VirtualApiKey.tenant_id == DEMO_TENANT_ID,
+                    VirtualApiKey.is_active.is_(True),
+                )
             )
-        )).scalar_one_or_none()
+        ).scalar_one_or_none()
 
     if existing is not None:
         print("ALREADY_SEEDED -- tenant/team/project/key are in place")
