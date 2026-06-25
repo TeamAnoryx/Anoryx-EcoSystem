@@ -1146,6 +1146,86 @@ paths:
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /admin/tenants/{tenant_id}/models/retire:
+    post:
+      tags: [admin]
+      operationId: adminRetireTenantModel
+      summary: Schedule retirement of a tenant's approved model (admin/operator)
+      description: |
+        Schedules retirement of an APPROVED model for the TARGET tenant with a
+        grace deadline (F-021, ADR-0024). The deadline is backend-ENFORCED: once
+        past, the model is denied at the gateway (fail-closed enforcement). Only a
+        model currently in the `approved` state can be retired; otherwise the route
+        returns 409 (`invalid_model_transition`). Runs inside the target tenant's
+        RLS session. Emits an admin governance audit event attributing the decision
+        to the `admin-console` principal and the target tenant. The target tenant is
+        the PATH parameter — there is NO `tenant_id` field in the body. Inventory
+        metadata only; never weights, secrets, or PII.
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminModelRetireRequest"
+      responses:
+        "200":
+          description: The model inventory item after the retirement is scheduled.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminModelInventoryItem"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/ModelTransitionConflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/tenants/{tenant_id}/models/unretire:
+    post:
+      tags: [admin]
+      operationId: adminUnretireTenantModel
+      summary: Cancel a scheduled model retirement for a tenant (admin/operator)
+      description: |
+        Cancels a scheduled retirement (clears `retire_at`) for the TARGET tenant
+        (F-021, ADR-0024). When the addressed model has no scheduled retirement the
+        route returns 409 (`invalid_model_transition`). Runs inside the target
+        tenant's RLS session. Emits an admin governance audit event attributing the
+        decision to the `admin-console` principal and the target tenant. The target
+        tenant is the PATH parameter — there is NO `tenant_id` field in the body.
+        Inventory metadata only; never weights, secrets, or PII.
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AdminTargetTenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminModelDecisionRequest"
+      responses:
+        "200":
+          description: The model inventory item after the scheduled retirement is cancelled.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminModelInventoryItem"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/ModelTransitionConflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /admin/tenants/{tenant_id}/compliance/evidence:
     post:
       tags: [admin]
@@ -3263,6 +3343,7 @@ components:
         - state
         - approved_by
         - approved_at
+        - retire_at
         - created_at
         - updated_at
       additionalProperties: false
@@ -3292,6 +3373,16 @@ components:
           description: |
             When the most recent decision was recorded (RFC 3339 / ISO 8601, UTC),
             or null when no decision has been recorded.
+        retire_at:
+          type: [string, "null"]
+          format: date-time
+          maxLength: 64
+          description: |
+            The grace deadline after which this approved model is denied at the
+            gateway (RFC 3339 / ISO 8601, UTC), or null when the model is not
+            scheduled for retirement (F-021, ADR-0024). A model with state=approved
+            and a non-null retire_at is "retiring": usable until this instant, then
+            denied (fail-closed enforcement). Metadata only.
         created_at:
           type: [string, "null"]
           format: date-time
@@ -3350,6 +3441,32 @@ components:
           enum: [base, fine_tune]
           default: base
           description: Whether the addressed model is a base model or a tenant fine-tune.
+
+    AdminModelRetireRequest:
+      type: object
+      description: |
+        Request body for POST /admin/tenants/{tenant_id}/models/retire (F-021,
+        ADR-0024). Closed schema (additionalProperties: false): only the fields
+        below are accepted; unknown keys are rejected with 400. The target tenant
+        is the PATH parameter — there is NO `tenant_id` field here. Only a model
+        in the `approved` state can be retired; otherwise the route returns 409
+        (`invalid_model_transition`).
+      required: [model_id, retire_at]
+      additionalProperties: false
+      properties:
+        model_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: Identifier of the model to schedule for retirement within the tenant's inventory.
+        retire_at:
+          type: string
+          format: date-time
+          maxLength: 64
+          description: |
+            The grace deadline (RFC 3339 / ISO 8601, UTC) after which the model is
+            denied at the gateway (fail-closed enforcement). MUST be in the future —
+            a past or now value is rejected with 400.
 
     AdminShadowAiCandidateList:
       type: object

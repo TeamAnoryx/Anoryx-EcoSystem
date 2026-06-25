@@ -51,9 +51,9 @@ def _run_alembic(*args: str) -> subprocess.CompletedProcess:
 async def test_migrations_reversible():
     """Vector 11: 0025/0026/0027 round-trip (head -> -6 -> head) is clean.
 
-    F-020 added migrations 0028/0029/0030 on top of F-019, so head is now 0030.
-    We downgrade -6 steps from 0030 to reach 0024 (pre-F-019), then re-upgrade
-    to head (0030), verifying all F-019 migrations are reversible.
+    F-020 added 0028/0029/0030 and F-021 added 0031 on top of F-019, so head is now
+    0031. We downgrade -7 steps from 0031 to reach 0024 (pre-F-019), then re-upgrade
+    to head (0031), verifying all F-019 migrations are reversible.
     """
     if not _db_available():
         pytest.skip("DATABASE_URL not set — skipping migration reversibility test")
@@ -61,20 +61,20 @@ async def test_migrations_reversible():
     up = _run_alembic("upgrade", "head")
     assert up.returncode == 0, f"upgrade head failed:\n{up.stderr}"
     cur = _run_alembic("current")
-    assert "0030" in (cur.stdout + cur.stderr), "expected head at 0030 before downgrade"
+    assert "0031" in (cur.stdout + cur.stderr), "expected head at 0031 before downgrade"
 
-    # Downgrade all three F-019 migrations plus three F-020 migrations
-    # (0030 -> 0029 -> 0028 -> 0027 -> 0026 -> 0025 -> 0024).
-    down = _run_alembic("downgrade", "-6")
-    assert down.returncode == 0, f"downgrade -6 from 0030 failed:\n{down.stderr}"
+    # Downgrade all three F-019 migrations plus three F-020 + one F-021 migration
+    # (0031 -> 0030 -> 0029 -> 0028 -> 0027 -> 0026 -> 0025 -> 0024).
+    down = _run_alembic("downgrade", "-7")
+    assert down.returncode == 0, f"downgrade -7 from 0031 failed:\n{down.stderr}"
     cur_down = _run_alembic("current")
-    assert "0024" in (cur_down.stdout + cur_down.stderr), "expected 0024 after downgrade -6"
+    assert "0024" in (cur_down.stdout + cur_down.stderr), "expected 0024 after downgrade -7"
 
     # Re-upgrade back to head.
     up2 = _run_alembic("upgrade", "head")
     assert up2.returncode == 0, f"re-upgrade head failed:\n{up2.stderr}"
     cur_up = _run_alembic("current")
-    assert "0030" in (cur_up.stdout + cur_up.stderr), "expected head at 0030 after re-upgrade"
+    assert "0031" in (cur_up.stdout + cur_up.stderr), "expected head at 0031 after re-upgrade"
 
 
 @pytest.mark.parametrize(

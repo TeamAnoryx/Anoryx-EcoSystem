@@ -248,10 +248,63 @@ async def test_enforcement_fails_closed(seeded_tenant, monkeypatch) -> None:
     async def _boom(self, tenant_id, model_id):  # noqa: ANN001
         raise RuntimeError("inventory backend unavailable")
 
-    monkeypatch.setattr(mod.ModelInventoryRepository, "get_state", _boom)
+    # F-021: enforcement reads get_row (the retire_at deadline needs the full row);
+    # the fail-closed try/except wraps that call. Patch get_row, not get_state.
+    monkeypatch.setattr(mod.ModelInventoryRepository, "get_row", _boom)
     dec = await _evaluate(t, "gpt-4o")
     assert isinstance(dec, ModelDeny)
     assert dec.reason == "model_not_approved"
+
+
+async def _set_retirement(tenant_id: str, model: str, retire_at: datetime) -> None:
+    """Set retire_at on an APPROVED model via the REAL repo path (RLS write)."""
+    from persistence.database import get_tenant_session
+    from persistence.repositories.model_inventory_repository import ModelInventoryRepository
+
+    now = datetime.now(timezone.utc)
+    async with get_tenant_session(tenant_id) as sess:
+        await ModelInventoryRepository(sess).set_retirement(tenant_id, model, retire_at, now=now)
+        await sess.commit()
+
+
+async def test_in_grace_model_still_allowed(seeded_tenant) -> None:
+    """F-021 vector 6: an approved model with a FUTURE retire_at is still ALLOWED.
+
+    Real path: approval active + state approved + retire_at far in the future
+    (within grace) -> ModelAllow. The deadline does not bite until it passes.
+    """
+    from datetime import timedelta
+
+    from policy.enforcement import ModelAllow
+
+    t = seeded_tenant["tenant_id"]
+    await _write_approval_policy(seeded_tenant["db_url"], t)
+    await _set_inventory(t, "gpt-4o", "approved")
+    await _set_retirement(t, "gpt-4o", datetime.now(timezone.utc) + timedelta(days=30))
+    assert isinstance(await _evaluate(t, "gpt-4o"), ModelAllow)
+
+
+async def test_past_grace_model_denied(seeded_tenant) -> None:
+    """F-021 vector 5: an approved model PAST its retire_at is DENIED (fail-closed).
+
+    Real path (no stub on the inventory/decision chain): approval active + state
+    approved + retire_at in the PAST -> ModelDeny(reason='model_retired'). Proves the
+    retirement enforcement is NOT inert — a retired model is actually blocked.
+    """
+    from datetime import timedelta
+
+    from policy.enforcement import ModelDeny
+
+    t = seeded_tenant["tenant_id"]
+    await _write_approval_policy(seeded_tenant["db_url"], t)
+    await _set_inventory(t, "gpt-4o", "approved")
+    # retire_at one hour in the PAST (the repo allows a past deadline; the API guards
+    # against it — this exercises the enforcement seam directly).
+    await _set_retirement(t, "gpt-4o", datetime.now(timezone.utc) - timedelta(hours=1))
+
+    dec = await _evaluate(t, "gpt-4o")
+    assert isinstance(dec, ModelDeny)
+    assert dec.reason == "model_retired"
 
 
 async def test_no_approval_policy_preserves_f008(seeded_tenant) -> None:

@@ -359,3 +359,48 @@ async def test_approved_model_allowed_e2e(e2e_seed, monkeypatch):
         f"Got {resp.status_code}: {resp.text[:600]}"
     )
     assert resp.json()["choices"][0]["message"]["content"] == "hello from an approved model"
+
+
+@pytest.mark.asyncio
+async def test_retired_model_blocked_e2e(e2e_seed, monkeypatch):
+    """F-021 vector 5+12 (the inert-feature catcher for RETIREMENT): a past-grace model
+    is 403 policy_blocked on the REAL gateway path — ZERO stubs on the enforcement chain.
+
+    Real approval + real retirement (retire_at in the PAST) -> real
+    evaluate_model_policies (approved but past-grace branch) -> ModelDeny('model_retired')
+    -> real _policy_deny -> 403 policy_blocked. If retirement enforcement were inert, an
+    approved-then-retired model would still be allowed — this proves it is NOT.
+    """
+    from datetime import timedelta
+
+    from persistence.database import get_tenant_session
+    from persistence.repositories.model_inventory_repository import ModelInventoryRepository
+
+    t = e2e_seed["tenant_id"]
+    now = datetime.now(timezone.utc)
+    async with get_tenant_session(t) as sess:
+        repo = ModelInventoryRepository(sess)
+        await repo.adopt(t, _MODEL, "base")
+        await repo.transition(t, _MODEL, "approved", operator_id="op-e2e", now=now)
+        # Past grace deadline (the repo permits a past retire_at; the API guards it).
+        await repo.set_retirement(t, _MODEL, now - timedelta(hours=1), now=now)
+        await sess.commit()
+
+    _gateway_env(monkeypatch)
+    from gateway.main import create_app
+
+    app = create_app()
+    body = json.dumps(
+        {"model": _MODEL, "messages": [{"role": "user", "content": "hi"}], "stream": False}
+    )
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/v1/chat/completions", content=body, headers=_headers(e2e_seed))
+
+    assert resp.status_code == 403, (
+        "THE INERT-FEATURE CATCHER (retirement): an approved-then-RETIRED model past its "
+        f"grace deadline was NOT blocked through the real gateway. Got {resp.status_code}: "
+        f"{resp.text[:600]}"
+    )
+    assert resp.json()["error_code"] == "policy_blocked"

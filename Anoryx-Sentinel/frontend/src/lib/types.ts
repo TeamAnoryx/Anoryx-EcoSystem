@@ -148,6 +148,35 @@ export interface OperatorEvidenceResponse {
   disclaimer: string;
 }
 
+// --- F-019/F-021 model inventory types ------------------------------------- //
+
+/**
+ * One per-tenant model-inventory record (F-019/F-021, ADR-0022/ADR-0024).
+ * Mirror of AdminModelInventoryItem in contracts/openapi.yaml.
+ * Metadata only — never model weights, secrets, or PII.
+ */
+export interface ModelInventoryItem {
+  model_id: string;
+  model_type: "base" | "fine_tune";
+  state: "pending" | "approved" | "denied";
+  approved_by: string | null;
+  approved_at: string | null;
+  /** Grace deadline for backend-enforced retirement; null when not scheduled. */
+  retire_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/**
+ * Response envelope for GET /admin/tenants/{id}/models.
+ * Flat shape (not an {object, data} wrapper).
+ */
+export interface ModelInventoryListResponse {
+  tenant_id: string;
+  models: ModelInventoryItem[];
+  count: number;
+}
+
 // --- F-018 shadow-AI candidate types --------------------------------------- //
 
 /**

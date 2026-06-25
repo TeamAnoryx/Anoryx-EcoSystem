@@ -2,24 +2,26 @@ import type { ReactNode } from "react";
 
 import { ConfigForm } from "@/components/config/config-form";
 import { SelectTenantNotice } from "@/components/dashboards/empty-state";
+import { ModelGovernancePanel } from "@/components/dashboards/model-governance-panel";
 import { ShadowAiFeed } from "@/components/dashboards/shadow-ai-feed";
 import { ErrorBanner } from "@/components/ui/error-banner";
 import { adminApi } from "@/lib/admin-client";
-import { PROVIDERS } from "@/lib/dashboards";
 import { toFriendlyError } from "@/lib/errors";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Governance dashboard (F-013 + F-018). Scoped to ?tenant=.
+ * Governance dashboard (F-013 + F-018 + F-021). Scoped to ?tenant=.
  *
- * Model inventory: the static provider set + the tenant's configured classifier
- * (full inventory deferred, ADR-0016 2d).
+ * Model inventory (F-021): replaced the static provider list (ADR-0016 deferral 2d)
+ * with the live ModelGovernancePanel island — a polling client component that reads
+ * `GET tenants/{id}/models` through the BFF and surfaces approve/deny/retire/un-retire
+ * actions with inline confirmation (ADR-0024).
  *
- * Shadow-AI panel (F-018): replaced the thin audit-event feed with a live
- * polling island that calls `GET tenants/{id}/shadow-ai/candidates` through the
- * existing BFF. The island owns its own polling and renders the backend-supplied
- * honesty disclaimer non-removably (ADR-0021 §4 / R1).
+ * Shadow-AI panel (F-018): live polling island that calls
+ * `GET tenants/{id}/shadow-ai/candidates` through the BFF. The island owns its
+ * own polling and renders the backend-supplied honesty disclaimer non-removably
+ * (ADR-0021 §4 / R1).
  */
 export default async function GovernanceDashboardPage({
   searchParams,
@@ -36,30 +38,20 @@ export default async function GovernanceDashboardPage({
       const config = await adminApi.getConfig(tenant);
       body = (
         <div className="space-y-8">
-          <section className="space-y-2" aria-label="Model inventory">
-            <h2 className="text-sm font-medium text-fg-muted">Model inventory</h2>
-            <div className="flex flex-wrap gap-2">
-              {PROVIDERS.map((p) => (
-                <span
-                  key={p}
-                  className="rounded-md border border-border bg-bg-inset px-2 py-1 font-mono text-xs text-fg"
-                >
-                  {p}
-                </span>
-              ))}
-            </div>
+          {/*
+            F-021: ModelGovernancePanel replaces the static provider list. The
+            island polls GET tenants/{id}/models via the BFF and renders live
+            per-tenant model inventory with approval/retirement actions.
+            key={tenant} remounts the island on tenant switch (ADR-0022 isolation).
+          */}
+          <ModelGovernancePanel key={tenant} tenantId={tenant} />
+
+          <section className="space-y-2" aria-label="Classifier and config">
+            <h2 className="text-sm font-medium text-fg-muted">Classifier &amp; tenant config</h2>
             <p className="text-sm text-fg-muted">
               Configured classifier:{" "}
               <span className="font-mono text-fg">{config.classifier_model_id || "(unset)"}</span>
             </p>
-            <p className="text-xs text-fg-faint">
-              Provider set is the known upstream list; a full per-tenant model inventory is not
-              exposed by the admin API (deferred, see ADR-0016).
-            </p>
-          </section>
-
-          <section className="space-y-2" aria-label="Classifier and config">
-            <h2 className="text-sm font-medium text-fg-muted">Classifier &amp; tenant config</h2>
             <ConfigForm tenantId={tenant} initial={config} />
           </section>
 

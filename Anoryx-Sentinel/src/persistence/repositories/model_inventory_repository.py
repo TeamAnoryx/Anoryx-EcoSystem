@@ -159,3 +159,62 @@ class ModelInventoryRepository:
         row.updated_at = now
         await self._session.flush()
         return row
+
+    async def set_retirement(
+        self,
+        tenant_id: str,
+        model_id: str,
+        retire_at: datetime,
+        now: datetime,
+    ) -> ModelInventory:
+        """Schedule retirement of an APPROVED model (sets retire_at). No commit.
+
+        F-021 (ADR-0024). Retirement is a grace deadline on an active approval, NOT a
+        state transition — `state` stays 'approved' and `approved_by`/`approved_at`
+        (the approval decider) are untouched; the retiring operator is recorded in the
+        audit event, not on the row. Only an 'approved' model can be retired: a model
+        that is pending/denied/absent is rejected (ModelInventoryNotFoundError /
+        InvalidModelTransitionError) so an operator can never "retire" something that
+        was never usable, and every emitted event corresponds to a real change. The
+        caller wraps this and the audit append in one transaction (ADR-0022 §7.4).
+        """
+        row = await self.get_row(tenant_id, model_id)
+        if row is None:
+            raise ModelInventoryNotFoundError(
+                f"no inventory row for tenant {tenant_id!r} model {model_id!r}"
+            )
+        if row.state != "approved":
+            raise InvalidModelTransitionError(
+                f"cannot retire model {model_id!r} in state {row.state!r}; "
+                "only an 'approved' model can be scheduled for retirement"
+            )
+        row.retire_at = retire_at
+        row.updated_at = now
+        await self._session.flush()
+        return row
+
+    async def clear_retirement(
+        self,
+        tenant_id: str,
+        model_id: str,
+        now: datetime,
+    ) -> ModelInventory:
+        """Cancel a scheduled retirement (clears retire_at). No commit.
+
+        F-021 (ADR-0024). Rejects a model with no scheduled retirement (retire_at IS
+        NULL) so an un-retire always corresponds to a real change — no empty audit
+        event. Does not alter `state` or the approval decider.
+        """
+        row = await self.get_row(tenant_id, model_id)
+        if row is None:
+            raise ModelInventoryNotFoundError(
+                f"no inventory row for tenant {tenant_id!r} model {model_id!r}"
+            )
+        if row.retire_at is None:
+            raise InvalidModelTransitionError(
+                f"model {model_id!r} has no scheduled retirement to cancel"
+            )
+        row.retire_at = None
+        row.updated_at = now
+        await self._session.flush()
+        return row

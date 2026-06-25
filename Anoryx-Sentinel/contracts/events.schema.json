@@ -42,6 +42,8 @@
     { "$ref": "#/$defs/ModelApprovedEvent" },
     { "$ref": "#/$defs/ModelDeniedEvent" },
     { "$ref": "#/$defs/ModelAdoptedEvent" },
+    { "$ref": "#/$defs/ModelRetirementScheduledEvent" },
+    { "$ref": "#/$defs/ModelRetirementCancelledEvent" },
     { "$ref": "#/$defs/OperatorSsoLoginEvent" },
     { "$ref": "#/$defs/OperatorSsoDeniedEvent" },
     { "$ref": "#/$defs/AdminBreakglassUsedEvent" },
@@ -1442,6 +1444,50 @@
       "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken", "model"],
       "properties": {
         "event_type": { "const": "model_adopted" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (operator governance decision; administrative record, not a runtime block)." },
+        "model": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "The model identifier the operator acted on. Reuses the usage-event 'model' audit column shape. Model NAME only; never a credential."
+        }
+      }
+    },
+    "ModelRetirementScheduledEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-021 (ADR-0024) when the admin/operator principal SCHEDULES retirement of an approved model with a grace deadline (an administrative governance decision, not a runtime block; the deadline itself lives on the model_inventory row, not this event). Honest admin attribution: agent_id is the reserved slug 'admin-console'; tenant_id is the TARGET tenant; team_id = project_id = WILDCARD_UUID (tenant-level action; contracts/ids.md documented WILDCARD_UUID use). The 'model' field reuses the usage-event model identifier (the model the operator acted on); it is the model NAME only, NEVER a credential. Metadata only — NO secrets or payloads.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken", "model"],
+      "properties": {
+        "event_type": { "const": "model_retirement_scheduled" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/event_timestamp" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "action_taken": { "type": "string", "enum": ["logged"], "description": "Disposition: 'logged' (operator governance decision; administrative record, not a runtime block)." },
+        "model": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "The model identifier the operator acted on. Reuses the usage-event 'model' audit column shape. Model NAME only; never a credential."
+        }
+      }
+    },
+    "ModelRetirementCancelledEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Emitted by F-021 (ADR-0024) when the admin/operator principal CANCELS a scheduled retirement of a model (an administrative governance decision, not a runtime block; the deadline itself lives on the model_inventory row, not this event). Honest admin attribution: agent_id is the reserved slug 'admin-console'; tenant_id is the TARGET tenant; team_id = project_id = WILDCARD_UUID (tenant-level action; contracts/ids.md documented WILDCARD_UUID use). The 'model' field reuses the usage-event model identifier (the model the operator acted on); it is the model NAME only, NEVER a credential. Metadata only — NO secrets or payloads.",
+      "required": ["event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id", "event_timestamp", "request_id", "action_taken", "model"],
+      "properties": {
+        "event_type": { "const": "model_retirement_cancelled" },
         "tenant_id": { "$ref": "#/$defs/tenant_id" },
         "team_id": { "$ref": "#/$defs/team_id" },
         "project_id": { "$ref": "#/$defs/project_id" },

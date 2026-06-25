@@ -38,6 +38,7 @@ from persistence.database import get_privileged_session, get_tenant_session
 from persistence.repositories.model_inventory_repository import (
     InvalidModelTransitionError,
     ModelInventory,
+    ModelInventoryNotFoundError,
     ModelInventoryRepository,
 )
 
@@ -60,6 +61,20 @@ class ModelDecisionRequest(BaseModel):
     model_type: Literal["base", "fine_tune"] = "base"
 
 
+class ModelRetireRequest(BaseModel):
+    """Body for retire: the approved model + its grace deadline (must be future).
+
+    F-021 (ADR-0024). retire_at is parsed as a timezone-aware instant; a past/now
+    value is rejected (400) by the endpoint so retirement is only ever a real future
+    grace window (immediate blocks use deny, not retire).
+    """
+
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
+
+    model_id: str = Field(min_length=1, max_length=256)
+    retire_at: datetime
+
+
 class ModelInventoryItem(BaseModel):
     """One inventory row in the list response."""
 
@@ -70,6 +85,9 @@ class ModelInventoryItem(BaseModel):
     state: str
     approved_by: str | None
     approved_at: str | None
+    # F-021 (ADR-0024): grace deadline (ISO-8601 Z), or null when not retiring. The UI
+    # derives a "retiring — usable until <date>" label from (state=approved + retire_at).
+    retire_at: str | None
     created_at: str | None
     updated_at: str | None
 
@@ -93,6 +111,7 @@ def _to_item(row: ModelInventory) -> ModelInventoryItem:
         state=row.state,
         approved_by=row.approved_by,
         approved_at=_iso(row.approved_at),
+        retire_at=_iso(row.retire_at),
         created_at=_iso(row.created_at),
         updated_at=_iso(row.updated_at),
     )
@@ -192,3 +211,92 @@ async def approve_model(tenant_id: str, request: Request) -> ModelInventoryItem:
 async def deny_model(tenant_id: str, request: Request) -> ModelInventoryItem:
     """Transition a model to 'denied' (adopting it first if not yet in inventory)."""
     return await _decide(tenant_id, request, new_state="denied", decision_event="model_denied")
+
+
+@model_approval_router.post("/tenants/{tenant_id}/models/retire", response_model=ModelInventoryItem)
+async def retire_model(tenant_id: str, request: Request) -> ModelInventoryItem:
+    """Schedule retirement of an APPROVED model with a grace deadline (operator-only).
+
+    F-021 (ADR-0024). Backend-ENFORCED: after retire_at the model is denied at the
+    gateway, fail-closed (src/policy/enforcement.py). Only an 'approved' model can be
+    retired — pending/denied/absent → 409 (`invalid_model_transition`) / 404. The
+    deadline must be in the future (else 400). Audit FIRST (privileged, committed) →
+    then commit the tenant state (ADR-0022 §7.4 audit-before-state invariant). The
+    target tenant is the PATH parameter; the decision is attributed to the operator
+    (actor_id) + the TARGET tenant. Metadata only — never weights, secrets, or PII.
+    """
+    body = await parse_body(request, ModelRetireRequest)
+    rid = request_id(request)
+    aid = actor_id(request)
+    now = datetime.now(UTC)
+
+    # Normalize to an aware UTC instant; a naive value is read as UTC (contract: RFC3339
+    # UTC). A past/now deadline would deny immediately — reject so retire is always a
+    # real future grace window (immediate blocks use deny).
+    retire_at = body.retire_at
+    if retire_at.tzinfo is None:
+        retire_at = retire_at.replace(tzinfo=UTC)
+    if retire_at <= now:
+        raise HTTPException(status_code=400, detail="retire_at_must_be_future")
+
+    async with get_tenant_session(tenant_id) as ts:
+        repo = ModelInventoryRepository(ts)
+        try:
+            row = await repo.set_retirement(tenant_id, body.model_id, retire_at, now=now)
+        except ModelInventoryNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="model_not_found") from exc
+        except InvalidModelTransitionError as exc:
+            # Model is not in 'approved' state — only approved models can be retired.
+            raise HTTPException(status_code=409, detail="invalid_model_transition") from exc
+
+        # Audit FIRST (privileged, committed) — before the tenant state commit.
+        async with get_privileged_session() as ps:
+            async with ps.begin():
+                await emit_admin_event(
+                    ps,
+                    event_type="model_retirement_scheduled",
+                    target_tenant_id=tenant_id,
+                    request_id=rid,
+                    actor_id=aid,
+                    model=body.model_id,
+                )
+        await ts.commit()
+        return _to_item(row)
+
+
+@model_approval_router.post(
+    "/tenants/{tenant_id}/models/unretire", response_model=ModelInventoryItem
+)
+async def unretire_model(tenant_id: str, request: Request) -> ModelInventoryItem:
+    """Cancel a scheduled retirement (clears the grace deadline; operator-only).
+
+    F-021 (ADR-0024). Rejects a model with no scheduled retirement → 409
+    (`invalid_model_transition`) / 404 if absent. Same audit-before-state ordering as
+    retire. Reuses the approve/deny request body (model_id only). Metadata only.
+    """
+    body = await parse_body(request, ModelDecisionRequest)
+    rid = request_id(request)
+    aid = actor_id(request)
+    now = datetime.now(UTC)
+
+    async with get_tenant_session(tenant_id) as ts:
+        repo = ModelInventoryRepository(ts)
+        try:
+            row = await repo.clear_retirement(tenant_id, body.model_id, now=now)
+        except ModelInventoryNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="model_not_found") from exc
+        except InvalidModelTransitionError as exc:
+            raise HTTPException(status_code=409, detail="invalid_model_transition") from exc
+
+        async with get_privileged_session() as ps:
+            async with ps.begin():
+                await emit_admin_event(
+                    ps,
+                    event_type="model_retirement_cancelled",
+                    target_tenant_id=tenant_id,
+                    request_id=rid,
+                    actor_id=aid,
+                    model=body.model_id,
+                )
+        await ts.commit()
+        return _to_item(row)

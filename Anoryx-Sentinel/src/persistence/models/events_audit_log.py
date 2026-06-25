@@ -114,6 +114,13 @@ VALID_EVENT_TYPES = frozenset(
         "webhook_delivered",
         "webhook_delivery_failed",
         "webhook_config_updated",
+        # F-021 (ADR-0024 §audit) — model-retirement operator action variants.
+        # Action-only: the grace deadline lives on the model_inventory.retire_at row,
+        # NOT in the event (no new hash-folded audit column). The model_id rides in
+        # the existing `model` column. Runtime past-grace denials are audited via the
+        # existing policy_decision_deny (reason='model_retired') — no separate variant.
+        "model_retirement_scheduled",
+        "model_retirement_cancelled",
     }
 )
 
@@ -220,6 +227,11 @@ ACTION_TAKEN_BY_EVENT_TYPE: dict[str, frozenset[str]] = {
     "webhook_delivered": frozenset({"delivered"}),
     "webhook_delivery_failed": frozenset({"failed"}),
     "webhook_config_updated": frozenset({"logged"}),
+    # F-021 (ADR-0024) — model-retirement operator actions. Administrative governance
+    # decisions (a grace deadline set/cleared), not runtime blocks → action_taken='logged'.
+    # ck_eal_action_taken is UNCHANGED. The model_id rides in the existing `model` column.
+    "model_retirement_scheduled": frozenset({"logged"}),
+    "model_retirement_cancelled": frozenset({"logged"}),
 }
 
 
@@ -402,7 +414,9 @@ class EventsAuditLog(Base):
             # F-019 (ADR-0022 §5.4) — kept in sync with migration 0027.
             "'model_approved','model_denied','model_adopted',"
             # F-020 (ADR-0023 §5.4) — kept in sync with migration 0030.
-            "'webhook_delivered','webhook_delivery_failed','webhook_config_updated')",
+            "'webhook_delivered','webhook_delivery_failed','webhook_config_updated',"
+            # F-021 (ADR-0024) — kept in sync with migration 0031.
+            "'model_retirement_scheduled','model_retirement_cancelled')",
             name="ck_eal_event_type",
         ),
         CheckConstraint(

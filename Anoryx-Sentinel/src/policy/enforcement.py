@@ -252,6 +252,11 @@ async def evaluate_model_policies(
     policy_blocked 403 seam unchanged (no new gateway wiring).
     """
     now = now or datetime.now(UTC)
+    # Tz-safety (F-021): a caller-supplied naive `now` would raise on the retire_at
+    # comparison below (aware column). Normalize to aware UTC so the retirement check
+    # is deterministic for every caller, not only the production datetime.now(UTC) path.
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
     repo = PolicyRepository(session)
     deny_rows = await repo.get_active_policies_for_scope(scope.tenant_id, "model_denylist")
     allow_rows = await repo.get_active_policies_for_scope(scope.tenant_id, "model_allowlist")
@@ -287,14 +292,21 @@ async def evaluate_model_policies(
         return decision
 
     try:
-        state = await ModelInventoryRepository(session).get_state(scope.tenant_id, model_id)
+        row = await ModelInventoryRepository(session).get_row(scope.tenant_id, model_id)
     except Exception:
         # Fail CLOSED (R3): an inventory-load / approval-check error DENIES the
         # request rather than allowing an un-vetted model on error.
         return ModelDeny(policy_id=approval.policy_id, reason="model_not_approved")
+    state = row.state if row is not None else "unknown"
     if state != "approved":
         # pending / denied / unknown -> default-deny.
         return ModelDeny(policy_id=approval.policy_id, reason="model_not_approved")
+    # F-021 (ADR-0024): an approved model past its retirement grace deadline is denied
+    # at the gateway, fail-closed. retire_at NULL -> no retirement scheduled (allowed);
+    # within grace (now <= retire_at) -> allowed; past grace -> DENY. The deny flows
+    # through the existing _policy_deny -> policy_blocked 403 seam (no new error code).
+    if row is not None and row.retire_at is not None and now > row.retire_at:
+        return ModelDeny(policy_id=approval.policy_id, reason="model_retired")
     return ModelAllow(policy_id=approval.policy_id)
 
 
