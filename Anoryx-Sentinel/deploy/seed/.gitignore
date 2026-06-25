@@ -1,0 +1,3 @@
+# .seeded-key is written by seed.py — contains a plaintext virtual API key.
+# NEVER commit it.
+.seeded-key

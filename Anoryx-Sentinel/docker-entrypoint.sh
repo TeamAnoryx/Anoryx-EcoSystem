@@ -77,6 +77,14 @@ if [ -z "${SENTINEL_KEY_SECRET:-}" ] && [ -n "$KEY_SECRET" ]; then
     export SENTINEL_KEY_SECRET="$KEY_SECRET"
 fi
 
+# --- Admin token (break-glass for /admin/* — F-012a) ----------------------- #
+# Read admin_token secret file if present. Export as SENTINEL_ADMIN_TOKEN so
+# the admin auth middleware can gate /admin/* requests (never logged).
+ADMIN_TOKEN="$(_read_secret /run/secrets/admin_token)"
+if [ -z "${SENTINEL_ADMIN_TOKEN:-}" ] && [ -n "$ADMIN_TOKEN" ]; then
+    export SENTINEL_ADMIN_TOKEN="$ADMIN_TOKEN"
+fi
+
 # --- Optional one-shot schema migration ------------------------------------- #
 # Compose convenience: run migrations in-line before the app starts. In
 # Kubernetes a dedicated pre-upgrade Job owns this instead (ADR-0012 §4), so
@@ -84,6 +92,56 @@ fi
 if [ "${RUN_MIGRATIONS:-0}" = "1" ]; then
     echo "sentinel-entrypoint: running alembic upgrade head"
     alembic upgrade head
+fi
+
+# --- Provision sentinel_app role password (gap #1 — R3 wiring) ------------- #
+# After alembic runs, migration 0006 ensures sentinel_app EXISTS but with NO
+# LOGIN password ("provisioned out-of-band"). Without a password, every
+# APP_DATABASE_URL (SCRAM-SHA-256) connection fails → all tenant /v1 traffic
+# is dead. When SENTINEL_PROVISION_APP_ROLE=1 and we have both DATABASE_URL
+# and a postgres password, set the password here via the privileged role.
+# Idempotent (ALTER ROLE ... WITH PASSWORD is always safe to re-run).
+# The plaintext password is NEVER logged; only a one-line status is emitted.
+_NORMALIZE_FLAG() { case "$1" in 1|true|yes|on) echo 1;; *) echo 0;; esac; }
+if [ "$(_NORMALIZE_FLAG "${SENTINEL_PROVISION_APP_ROLE:-0}")" = "1" ] \
+   && [ -n "${DATABASE_URL:-}" ] \
+   && [ -n "${APP_DATABASE_URL:-}" ]; then
+    echo "sentinel-entrypoint: provisioning sentinel_app role password"
+    python - <<'PYEOF'
+import asyncio, base64, hashlib, hmac, os, re, sys
+
+async def _provision():
+    app_url = os.environ.get("APP_DATABASE_URL", "")
+    db_url  = os.environ.get("DATABASE_URL", "")
+    m = re.match(r"postgresql(?:\+asyncpg)?://[^:]+:([^@]+)@", app_url)
+    if not m:
+        print("sentinel-entrypoint: WARN: could not extract password from APP_DATABASE_URL; skipping provision", file=sys.stderr)
+        return
+    app_pw = m.group(1)
+    dm = re.match(r"postgresql(?:\+asyncpg)?://([^:]+):([^@]+)@([^:]+):(\d+)/(.+)", db_url)
+    if not dm:
+        print("sentinel-entrypoint: WARN: could not parse DATABASE_URL; skipping provision", file=sys.stderr)
+        return
+    import asyncpg
+    conn = await asyncpg.connect(user=dm.group(1), password=dm.group(2),
+                                  host=dm.group(3), port=int(dm.group(4)),
+                                  database=dm.group(5))
+    # Compute SCRAM-SHA-256 verifier client-side; the plaintext is never a SQL literal.
+    salt   = os.urandom(16)
+    iters  = 4096
+    salted = hashlib.pbkdf2_hmac("sha256", app_pw.encode(), salt, iters)
+    ck     = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+    sk     = hmac.new(salted, b"Server Key", hashlib.sha256).digest()
+    verifier = (f"SCRAM-SHA-256${iters}"
+                f":{base64.b64encode(salt).decode()}"
+                f"${base64.b64encode(hashlib.sha256(ck).digest()).decode()}"
+                f":{base64.b64encode(sk).decode()}")
+    await conn.execute(f"ALTER ROLE sentinel_app WITH LOGIN PASSWORD '{verifier}'")
+    await conn.close()
+    print("sentinel-entrypoint: provisioned sentinel_app role password")
+
+asyncio.run(_provision())
+PYEOF
 fi
 
 # --- Launch ----------------------------------------------------------------- #
