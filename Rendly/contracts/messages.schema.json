@@ -1,0 +1,554 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rendly:messages:v1",
+  "title": "Rendly Real-Time Message Catalog",
+  "description": "The single source of truth for every frame exchanged over the Rendly real-time WebSocket (chat + 1-on-1 huddle signaling). Mirrors the Sentinel contract dialect: JSON Schema Draft 2020-12, dispatch is SOLELY via oneOf + the unique `msg_type` const on each variant (the consts are unique and the variants are mutually exclusive, so exactly one matches a valid frame). All objects are closed (additionalProperties:false) and all fields are bounded (maxLength/maximum/maxItems): closed schemas remove a silent smuggling channel and bounded fields remove a DoS-via-parse vector. tenant_id and the acting user_id on a frame are the SERVER-RESOLVED values from the verified access token (see contracts/openapi.yaml bearerAuth and contracts/ids.md JWT->ID binding), never a raw client-supplied value. HONESTY BOUNDARIES (non-removable): (1) huddle signaling is 1-on-1 ONLY -- exactly two peers; group/multi-party huddles are R-011 (post-investment) and are out of scope. (2) The `inspection` object is a SEAM ONLY -- R-001 reserves the result fields and the fail-closed `chat.ack` semantics; the actual PII/injection/secret detection is R-008 and is NOT implemented here. Huddle MEDIA (the P2P WebRTC streams) is NEVER content-inspected; only chat message content and signaling metadata pass the inspection seam. (3) The `archival` object carries hash-chain-ready fields DEFINE-ONLY -- immutable archiving (the actual chain construction/verification) is R-009 and is NOT implemented here.",
+
+  "oneOf": [
+    { "$ref": "#/$defs/SessionWelcome" },
+    { "$ref": "#/$defs/ChatSend" },
+    { "$ref": "#/$defs/ChatMessage" },
+    { "$ref": "#/$defs/ChatAck" },
+    { "$ref": "#/$defs/ChatRead" },
+    { "$ref": "#/$defs/TypingSet" },
+    { "$ref": "#/$defs/TypingUpdate" },
+    { "$ref": "#/$defs/PresenceSet" },
+    { "$ref": "#/$defs/PresenceUpdate" },
+    { "$ref": "#/$defs/HuddleInvite" },
+    { "$ref": "#/$defs/HuddleUpdate" },
+    { "$ref": "#/$defs/HuddleHangup" },
+    { "$ref": "#/$defs/SignalSend" },
+    { "$ref": "#/$defs/SignalRelay" },
+    { "$ref": "#/$defs/ErrorFrame" }
+  ],
+
+  "$comment": "Dispatch is normative via oneOf + the per-variant `msg_type` const under Draft 2020-12. There is no discriminator keyword reliance.",
+
+  "$defs": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "maxLength": 64,
+      "description": "Stable tenant identifier (UUID v4). LOCKED/IMMUTABLE per contracts/ids.md. Server-resolved from the access token, never a raw client value."
+    },
+    "user_id": {
+      "type": "string",
+      "format": "uuid",
+      "maxLength": 64,
+      "description": "Stable user identifier (UUID v4). LOCKED/IMMUTABLE per contracts/ids.md. Opaque surrogate, never PII."
+    },
+    "channel_id": {
+      "type": "string",
+      "format": "uuid",
+      "maxLength": 64,
+      "description": "Channel identifier (UUID v4), tenant-scoped."
+    },
+    "message_id": {
+      "type": "string",
+      "format": "uuid",
+      "maxLength": 64,
+      "description": "Message identifier (UUID v4), server-assigned. Doubles as the archival record id for the message."
+    },
+    "huddle_id": {
+      "type": "string",
+      "format": "uuid",
+      "maxLength": 64,
+      "description": "1-on-1 huddle session identifier (UUID v4), server-assigned. Doubles as the archival record id for the huddle."
+    },
+    "client_msg_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]{1,64}$",
+      "maxLength": 64,
+      "description": "Client-generated idempotency / ack-correlation key. Charset restricted to [A-Za-z0-9._-] to forbid control characters and whitespace (log-injection defense). Echoed back on chat.ack."
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]{1,64}$",
+      "maxLength": 64,
+      "description": "Correlation id for an error frame, matching the X-Request-Id correlation convention in contracts/openapi.yaml."
+    },
+    "iso_datetime": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 64,
+      "description": "RFC 3339 / ISO 8601 date-time, UTC."
+    },
+    "text_content": {
+      "type": "string",
+      "maxLength": 16384,
+      "description": "Chat message body. Bounded at 16 KiB to remove a DoS-via-parse vector. Never logged in plaintext; never echoed in error frames."
+    },
+    "content_type": {
+      "type": "string",
+      "enum": ["text", "markdown"],
+      "description": "Rendering hint for the message body."
+    },
+    "presence_status": {
+      "type": "string",
+      "enum": ["online", "away", "busy", "offline"]
+    },
+    "typing_state": {
+      "type": "string",
+      "enum": ["start", "stop"]
+    },
+    "sha256_hex": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$",
+      "maxLength": 64,
+      "description": "Lowercase hex SHA-256 digest, or null. RESERVED (define-only) for R-009 immutable archiving; R-001 never computes or verifies it."
+    },
+
+    "ArchivalMeta": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Hash-chain-ready archival metadata carried on every durable record (chat message, huddle). DEFINE-ONLY: R-001 sets record_id/created_at/seq; the hash fields are RESERVED and left null until R-009 builds the tamper-evident chain. Mirrors the Sentinel F-003 audit pattern (sequence + prev-hash + content-hash) without implementing the chain. See ADR-0001 D3.",
+      "required": ["schema_version", "record_id", "created_at", "seq", "prev_record_hash", "content_hash"],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "1",
+          "description": "Archival envelope version. Bumped only by an ADR + migration."
+        },
+        "record_id": {
+          "type": "string",
+          "format": "uuid",
+          "maxLength": 64,
+          "description": "The durable record id (= message_id for a message, = huddle_id for a huddle)."
+        },
+        "created_at": { "$ref": "#/$defs/iso_datetime" },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Monotonic per-channel (messages) / per-tenant (huddles) ordering sequence. The ordering field a later hash chain (R-009) links over."
+        },
+        "prev_record_hash": { "$ref": "#/$defs/sha256_hex" },
+        "content_hash": { "$ref": "#/$defs/sha256_hex" }
+      }
+    },
+
+    "InspectionResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Result of the Sentinel safety inspection seam (FORK D). SEAM ONLY -- R-008 implements detection; R-001 only reserves the shape and the fail-closed semantics. status=pass on any DELIVERED chat.message (fail-closed pre-send means only passed content is delivered). status=blocked or seam_unavailable appears on a chat.ack for a rejected send. `detectors` is reserved for per-detector findings (category + outcome) and carries metadata only -- NEVER the offending content. See ADR-0001 D4.",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["pass", "blocked", "seam_unavailable"],
+          "description": "pass = inspected and allowed. blocked = a detector blocked the content. seam_unavailable = the inspection seam could not complete -> fail-closed BLOCK (Sentinel non-negotiable #5), never a silent pass."
+        },
+        "evaluated_at": { "$ref": "#/$defs/iso_datetime" },
+        "detectors": {
+          "type": "array",
+          "maxItems": 16,
+          "description": "RESERVED (R-008). Per-detector outcomes, metadata only.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["category", "outcome"],
+            "properties": {
+              "category": {
+                "type": "string",
+                "enum": ["pii", "injection", "secret"],
+                "description": "Reserved detector category aligned with the Sentinel F-005 detectors."
+              },
+              "outcome": {
+                "type": "string",
+                "enum": ["pass", "block"]
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "Signal": {
+      "description": "A single WebRTC signaling payload for a 1-on-1 huddle. Dispatch by the `kind` const. Group/SFU signaling is out of scope (1-on-1 only).",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "sdp"],
+          "properties": {
+            "kind": { "type": "string", "const": "offer" },
+            "sdp": { "type": "string", "maxLength": 65536, "description": "SDP offer blob." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "sdp"],
+          "properties": {
+            "kind": { "type": "string", "const": "answer" },
+            "sdp": { "type": "string", "maxLength": 65536, "description": "SDP answer blob." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "candidate"],
+          "properties": {
+            "kind": { "type": "string", "const": "ice-candidate" },
+            "candidate": { "type": "string", "maxLength": 1024 },
+            "sdp_mid": { "type": ["string", "null"], "maxLength": 64 },
+            "sdp_mline_index": { "type": ["integer", "null"], "minimum": 0, "maximum": 1024 }
+          }
+        }
+      ]
+    },
+
+    "SessionWelcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Server->client. First frame after the WebSocket upgrade authenticates (the access token is presented on the upgrade request; see contracts/openapi.yaml GET /realtime). Confirms the server-resolved identity so the client never asserts its own tenant_id/user_id.",
+      "required": ["msg_type", "tenant_id", "user_id", "server_time", "protocol_version"],
+      "properties": {
+        "msg_type": { "type": "string", "const": "session.welcome" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "user_id": { "$ref": "#/$defs/user_id" },
+        "server_time": { "$ref": "#/$defs/iso_datetime" },
+        "protocol_version": { "type": "string", "const": "1" }
+      },
+      "examples": [
+        {
+          "msg_type": "session.welcome",
+          "tenant_id": "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6",
+          "user_id": "7d9e2f3a-1234-5c6b-8def-0123456789ab",
+          "server_time": "2026-06-26T12:00:00Z",
+          "protocol_version": "1"
+        }
+      ]
+    },
+
+    "ChatSend": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Client->server. Send a chat message to a channel. The client supplies only client_msg_id (idempotency), channel_id, and content; tenant_id and sender are server-resolved. The server runs the inspection seam BEFORE delivery/persist (FORK D, synchronous fail-closed) and replies with chat.ack.",
+      "required": ["msg_type", "client_msg_id", "channel_id", "content"],
+      "properties": {
+        "msg_type": { "type": "string", "const": "chat.send" },
+        "client_msg_id": { "$ref": "#/$defs/client_msg_id" },
+        "channel_id": { "$ref": "#/$defs/channel_id" },
+        "content": { "$ref": "#/$defs/text_content" },
+        "content_type": { "$ref": "#/$defs/content_type" }
+      },
+      "examples": [
+        {
+          "msg_type": "chat.send",
+          "client_msg_id": "c-01HZX9Q2K3T4V5",
+          "channel_id": "b3c4d5e6-abcd-1234-ef01-234567890abc",
+          "content": "Ship R-001 today.",
+          "content_type": "text"
+        }
+      ]
+    },
+
+    "ChatMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Server->client. A delivered chat message (broadcast to channel members). This is the canonical durable message envelope: it carries the archival-ready fields (FORK C, baked-now) and the inspection result (always status=pass, since fail-closed pre-send means only passed content is ever delivered).",
+      "required": ["msg_type", "message_id", "tenant_id", "channel_id", "sender_user_id", "content", "content_type", "archival", "inspection"],
+      "properties": {
+        "msg_type": { "type": "string", "const": "chat.message" },
+        "message_id": { "$ref": "#/$defs/message_id" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "channel_id": { "$ref": "#/$defs/channel_id" },
+        "sender_user_id": { "$ref": "#/$defs/user_id" },
+        "content": { "$ref": "#/$defs/text_content" },
+        "content_type": { "$ref": "#/$defs/content_type" },
+        "archival": { "$ref": "#/$defs/ArchivalMeta" },
+        "inspection": { "$ref": "#/$defs/InspectionResult" }
+      },
+      "examples": [
+        {
+          "msg_type": "chat.message",
+          "message_id": "c4d5e6f7-bcde-2345-f012-34567890abcd",
+          "tenant_id": "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6",
+          "channel_id": "b3c4d5e6-abcd-1234-ef01-234567890abc",
+          "sender_user_id": "7d9e2f3a-1234-5c6b-8def-0123456789ab",
+          "content": "Ship R-001 today.",
+          "content_type": "text",
+          "archival": {
+            "schema_version": "1",
+            "record_id": "c4d5e6f7-bcde-2345-f012-34567890abcd",
+            "created_at": "2026-06-26T12:00:01Z",
+            "seq": 42,
+            "prev_record_hash": null,
+            "content_hash": null
+          },
+          "inspection": { "status": "pass", "evaluated_at": "2026-06-26T12:00:01Z" }
+        }
+      ]
+    },
+
+    "ChatAck": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Server->client. The synchronous result of a chat.send (FORK D). status=accepted -> the message was inspected, passed, persisted, and assigned message_id (delivery follows via chat.message). status=blocked -> the inspection seam blocked it OR the seam could not complete (fail-closed); error_code is set, the message is NOT delivered, and the inspection result (if any) carries metadata only. message_id is present IFF accepted; error_code is present IFF blocked.",
+      "required": ["msg_type", "client_msg_id", "channel_id", "status"],
+      "properties": {
+        "msg_type": { "type": "string", "const": "chat.ack" },
+        "client_msg_id": { "$ref": "#/$defs/client_msg_id" },
+        "channel_id": { "$ref": "#/$defs/channel_id" },
+        "status": { "type": "string", "enum": ["accepted", "blocked"] },
+        "message_id": { "$ref": "#/$defs/message_id" },
+        "error_code": {
+          "type": "string",
+          "enum": ["message_blocked", "message_too_large", "inspection_unavailable", "invalid_message"],
+          "description": "Present IFF status=blocked. message_blocked = a detector blocked the content (R-008). inspection_unavailable = the inspection seam could not complete -> fail-closed BLOCK. Never echoes the offending content."
+        },
+        "inspection": { "$ref": "#/$defs/InspectionResult" }
+      },
+      "examples": [
+        {
+          "msg_type": "chat.ack",
+          "client_msg_id": "c-01HZX9Q2K3T4V5",
+          "channel_id": "b3c4d5e6-abcd-1234-ef01-234567890abc",
+          "status": "accepted",
+          "message_id": "c4d5e6f7-bcde-2345-f012-34567890abcd"
+        },
+        {
+          "msg_type": "chat.ack",
+          "client_msg_id": "c-01HZX9Q2K3T4V6",
+          "channel_id": "b3c4d5e6-abcd-1234-ef01-234567890abc",
+          "status": "blocked",
+          "error_code": "message_blocked",
+          "inspection": { "status": "blocked", "evaluated_at": "2026-06-26T12:00:02Z" }
+        }
+      ]
+    },
+
+    "ChatRead": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Client->server. Read receipt: marks the channel read up to and including up_to_message_id.",
+      "required": ["msg_type", "channel_id", "up_to_message_id"],
+      "properties": {
+        "msg_type": { "type": "string", "const": "chat.read" },
+        "channel_id": { "$ref": "#/$defs/channel_id" },
+        "up_to_message_id": { "$ref": "#/$defs/message_id" }
+      },
+      "examples": [
+        {
+          "msg_type": "chat.read",
+          "channel_id": "b3c4d5e6-abcd-1234-ef01-234567890abc",
+          "up_to_message_id": "c4d5e6f7-bcde-2345-f012-34567890abcd"
+        }
+      ]
+    },
+
+    "TypingSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Client->server. Set this user's typing state in a channel.",
+      "required": ["msg_type", "channel_id", "state"],
+      "properties": {
+        "msg_type": { "type": "string", "const": "typing.set" },
+        "channel_id": { "$ref": "#/$defs/channel_id" },
+        "state": { "$ref": "#/$defs/typing_state" }
+      },
+      "examples": [
+        { "msg_type": "typing.set", "channel_id": "b3c4d5e6-abcd-1234-ef01-234567890abc", "state": "start" }
+      ]
+    },
+
+    "TypingUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Server->client. Broadcast that a user's typing state changed in a channel.",
+      "required": ["msg_type", "channel_id", "user_id", "state"],
+      "properties": {
+        "msg_type": { "type": "string", "const": "typing.update" },
+        "channel_id": { "$ref": "#/$defs/channel_id" },
+        "user_id": { "$ref": "#/$defs/user_id" },
+        "state": { "$ref": "#/$defs/typing_state" }
+      },
+      "examples": [
+        {
+          "msg_type": "typing.update",
+          "channel_id": "b3c4d5e6-abcd-1234-ef01-234567890abc",
+          "user_id": "7d9e2f3a-1234-5c6b-8def-0123456789ab",
+          "state": "start"
+        }
+      ]
+    },
+
+    "PresenceSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Client->server. Set this user's presence status.",
+      "required": ["msg_type", "status"],
+      "properties": {
+        "msg_type": { "type": "string", "const": "presence.set" },
+        "status": { "$ref": "#/$defs/presence_status" }
+      },
+      "examples": [
+        { "msg_type": "presence.set", "status": "online" }
+      ]
+    },
+
+    "PresenceUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Server->client. Broadcast a user's presence status to subscribers.",
+      "required": ["msg_type", "user_id", "status"],
+      "properties": {
+        "msg_type": { "type": "string", "const": "presence.update" },
+        "user_id": { "$ref": "#/$defs/user_id" },
+        "status": { "$ref": "#/$defs/presence_status" }
+      },
+      "examples": [
+        {
+          "msg_type": "presence.update",
+          "user_id": "7d9e2f3a-1234-5c6b-8def-0123456789ab",
+          "status": "away"
+        }
+      ]
+    },
+
+    "HuddleInvite": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Client->server. Start a 1-on-1 huddle with exactly one peer. The server assigns the huddle_id and signals the peer. 1-ON-1 ONLY: there is no participant list -- group huddles are R-011 (post-investment).",
+      "required": ["msg_type", "peer_user_id"],
+      "properties": {
+        "msg_type": { "type": "string", "const": "huddle.invite" },
+        "peer_user_id": { "$ref": "#/$defs/user_id" },
+        "channel_id": { "$ref": "#/$defs/channel_id" }
+      },
+      "examples": [
+        {
+          "msg_type": "huddle.invite",
+          "peer_user_id": "9f8e7d6c-5b4a-3210-fedc-ba9876543210",
+          "channel_id": "b3c4d5e6-abcd-1234-ef01-234567890abc"
+        }
+      ]
+    },
+
+    "HuddleUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Server->client. 1-on-1 huddle lifecycle. The two peers are the inviter and exactly one peer_user_id. archival is present once the huddle reaches a durable (ended) state so R-009 can archive the session record.",
+      "required": ["msg_type", "huddle_id", "tenant_id", "peer_user_id", "state"],
+      "properties": {
+        "msg_type": { "type": "string", "const": "huddle.update" },
+        "huddle_id": { "$ref": "#/$defs/huddle_id" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "peer_user_id": { "$ref": "#/$defs/user_id" },
+        "state": {
+          "type": "string",
+          "enum": ["ringing", "accepted", "active", "declined", "ended", "busy"]
+        },
+        "archival": { "$ref": "#/$defs/ArchivalMeta" }
+      },
+      "examples": [
+        {
+          "msg_type": "huddle.update",
+          "huddle_id": "d5e6f7a8-cdef-3456-0123-4567890abcde",
+          "tenant_id": "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6",
+          "peer_user_id": "9f8e7d6c-5b4a-3210-fedc-ba9876543210",
+          "state": "ringing"
+        },
+        {
+          "msg_type": "huddle.update",
+          "huddle_id": "d5e6f7a8-cdef-3456-0123-4567890abcde",
+          "tenant_id": "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6",
+          "peer_user_id": "9f8e7d6c-5b4a-3210-fedc-ba9876543210",
+          "state": "ended",
+          "archival": {
+            "schema_version": "1",
+            "record_id": "d5e6f7a8-cdef-3456-0123-4567890abcde",
+            "created_at": "2026-06-26T12:05:00Z",
+            "seq": 7,
+            "prev_record_hash": null,
+            "content_hash": null
+          }
+        }
+      ]
+    },
+
+    "HuddleHangup": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Client->server. End the 1-on-1 huddle.",
+      "required": ["msg_type", "huddle_id"],
+      "properties": {
+        "msg_type": { "type": "string", "const": "huddle.hangup" },
+        "huddle_id": { "$ref": "#/$defs/huddle_id" }
+      },
+      "examples": [
+        { "msg_type": "huddle.hangup", "huddle_id": "d5e6f7a8-cdef-3456-0123-4567890abcde" }
+      ]
+    },
+
+    "SignalSend": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Client->server. WebRTC signaling for a 1-on-1 huddle, carried over the SAME chat WebSocket (FORK E). The server relays it to the single peer as signal.relay. Signaling metadata is governed by the inspection seam; the resulting MEDIA stream is P2P and NOT content-inspected (honesty boundary).",
+      "required": ["msg_type", "huddle_id", "signal"],
+      "properties": {
+        "msg_type": { "type": "string", "const": "signal.send" },
+        "huddle_id": { "$ref": "#/$defs/huddle_id" },
+        "signal": { "$ref": "#/$defs/Signal" }
+      },
+      "examples": [
+        {
+          "msg_type": "signal.send",
+          "huddle_id": "d5e6f7a8-cdef-3456-0123-4567890abcde",
+          "signal": { "kind": "offer", "sdp": "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n..." }
+        },
+        {
+          "msg_type": "signal.send",
+          "huddle_id": "d5e6f7a8-cdef-3456-0123-4567890abcde",
+          "signal": { "kind": "ice-candidate", "candidate": "candidate:1 1 UDP 2130706431 192.0.2.1 54321 typ host", "sdp_mid": "0", "sdp_mline_index": 0 }
+        }
+      ]
+    },
+
+    "SignalRelay": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Server->client. A relayed WebRTC signaling payload from the single huddle peer (FORK E, over the chat WebSocket). from_user_id identifies the peer that sent it.",
+      "required": ["msg_type", "huddle_id", "from_user_id", "signal"],
+      "properties": {
+        "msg_type": { "type": "string", "const": "signal.relay" },
+        "huddle_id": { "$ref": "#/$defs/huddle_id" },
+        "from_user_id": { "$ref": "#/$defs/user_id" },
+        "signal": { "$ref": "#/$defs/Signal" }
+      },
+      "examples": [
+        {
+          "msg_type": "signal.relay",
+          "huddle_id": "d5e6f7a8-cdef-3456-0123-4567890abcde",
+          "from_user_id": "9f8e7d6c-5b4a-3210-fedc-ba9876543210",
+          "signal": { "kind": "answer", "sdp": "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n..." }
+        }
+      ]
+    },
+
+    "ErrorFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Server->client. A real-time protocol/transport error. Like the REST Error envelope, message is a FIXED template chosen SOLELY by error_code -- it never echoes frame content, field names, or PII. Correlate with server-side audit via request_id.",
+      "required": ["msg_type", "error_code", "message", "request_id"],
+      "properties": {
+        "msg_type": { "type": "string", "const": "error" },
+        "error_code": {
+          "type": "string",
+          "enum": ["unauthorized", "invalid_message", "message_too_large", "rate_limited", "message_blocked", "inspection_unavailable", "huddle_unavailable", "internal_error"]
+        },
+        "message": { "type": "string", "maxLength": 200 },
+        "request_id": { "$ref": "#/$defs/request_id" }
+      },
+      "examples": [
+        {
+          "msg_type": "error",
+          "error_code": "invalid_message",
+          "message": "The real-time frame is invalid or violates a field constraint.",
+          "request_id": "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+        }
+      ]
+    }
+  }
+}
