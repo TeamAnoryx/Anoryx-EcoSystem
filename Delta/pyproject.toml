@@ -4,12 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "anoryx-delta"
-version = "0.1.0"
-description = "Delta — FinOps / ERP / budget-policy domain model (D-001: contracts + types only)."
+version = "0.2.0"
+description = "Delta — FinOps / ERP / budget-policy (D-003: double-entry ledger persistence)."
 requires-python = ">=3.12"
 dependencies = [
   "pydantic>=2.7,<3",
   "jsonschema[format]>=4.22",
+  # D-003 persistence: async app driver (asyncpg) + sync migration driver (psycopg).
+  "sqlalchemy[asyncio]>=2.0,<3",
+  "alembic>=1.13",
+  "asyncpg>=0.29",
+  "psycopg[binary]>=3.1",
+  "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -18,6 +24,7 @@ dev = [
   "black",
   "pytest",
   "pytest-cov",
+  "pytest-asyncio>=0.23",
 ]
 
 [tool.setuptools.packages.find]
@@ -32,6 +39,10 @@ select = ["E", "F", "B", "I", "S"]
 # S101 (assert) and S106 (hardcoded test value) are fine in tests.
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S106"]
+# Alembic migrations build DDL by interpolating trusted module constants (schema /
+# role / table names — never user input), which DDL cannot parameterize. S608 (SQL
+# injection via string construction) does not apply to these fixed identifiers.
+"src/delta/persistence/migrations/**" = ["S608"]
 
 [tool.black]
 target-version = ["py312"]
@@ -39,12 +50,20 @@ line-length = 100
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# pytest-asyncio: async test functions run without an explicit marker.
+asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["src"]
 branch = true
+# Migrations run via the alembic CLI (subprocess), not pytest — exclude them from
+# coverage so the figure reflects the library code the suite actually exercises.
+omit = [
+  "src/delta/persistence/migrations/*",
+]
 
 [tool.coverage.report]
-# D-001 is the entire Delta surface; modules held to >=85%.
-fail_under = 85
+# >=80% total (D-003 DO-NOT-MERGE bar); the ledger-core modules
+# (persistence/ledger_store, balances, database) are held to >=90% in CI.
+fail_under = 80
 show_missing = true
