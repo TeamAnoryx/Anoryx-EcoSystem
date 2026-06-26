@@ -10,7 +10,7 @@ on:
 
 jobs:
   rendly-contracts:
-    name: Contract validation
+    name: Contract + domain validation
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -20,8 +20,13 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - name: Install deps
+        # R-002 adds pydantic (the domain package) to the install via pyproject.
         run: pip install -e ".[dev]"
       - name: Lint (ruff + black)
         run: ruff check . && black --check .
-      - name: Validate contracts (OpenAPI + message catalog + every example)
-        run: pytest --tb=short -q
+      - name: Validate contracts + domain model (schemas, invariants, examples) with coverage
+        # One pytest run executes BOTH the R-001 contract suite (tests/contracts) and the
+        # R-002 domain suite (tests/domain: invariants + JSON-Schema conformance). --cov=rendly
+        # enforces the pyproject fail_under gate, so a domain suite that did not run would leave
+        # the package uncovered and FAIL — proving the lane executes the domain tests, not skips.
+        run: pytest --cov=rendly --cov-report=term-missing --tb=short -q

@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rendly:domain:v1",
+  "title": "Rendly Internal Domain Model",
+  "description": "Storage-agnostic shapes for the Rendly identity/membership domain (R-002). Every object is closed (additionalProperties:false) and every field bounded (maxLength/minLength), mirroring the R-001 contract dialect in contracts/messages.schema.json: closed schemas remove a silent smuggling channel and bounded fields remove a DoS-via-parse vector. The id formats and the on-the-wire shapes (Tenant aside) reproduce R-001's LOCKED contracts/openapi.yaml component schemas byte-for-byte so the domain and the wire agree by construction; the contract is the law and this schema conforms to it, never the reverse. This schema validates the SHAPE of each entity; relational invariants (a Membership's tenant_id equals both its user's and its channel's; external_ref present IFF source=delta_team) are enforced by the Pydantic model validators in src/rendly/ and proven by tests/domain/, exactly as Delta D-001 splits shape (schema) from relational integrity (validators). HONESTY BOUNDARIES (non-removable): (1) 'intent' reduces to a User's org-role + team-affiliation fields ONLY; there is NO Intent entity, NO preference vectors, and NO matching algorithm here — intent-based matching is the post-investment tier (R-016..R-026) and is deferred. (2) Profile (org_role + team) is the internal superset R-002 adds over R-001's wire User projection; these fields are NEVER serialized through R-001's closed User shape, so they are not a contract change to R-001. (3) Channel.source/external_ref are the RESERVED Delta-team auto-mapping seam (R-006/D-016); the domain always constructs source=manual and never auto-maps.",
+
+  "$defs": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "maxLength": 64,
+      "description": "Ecosystem tenant join key (UUID v4). LOCKED/IMMUTABLE per contracts/ids.md; server-resolved, never a raw client value. The pattern bounds it to a UUID character shape (log-injection defense), matching the wire schema."
+    },
+    "user_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "maxLength": 64,
+      "description": "Opaque user surrogate (UUID v4), never PII. LOCKED/IMMUTABLE per contracts/ids.md."
+    },
+    "channel_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "maxLength": 64,
+      "description": "Channel identifier (UUID v4), tenant-scoped. LOCKED/IMMUTABLE per contracts/ids.md."
+    },
+    "iso_datetime": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 64,
+      "description": "RFC 3339 / ISO 8601 date-time, UTC (the wire format)."
+    },
+    "display_name": { "type": "string", "maxLength": 128 },
+    "status_text": { "type": ["string", "null"], "maxLength": 256 },
+    "channel_name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "external_ref": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Za-z0-9._:-]{1,64}$",
+      "maxLength": 64,
+      "description": "RESERVED Delta-team auto-mapping pointer (opaque). null unless source=delta_team (R-006/D-016 seam). Charset-bounded (log-injection defense) — a strict subset of R-001's pattern-less ≤64 string. The source<->external_ref pairing is enforced by the Channel model validator, not the schema."
+    },
+    "team": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Internal team/department affiliation slug. NOT on R-001's wire User; part of the Profile superset (FORK E). Absence is null, not the empty string."
+    },
+
+    "PresenceStatus": {
+      "type": "string",
+      "enum": ["online", "away", "busy", "offline"],
+      "description": "Matches the LOCKED 4-value wire enum (contracts/openapi.yaml User.presence + messages.schema.json presence_status)."
+    },
+    "ChannelType": { "type": "string", "enum": ["public", "private", "dm"] },
+    "ChannelSource": {
+      "type": "string",
+      "enum": ["manual", "delta_team"],
+      "description": "Provenance. manual only in normal construction; delta_team is the reserved auto-mapping seam (R-006/D-016)."
+    },
+    "ChannelRole": { "type": "string", "enum": ["owner", "admin", "member", "guest"] },
+    "OrgRole": {
+      "type": "string",
+      "enum": ["admin", "member", "guest"],
+      "description": "Per-tenant org role (FORK B). Distinct axis from the per-channel ChannelRole; deliberately no 'owner' at org level. NOT on R-001's wire."
+    },
+
+    "Tenant": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The organization boundary / isolation scoping root. Not a wire resource in R-001; the minimal aggregate the domain scopes against.",
+      "required": ["tenant_id", "created_at"],
+      "properties": {
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "created_at": { "$ref": "#/$defs/iso_datetime" }
+      }
+    },
+
+    "User": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Tenant-local user identity. Matches the LOCKED contracts/openapi.yaml User shape exactly (status_text nullable/optional). The affiliation fields live on Profile, not here (FORK A/E).",
+      "required": ["user_id", "tenant_id", "display_name", "presence", "created_at"],
+      "properties": {
+        "user_id": { "$ref": "#/$defs/user_id" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "display_name": { "$ref": "#/$defs/display_name" },
+        "status_text": { "$ref": "#/$defs/status_text" },
+        "presence": { "$ref": "#/$defs/PresenceStatus" },
+        "created_at": { "$ref": "#/$defs/iso_datetime" }
+      }
+    },
+
+    "Profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Internal affiliation overlay on a User (FORK E superset). org_role + team are NOT serialized through R-001's wire User.",
+      "required": ["user_id", "tenant_id", "org_role"],
+      "properties": {
+        "user_id": { "$ref": "#/$defs/user_id" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "org_role": { "$ref": "#/$defs/OrgRole" },
+        "team": { "$ref": "#/$defs/team" }
+      }
+    },
+
+    "Channel": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Role-based secure channel. Matches the LOCKED contracts/openapi.yaml Channel shape. source/external_ref are the reserved Delta-team seam; the pairing rule is a model invariant, not encoded here.",
+      "required": [
+        "channel_id", "tenant_id", "name", "type", "source",
+        "external_ref", "created_by", "created_at", "archived"
+      ],
+      "properties": {
+        "channel_id": { "$ref": "#/$defs/channel_id" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "name": { "$ref": "#/$defs/channel_name" },
+        "type": { "$ref": "#/$defs/ChannelType" },
+        "source": { "$ref": "#/$defs/ChannelSource" },
+        "external_ref": { "$ref": "#/$defs/external_ref" },
+        "created_by": { "$ref": "#/$defs/user_id" },
+        "created_at": { "$ref": "#/$defs/iso_datetime" },
+        "archived": { "type": "boolean" }
+      }
+    },
+
+    "Membership": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "User<->Channel relation, tenant- and role-scoped. Matches the LOCKED contracts/openapi.yaml Membership shape. The cross-tenant-equality invariant (tenant_id == user's == channel's) is enforced by bind_membership, not the schema.",
+      "required": ["channel_id", "tenant_id", "user_id", "role", "added_at"],
+      "properties": {
+        "channel_id": { "$ref": "#/$defs/channel_id" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "user_id": { "$ref": "#/$defs/user_id" },
+        "role": { "$ref": "#/$defs/ChannelRole" },
+        "added_at": { "$ref": "#/$defs/iso_datetime" }
+      }
+    }
+  }
+}
