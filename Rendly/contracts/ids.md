@@ -19,10 +19,12 @@ without a migration. DO NOT rename these fields without an ADR and a full migrat
 - `tenant_id` is REQUIRED on every resource, every real-time message envelope, and every
   archival record.
 - **JWT → ID binding (security-critical).** `tenant_id` and the acting `user_id` are
-  resolved AUTHORITATIVELY and SERVER-SIDE from the verified Rendly access token (see
-  `contracts/openapi.yaml` `bearerAuth`). They are NEVER read from a client-supplied body
-  field or header. A token may act only within its bound `tenant_id`; a request that names a
-  different tenant in a path/body is rejected with 403 (`tenant_context_mismatch`). This is
+  resolved AUTHORITATIVELY and SERVER-SIDE from the verified Rendly access token (see the
+  `contracts/openapi.yaml` `oauth2` scheme). They are NEVER read from a client-supplied body
+  field or header. A token may act only within its bound `tenant_id`. R-001 exposes NO
+  client-supplied field that carries `tenant_id`, so cross-tenant access is structurally
+  prevented via tenant-scoped 404 resolution; the `tenant_context_mismatch` code is reserved
+  for a future tenant-referencing request field. This is
   the Rendly analog of Sentinel's virtual-API-key → ID binding — the credential, never the
   client payload, is the source of truth for identity and tenant scope.
 - `channel_id`, `message_id`, and `huddle_id` identify resources WITHIN a tenant. Every

@@ -138,7 +138,10 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/RevokeRequest" }
       responses:
-        "204": { description: The token is revoked (or was already invalid). }
+        "204":
+          description: The token is revoked (or was already invalid).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -328,7 +331,10 @@ paths:
       operationId: archiveChannel
       security: [{ oauth2: ["channels:admin"] }]
       responses:
-        "204": { description: The channel is archived. }
+        "204":
+          description: The channel is archived.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -353,6 +359,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MembershipList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -391,7 +398,10 @@ paths:
       operationId: removeChannelMember
       security: [{ oauth2: ["channels:admin"] }]
       responses:
-        "204": { description: The member is removed (idempotent). }
+        "204":
+          description: The member is removed (idempotent).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -440,11 +450,17 @@ paths:
         AUTH: the access token is presented on the upgrade request via
         `Authorization: Bearer <jwt>` (non-browser clients) or, for browsers that cannot
         set the Authorization header on a WebSocket, via the `Sec-WebSocket-Protocol`
-        subprotocol value `rendly.bearer.<jwt>`. The server resolves tenant_id + user_id
-        from the token and emits a `session.welcome` frame; a missing/invalid/expired
-        token fails the handshake with 401 (no socket is opened).
+        subprotocol value `rendly.bearer.<jwt>`. The server MUST treat that subprotocol
+        value as a SECRET — never log or archive it, and acknowledge only a non-secret
+        subprotocol token in the handshake response (otherwise the bearer leaks into
+        proxy/access logs). The server resolves tenant_id + user_id from the token and
+        emits a `session.welcome` frame; a missing/invalid/expired token fails the
+        handshake with 401 (no socket is opened). The handshake requires only `chat:read`,
+        so a read-only client (dashboard, archive bot) may receive; `chat:write` is
+        enforced per-frame at send time, so a token lacking it can open the socket but its
+        `chat.send` frames are rejected.
       operationId: openRealtime
-      security: [{ oauth2: ["chat:read", "chat:write"] }]
+      security: [{ oauth2: ["chat:read"] }]
       responses:
         "101": { description: Switching Protocols — the WebSocket is established; see contracts/messages.schema.json for frames. }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -502,6 +518,11 @@ components:
         actions in addition to scopes. `authorization_code`/OIDC is a documented R-003
         extension seam (and the O-010 unified-identity federation seam) — NOT offered in
         R-001.
+        NOTE: R-001 exposes NO client-supplied field that carries tenant_id, so cross-tenant
+        isolation is enforced structurally via tenant-scoped 404 resolution (a resource in
+        another tenant is indistinguishable from a non-existent one). The
+        `tenant_context_mismatch` error code is reserved for a future tenant-referencing
+        request field.
       flows:
         password:
           tokenUrl: https://rendly.anoryx.io/v1/auth/token
@@ -561,6 +582,7 @@ components:
       schema:
         type: string
         format: uuid
+        pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
         maxLength: 64
     ChannelIdPath:
       name: channel_id
@@ -570,6 +592,7 @@ components:
       schema:
         type: string
         format: uuid
+        pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
         maxLength: 64
 
   responses:
@@ -707,8 +730,8 @@ components:
         Deliberately minimal: no request body, no headers, no PII. `message` is a FIXED
         template chosen SOLELY by `error_code` — there is NO request-derived interpolation
         — so each code maps 1:1 to one stable string. The code/message pairing is NOT
-        schema-enforced (independent enums) and MUST be guaranteed by the implementation
-        and covered by a unit test. Correlate with server-side records via request_id.
+        schema-enforced (independent enums) and is maintained by the implementation and
+        covered by a unit test. Correlate with server-side records via request_id.
       required: [error_code, message, request_id]
       additionalProperties: false
       properties:
@@ -848,7 +871,7 @@ components:
         token_use: { type: string, const: access }
         iat: { type: integer, minimum: 0, maximum: 9007199254740991 }
         exp: { type: integer, minimum: 0, maximum: 9007199254740991 }
-        jti: { type: string, maxLength: 64, description: Token id (revocation/replay defense). }
+        jti: { type: string, pattern: "^[A-Za-z0-9._-]{1,64}$", maxLength: 64, description: "Token id (revocation/replay defense). Charset-bounded against log injection." }
         idp_subject:
           type: ["string", "null"]
           maxLength: 256
@@ -954,19 +977,17 @@ components:
     ChannelCreate:
       type: object
       additionalProperties: false
+      description: |
+        Channel creation input. R-001 creates only `source:"manual"` channels. The
+        Delta-team mapping fields (`source:"delta_team"` / `external_ref`) are NOT
+        client-settable — they are server-managed and reserved for the R-006/D-016 mapping
+        seam. Because the object is closed (additionalProperties:false), a client-supplied
+        `external_ref` is REJECTED (400), not silently ignored, so a client can never seed
+        the mapping pointer.
       required: [name, type]
       properties:
         name: { type: string, minLength: 1, maxLength: 128 }
         type: { type: string, enum: [public, private, dm] }
-        source:
-          type: string
-          enum: [manual]
-          default: manual
-          description: R-001 accepts only `manual`. The `delta_team` seam is not creatable via the API in R-001.
-        external_ref:
-          type: ["string", "null"]
-          maxLength: 64
-          description: RESERVED; ignored in R-001 (reserved for the R-006/D-016 mapping seam).
       example:
         name: "eng-platform"
         type: private
@@ -1007,15 +1028,17 @@ components:
     Membership:
       type: object
       additionalProperties: false
-      description: A channel membership with its RBAC role.
-      required: [channel_id, user_id, role, added_at]
+      description: A channel membership with its RBAC role. Carries tenant_id like every other resource (contracts/ids.md).
+      required: [channel_id, tenant_id, user_id, role, added_at]
       properties:
         channel_id: { type: string, format: uuid, maxLength: 64 }
+        tenant_id: { type: string, format: uuid, maxLength: 64 }
         user_id: { type: string, format: uuid, maxLength: 64 }
         role: { type: string, enum: [owner, admin, member, guest] }
         added_at: { type: string, format: date-time, maxLength: 64 }
       example:
         channel_id: "b3c4d5e6-abcd-1234-ef01-234567890abc"
+        tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
         user_id: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
         role: owner
         added_at: "2026-06-10T10:00:00Z"
@@ -1042,6 +1065,7 @@ components:
       example:
         members:
           - channel_id: "b3c4d5e6-abcd-1234-ef01-234567890abc"
+            tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
             user_id: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
             role: owner
             added_at: "2026-06-10T10:00:00Z"
@@ -1081,6 +1105,17 @@ components:
       properties:
         status: { type: string, enum: [pass, blocked, seam_unavailable] }
         evaluated_at: { type: string, format: date-time, maxLength: 64 }
+        detectors:
+          type: array
+          maxItems: 16
+          description: RESERVED (R-008). Per-detector outcomes, metadata only — never the offending content. Mirrors messages.schema.json InspectionResult.detectors.
+          items:
+            type: object
+            additionalProperties: false
+            required: [category, outcome]
+            properties:
+              category: { type: string, enum: [pii, injection, secret] }
+              outcome: { type: string, enum: [pass, block] }
       example:
         status: pass
         evaluated_at: "2026-06-26T12:00:01Z"

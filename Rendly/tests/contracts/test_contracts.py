@@ -168,12 +168,71 @@ def test_endpoint_examples_were_discovered():
 
 
 # --------------------------------------------------------- error envelope maintainability
-def test_error_code_message_enum_parity():
-    doc = _load_openapi()
-    error = doc["components"]["schemas"]["Error"]
+# Canonical 1:1 REST error_code -> fixed message pairing (positional in the schema enums).
+# This dict is the source of truth: a reorder or mis-pairing in the spec must fail a test.
+_REST_ERROR_PAIRS = {
+    "invalid_request": "The request body is invalid or violates a field constraint.",
+    "request_too_large": "The request body exceeds the maximum allowed size.",
+    "invalid_token": "The access token is missing, expired, or invalid.",
+    "tenant_context_mismatch": "The addressed tenant does not match the access token's authorized tenant.",
+    "forbidden": "The caller is not permitted to perform this action.",
+    "message_blocked": "Content was blocked by the safety inspection seam.",
+    "rate_limit_exceeded": "Rate limit exceeded. Retry after the window resets.",
+    "not_found": "The requested resource was not found.",
+    "conflict": "The request conflicts with the current state of the resource.",
+    "internal_error": "An internal error occurred. The request was not processed.",
+}
+
+
+def test_rest_error_enums_are_the_canonical_pairing():
+    error = _load_openapi()["components"]["schemas"]["Error"]
     codes = error["properties"]["error_code"]["enum"]
     messages = error["properties"]["message"]["enum"]
+    assert len(codes) == len(messages)
+    assert (
+        dict(zip(codes, messages, strict=True)) == _REST_ERROR_PAIRS
+    ), "Error.error_code/Error.message enums drifted from the canonical 1:1 pairing"
+
+
+def test_rest_error_examples_use_the_canonical_pairing():
+    # Every Error-envelope example in the spec must pair the right message with its code,
+    # so a downstream builder copying an example cannot inherit a mis-paired code/message.
+    doc = _load_openapi()
+    seen = 0
+    for _label, media in _iter_media_objects(doc):
+        values = []
+        if "example" in media:
+            values.append(media["example"])
+        if "examples" in media:
+            values.extend(e["value"] for e in media["examples"].values())
+        for v in values:
+            if isinstance(v, dict) and "error_code" in v and "message" in v:
+                assert (
+                    _REST_ERROR_PAIRS.get(v["error_code"]) == v["message"]
+                ), f"error example pairs '{v['error_code']}' with a non-canonical message"
+                seen += 1
+    assert seen, "no Error-envelope examples found to check pairing"
+
+
+def test_ws_error_frame_enums_parity():
+    err = _load_messages()["$defs"]["ErrorFrame"]["properties"]
+    codes = err["error_code"]["enum"]
+    messages = err["message"]["enum"]
     assert len(codes) == len(messages), (
-        "Error.error_code and Error.message enums must stay 1:1 "
+        f"ErrorFrame error_code/message enums must stay 1:1 "
         f"(codes={len(codes)}, messages={len(messages)})"
     )
+
+
+def test_archival_and_inspection_shapes_match_across_specs():
+    # Drift guard: ArchivalMeta + InspectionResult are defined in BOTH the OpenAPI schemas
+    # and the WS message catalog; their shapes must not diverge silently.
+    oa = _load_openapi()["components"]["schemas"]
+    ws = _load_messages()["$defs"]
+    for name in ("ArchivalMeta", "InspectionResult"):
+        assert set(oa[name].get("properties", {})) == set(
+            ws[name].get("properties", {})
+        ), f"{name} property set drifted between openapi.yaml and messages.schema.json"
+        assert set(oa[name].get("required", [])) == set(
+            ws[name].get("required", [])
+        ), f"{name} required set drifted between openapi.yaml and messages.schema.json"
