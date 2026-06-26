@@ -1,8 +1,12 @@
 name: Anoryx-AI-Orchestrator CI
 
-# Contract-validation lane for O-001. Triggers on the Orchestrator tree AND on the
-# Sentinel contracts it references by $ref — a change to events.schema.json /
-# policy.schema.json that would break an Orchestrator example must run this lane.
+# Two lanes:
+#   orchestrator-contract    — O-001/O-002 contract validation (OpenAPI 3.1 + locked
+#                              F-002 schemas). No DB.
+#   orchestrator-integration — O-003 ingest pipeline + the first Alembic migration, on a
+#                              fresh Postgres. Runs the NON-STUBBED e2e. CI on a fresh DB
+#                              is the authority of record (local green can mask drift).
+# Triggers on the Orchestrator tree AND on the Sentinel contracts it references by $ref.
 on:
   push:
     branches: [main]
@@ -25,9 +29,53 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - name: Install contract toolchain
+      - name: Install (contract toolchain + runtime deps)
         run: pip install -e "Anoryx-AI-Orchestrator[dev]"
       - name: Lint (ruff + black)
         run: ruff check Anoryx-AI-Orchestrator && black --check Anoryx-AI-Orchestrator
-      - name: Validate contract (pytest)
+      - name: Validate contract + unit tests (pytest, no DB — integration tests skip)
         run: pytest Anoryx-AI-Orchestrator/tests --tb=short -q
+
+  orchestrator-integration:
+    name: Integration (ingest pipeline + first migration on Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: orchestrator
+          POSTGRES_PASSWORD: orchestrator_ci_only
+          POSTGRES_DB: orchestrator_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: Anoryx-AI-Orchestrator
+    steps:
+      # Full-repo checkout so events.schema.json (../../Anoryx-Sentinel/contracts) resolves
+      # for runtime payload validation.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install (runtime + dev)
+        run: pip install -e ".[dev]"
+      # The conftest session fixture runs `alembic upgrade head` and provisions the
+      # orchestrator_app SCRAM password before the DB tests; the non-stubbed e2e then
+      # exercises the real HMAC receiver -> pipeline -> Postgres path.
+      - name: Test (pytest — non-stubbed e2e on a fresh Postgres)
+        env:
+          # Ephemeral CI service credentials (mirrors sentinel-ci's inline DB URLs). The
+          # per-event HMAC signing secret is NOT set here — every ingest test monkeypatches
+          # its own ORCH_INGEST_HMAC_SECRET, so no signing secret lives in this workflow.
+          ORCH_DATABASE_URL: postgresql://orchestrator:orchestrator_ci_only@localhost:5432/orchestrator_ci
+          ORCH_APP_DATABASE_URL: postgresql://orchestrator_app:orchestrator_ci_only@localhost:5432/orchestrator_ci
+          ORCH_PROVISION_APP_ROLE: "1"
+          # CI Postgres has TLS off; disable asyncpg's SSL probe (also avoids a Windows
+          # ConnectionResetError when the same suite is run locally by the auditor).
+          ORCH_DB_SSL: disable
+        run: pytest tests --tb=short -q

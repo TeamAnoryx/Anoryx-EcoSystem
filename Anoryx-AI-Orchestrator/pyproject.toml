@@ -1,42 +1,79 @@
-# Anoryx-AI-Orchestrator — O-001 contract test harness ONLY.
+# Anoryx-AI-Orchestrator — contract harness (O-001/O-002) + ingest runtime (O-003).
 #
-# This is intentionally a deps-only / test-only project: O-001 is contract-only
-# (no runtime, no package, no DB). There is no importable source package here yet;
-# `packages = []` disables setuptools auto-discovery so `pip install -e .[dev]`
-# installs the validation toolchain without trying to build a package.
+# O-001/O-002 were contract-only. O-003 (ADR-0003) adds the first runtime: the event
+# ingest pipeline. The `orchestrator` package now ships under src/, so the project has
+# real runtime dependencies. The O-001/O-002 contract-validation tests + their toolchain
+# (in [dev]) are unchanged and still run in the contract CI lane.
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "anoryx-orchestrator-contracts"
-version = "0.0.0"
-description = "Anoryx-AI-Orchestrator API contract (O-001) — OpenAPI 3.1 spec + contract-validation tests."
+name = "anoryx-orchestrator"
+version = "0.1.0"
+description = "Anoryx-AI-Orchestrator — internal API contract (O-001/O-002) + event ingest pipeline (O-003)."
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "fastapi>=0.115,<1",
+    # SQLAlchemy 2.x async API; asyncpg for the async engine, psycopg for Alembic (sync).
+    "sqlalchemy[asyncio]>=2.0,<3",
+    "asyncpg>=0.29,<1",
+    "psycopg[binary]>=3.1,<4",
+    "alembic>=1.13,<2",
+    # JSON Schema Draft 2020-12 validator — same library + band Sentinel uses, so no
+    # parser-differential validating F-002 events at runtime + in the contract tests.
+    "jsonschema[format]>=4.22,<5",
+    "python-dotenv>=1.0,<2",
+]
 
 [project.optional-dependencies]
 dev = [
-  # YAML loader for the OpenAPI spec.
-  "pyyaml>=6.0,<7",
-  # JSON Schema Draft 2020-12 validator — same library + version band Sentinel uses
-  # for its runtime + contract tests, so no parser-differential between products.
-  "jsonschema[format]>=4.22,<5",
-  # OpenAPI 3.1 structural validation of the spec document.
-  "openapi-spec-validator>=0.7,<1",
-  # Codegen smoke (DoD #4): a types/client generator must consume the spec.
-  "datamodel-code-generator>=0.25,<1",
-  "pytest>=8,<9",
-  # Lint/format the Orchestrator Python (the contract tests + any future modules).
-  # An orchestrator-only PR is not covered by sentinel-ci's repo-wide lint, so this
-  # lane lints its own tree (mirrors the ci-lint-repo-wide discipline per product).
-  "ruff>=0.5,<1",
-  "black>=24,<26",
+    # Contract-validation toolchain (O-001/O-002 — unchanged).
+    "pyyaml>=6.0,<7",
+    "openapi-spec-validator>=0.7,<1",
+    "datamodel-code-generator>=0.25,<1",
+    # Test + lint.
+    "pytest>=8,<9",
+    "pytest-asyncio>=0.23,<1",
+    "httpx>=0.27,<1",
+    "ruff>=0.5,<1",
+    "black>=24,<26",
 ]
+# Serving only (not needed by CI or tests); kept out of core so the contract lane stays
+# lean and the test suite drives the app via httpx ASGITransport.
+server = ["uvicorn[standard]>=0.30,<1"]
 
-[tool.setuptools]
-packages = []
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "I", "S"]
+# S603/S607: trusted literal subprocess (contract codegen). S101 handled per-file (tests).
+ignore = ["S603", "S607"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use assert; S106 hardcoded test secrets are fakes.
+"tests/**/*.py" = ["S101", "S106"]
+# Migrations build DDL with f-strings over CONSTANT table/role names (never user input).
+"src/orchestrator/persistence/migrations/**/*.py" = ["S608"]
+
+[tool.black]
+target-version = ["py312"]
+line-length = 100
 
 [tool.pytest.ini_options]
+asyncio_mode = "auto"
+# One session-scoped event loop for all async tests + fixtures. Per-function loops + asyncpg
+# are flaky on Windows (a direct connect in a fresh function loop can be reset mid-handshake,
+# WinError 10054); a single warm loop is stable on Windows and matches Linux CI behaviour.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
+markers = [
+    "integration: requires a live Postgres + migrations (skipped when ORCH_* DB unset)",
+]
