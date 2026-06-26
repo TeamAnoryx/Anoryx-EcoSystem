@@ -8,16 +8,19 @@ info:
     emits governance/usage events UP) and Delta (FinOps/budget policy, which submits
     policies DOWN for distribution to Sentinels).
 
-    SCOPE OF THIS DOCUMENT (O-001): this contract defines THREE seams plus the
-    transport security scheme. It is CONTRACT-ONLY — there is no runtime, no
-    persistence, and no enforcement code behind it yet. The ingest, distribution,
-    persistence, registry, UI, and deploy layers are later tasks (O-002…O-008) and
-    MUST NOT be inferred from this document.
+    SCOPE OF THIS DOCUMENT (O-001 + O-002): O-001 defined THREE seams plus the
+    transport security scheme; O-002 adds the cross-product event ENVELOPE that wraps the
+    ingest payload, plus bounded replay, dead-letter (DLQ), and schema-version negotiation
+    (see the O-002 section below). It is CONTRACT-ONLY — there is no runtime, persistence,
+    or enforcement code behind it yet. The ingest pipeline, distribution engine, registry,
+    persistence, UI, and deploy layers are later tasks (O-003…O-008) and MUST NOT be
+    inferred from this document.
 
     ## The three seams
       1. Event ingest (Sentinel → Orchestrator): Sentinel pushes events up via an
-         HMAC-signed webhook POST. Bodies conform to the LOCKED Sentinel event
-         schema (contracts/events.schema.json, $id `sentinel:events:v1`).
+         HMAC-signed webhook POST. Bodies conform to the O-002 event envelope
+         (event-envelope.schema.json), whose payload wraps the LOCKED Sentinel event
+         schema (contracts/events.schema.json, $id `sentinel:events:v1`) UNMODIFIED.
       2. Policy distribution intake (Delta → Orchestrator): Delta submits a policy
          record (conforming to the LOCKED contracts/policy.schema.json, $id
          `sentinel:policy:v1`, frozen at F-008 commit a9e2344) for distribution to
@@ -75,6 +78,28 @@ info:
     intake.py) is the verifying authority that resolves authoritative scope from the
     signature and rejects body-ID disagreement. See ADR-0001 §Threat model.
 
+    ## O-002 event bus (envelope, replay, DLQ, version negotiation)
+    Every ingested event is wrapped in the canonical cross-product ENVELOPE
+    (contracts/event-envelope.schema.json, $id `anoryx:event-envelope:v1`, ADR-0002).
+    The envelope's `payload` member is the locked F-002 event, referenced by `$ref` and
+    validating UNMODIFIED. The ingest seam below is reconciled to this one event shape:
+    its body is the envelope, not a bare event. Three new bus seams (`POST /v1/bus/replays`,
+    `GET /v1/bus/dlq`, `GET /v1/bus/schema-versions`) specify bounded replay, dead-letter
+    metadata, and schema-version negotiation. These are CONTRACT-ONLY: no replay runs, no
+    message moves to a DLQ, no version is negotiated at runtime in O-002 — O-003 builds the
+    machinery.
+
+    Three envelope invariants are CONTRACT OBLIGATIONS a consumer (O-003) MUST enforce
+    fail-closed (JSON Schema cannot express them across sibling values): `event_type` MUST
+    equal `payload.event_type`; `idempotency_key` MUST equal `payload.event_id` (the F-002
+    bus dedup key); `source_product` MUST equal the mTLS-authenticated peer identity (never
+    trusted from the body, rule 7). Disagreement on any is rejected (to DLQ).
+
+    ## O-002 HONESTY BOUNDARIES (non-removable; ADR-0002)
+    (a) Replay and DLQ are SPECIFIED, not implemented — O-003 builds the machinery.
+    (b) Delivery is at-least-once; consumers MUST dedupe on idempotency_key.
+    (c) Unknown-version handling is reject-to-DLQ.
+
     Framing in this document is intentionally "audit-ready" and "risk reduction",
     never "compliant" or "blocks all attacks".
 
@@ -94,9 +119,11 @@ tags:
   - name: ingest
     description: |
       Event ingest from Sentinel (Sentinel → Orchestrator). HMAC-signed webhook
-      push. Bodies conform to the locked Sentinel event schema. The downstream
-      ingest pipeline (validation, dedup, fan-out) is O-003 and is NOT part of this
-      contract — this seam only acknowledges receipt.
+      push. Bodies conform to the O-002 event envelope (event-envelope.schema.json),
+      whose `payload` member validates against the locked Sentinel event schema
+      (events.schema.json, $id `sentinel:events:v1`) UNMODIFIED. The downstream ingest
+      pipeline (validation, dedup, fan-out) is O-003 and is NOT part of this contract —
+      this seam only acknowledges receipt.
   - name: distribution
     description: |
       Policy distribution intake from Delta (Delta → Orchestrator). Accepts an
@@ -107,6 +134,11 @@ tags:
     description: |
       Read-only metadata reads for Delta — policy distribution status and event
       query. Read-only at this stage (honesty boundary c).
+  - name: bus
+    description: |
+      O-002 ecosystem event-bus seams: bounded replay, dead-letter (DLQ) metadata, and
+      schema-version negotiation. CONTRACT-ONLY — the replay/DLQ machinery is O-003. The
+      replay seam acknowledges a request; the read seams return metadata only.
 
 paths:
   /v1/ingest/events:
@@ -115,11 +147,13 @@ paths:
       tags: [ingest]
       summary: Ingest a single governance/usage event from Sentinel
       description: |
-        Sentinel pushes one event (conforming to the locked events.schema.json,
-        $id `sentinel:events:v1`) over an HMAC-signed webhook. This seam ACKNOWLEDGES
-        receipt only; it performs no pipeline processing (that is O-003). Batching and
-        a cross-product envelope are deliberately NOT specified here (they are O-002);
-        the body is a single event so the contract is not painted into a corner.
+        Sentinel pushes one event WRAPPED in the O-002 event envelope
+        (event-envelope.schema.json, $id `anoryx:event-envelope:v1`) over an HMAC-signed
+        webhook; the envelope's `payload` member is the locked events.schema.json event
+        ($id `sentinel:events:v1`), validating UNMODIFIED. Reconciled from O-001's
+        bare-event body to one canonical event shape (ADR-0002, Fork D). This seam
+        ACKNOWLEDGES receipt only; it performs no pipeline processing (validation, dedup,
+        fan-out is O-003).
 
         Auth: mTLS (peer = Sentinel) AND an HMAC-SHA256 body signature (the F-020
         webhook pattern): the signer computes `HMAC(secret, "{timestamp}.{body}")`
@@ -135,32 +169,47 @@ paths:
       requestBody:
         required: true
         description: |
-          A single Sentinel event. Validates against the locked
-          Anoryx-Sentinel/contracts/events.schema.json (oneOf over all event
-          variants) UNMODIFIED.
+          A single Sentinel event WRAPPED in the O-002 event envelope
+          (event-envelope.schema.json, $id `anoryx:event-envelope:v1`). The envelope's
+          `payload` member validates against the locked
+          Anoryx-Sentinel/contracts/events.schema.json (oneOf over all event variants)
+          UNMODIFIED. Reconciled from O-001's bare-event body to one canonical event
+          shape (ADR-0002, Fork D). source_product is the receiver-stamped mTLS peer
+          identity (never trusted from the body); idempotency_key equals payload.event_id
+          (the bus dedup key); delivery is at-least-once (consumers MUST dedupe on
+          idempotency_key).
         content:
           application/json:
             schema:
-              $ref: "../../Anoryx-Sentinel/contracts/events.schema.json"
+              $ref: "./event-envelope.schema.json"
             examples:
-              policyDecisionDeny:
-                summary: A policy_decision_deny event (validates against events.schema.json)
+              policyDecisionDenyEnvelope:
+                summary: An event envelope wrapping a policy_decision_deny event (payload validates against events.schema.json unmodified)
                 value:
+                  schema_version: 1
+                  envelope_id: "f0e1d2c3-4b5a-4c6d-8e9f-0a1b2c3d4e5f"
                   event_type: policy_decision_deny
-                  tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
-                  team_id: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
-                  project_id: "b3c4d5e6-abcd-1234-ef01-234567890abc"
-                  agent_id: "gateway-core"
-                  event_id: "c1d2e3f4-5678-4abc-9def-0123456789ab"
-                  event_timestamp: "2026-06-26T12:00:00Z"
-                  request_id: "req-o001-ingest-example-01"
-                  action_taken: blocked
-                  policy_id: "d4e5f6a7-9012-4bcd-8ef0-123456789abc"
-                  requested_model: "gpt-4o"
-                  violation_type: "budget_cost_exceeded"
+                  source_product: sentinel
+                  occurred_at: "2026-06-26T12:00:01Z"
+                  idempotency_key: "c1d2e3f4-5678-4abc-9def-0123456789ab"
+                  sequence: 1024
+                  correlation_id: "req-o001-ingest-example-01"
+                  payload:
+                    event_type: policy_decision_deny
+                    tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+                    team_id: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
+                    project_id: "b3c4d5e6-abcd-1234-ef01-234567890abc"
+                    agent_id: "gateway-core"
+                    event_id: "c1d2e3f4-5678-4abc-9def-0123456789ab"
+                    event_timestamp: "2026-06-26T12:00:00Z"
+                    request_id: "req-o001-ingest-example-01"
+                    action_taken: blocked
+                    policy_id: "d4e5f6a7-9012-4bcd-8ef0-123456789abc"
+                    requested_model: "gpt-4o"
+                    violation_type: "budget_cost_exceeded"
       responses:
         '202':
-          description: Event accepted for (later) processing. No pipeline runs in O-001.
+          description: Event accepted for (later) processing. No pipeline runs in O-002 (honesty boundary a); the ingest pipeline is O-003.
           content:
             application/json:
               schema:
@@ -348,6 +397,151 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /v1/bus/replays:
+    post:
+      operationId: requestReplay
+      tags: [bus]
+      summary: Request a bounded replay of bus events (acknowledged only)
+      description: |
+        Requests a BOUNDED replay of previously-emitted envelopes, from a sequence
+        lower bound, a timestamp lower bound, OR a specific dead-letter entry — exactly
+        one selector (oneOf), always with a `limit` cap. Unbounded / full event-store
+        replay is deliberately not expressible (replay-amplification defense).
+
+        CONTRACT-ONLY: this seam ACKNOWLEDGES the request and assigns a `replay_id`; NO
+        replay runs in O-002 (honesty boundary a). The replay engine, the window
+        enforcement, and the rate limiting are O-003.
+
+        Auth: mTLS (peer = Delta/operator) AND a Delta service token (bearer). Replay is
+        a privileged operation bounded by window + limit + auth + rate.
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplayRequest'
+            examples:
+              fromSequence:
+                summary: Replay from a sequence lower bound, capped by limit
+                value:
+                  source_product: sentinel
+                  from_sequence: 1024
+                  limit: 100
+              fromDlq:
+                summary: Re-drive a single dead-lettered entry (replay-from-DLQ)
+                value:
+                  source_product: sentinel
+                  dlq_id: "9f8e7d6c-5b4a-4039-8281-706f5e4d3c2b"
+                  limit: 1
+      responses:
+        '202':
+          description: |
+            Replay request accepted and assigned an opaque replay_id. Acceptance is NOT
+            execution (no replay runs in O-002).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplayAccepted'
+              examples:
+                accepted:
+                  value:
+                    replay_id: "1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7081"
+                    state: pending
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /v1/bus/dlq:
+    get:
+      operationId: queryDeadLetters
+      tags: [bus]
+      summary: Query dead-letter (DLQ) entry metadata (read-only metadata)
+      description: |
+        Returns a metadata-only, cursor-paginated list of dead-lettered envelopes for
+        Delta/operator triage. READ-ONLY METADATA: dlq_id, reason, attempt count, first-
+        failed-at, and the originating envelope's classifying fields (event_type,
+        source_product, sequence). It NEVER returns the preserved `original_envelope`
+        body — that would re-expose full event payloads, which the O-001 query honesty
+        boundary forbids. Recovering a full DLQ record (to re-drive it) is done by
+        replay-from-DLQ (POST /v1/bus/replays with dlq_id), not by reading it here.
+
+        NOTE: like the O-001 query seams the service token is COARSE-GRAINED — per-tenant
+        read authorization is deferred to O-006.
+
+        Auth: mTLS (peer = Delta/operator) AND a Delta service token (bearer).
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/FilterReason'
+        - $ref: '#/components/parameters/FilterSourceProduct'
+        - $ref: '#/components/parameters/FilterSince'
+        - $ref: '#/components/parameters/FilterUntil'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: A page of dead-letter entry metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeadLetterMetadataPage'
+              examples:
+                page:
+                  value:
+                    data:
+                      - dlq_id: "9f8e7d6c-5b4a-4039-8281-706f5e4d3c2b"
+                        reason: unknown_schema_version
+                        attempt_count: 3
+                        first_failed_at: "2026-06-26T12:00:10Z"
+                        event_type: policy_decision_deny
+                        source_product: sentinel
+                        sequence: 1024
+                    next_cursor: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/bus/schema-versions:
+    get:
+      operationId: getSupportedSchemaVersions
+      tags: [bus]
+      summary: The supported envelope schema versions (version negotiation)
+      description: |
+        Returns the explicit allow-list of envelope `schema_version` values this bus
+        accepts, plus the envelope schema $id. This is the allow-list backing the
+        reject-to-DLQ rule (honesty boundary c): an inbound envelope whose schema_version
+        is not in `supported` is routed to the DLQ (a consumer obligation in O-003), never
+        best-effort-parsed.
+
+        Auth: mTLS (peer = Delta/operator) AND a Delta service token (bearer).
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      responses:
+        '200':
+          description: The supported envelope schema versions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchemaVersions'
+              examples:
+                v1:
+                  value:
+                    supported: [1]
+                    envelope_schema_id: "anoryx:event-envelope:v1"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
 components:
 
   securitySchemes:
@@ -498,6 +692,22 @@ components:
         type: string
         maxLength: 512
 
+    FilterReason:
+      name: reason
+      in: query
+      required: false
+      description: Filter dead-letter entries to a single failure reason.
+      schema:
+        $ref: '#/components/schemas/DeadLetterReason'
+
+    FilterSourceProduct:
+      name: source_product
+      in: query
+      required: false
+      description: Filter dead-letter entries to a single emitting product.
+      schema:
+        $ref: '#/components/schemas/SourceProduct'
+
   schemas:
 
     EventIngestAccepted:
@@ -636,10 +846,13 @@ components:
     EventMetadata:
       type: object
       additionalProperties: false
-      required: [event_id, event_type, event_timestamp, tenant_id]
+      required: [event_id, event_type, event_timestamp, tenant_id, team_id, project_id, agent_id]
       description: |
         Metadata-only projection of an ingested event (join keys + type + time). NEVER
-        the full event payload (honesty boundary c).
+        the full event payload (honesty boundary c). All FOUR stable IDs are required:
+        every F-002 event variant requires tenant_id/team_id/project_id/agent_id, and
+        these four are the join key between Sentinel events and Delta records, so the
+        projection guarantees them (tightened during O-002 review; see ADR-0002).
       properties:
         event_id:
           type: string
@@ -718,6 +931,230 @@ components:
               type: string
               pattern: '^[A-Za-z0-9._-]{1,64}$'
               maxLength: 64
+
+    # ----------------------------------------------------------------------- #
+    # O-002 event bus: envelope-derived enums, DLQ, replay, version negotiation
+    # ----------------------------------------------------------------------- #
+
+    SourceProduct:
+      type: string
+      enum: [sentinel, orchestrator, delta, rendly]
+      description: |
+        Emitting ecosystem product. Mirrors the source_product enum in
+        event-envelope.schema.json. The TRUSTED value is the mTLS-authenticated peer
+        identity, never the body (rule 7, ADR-0002).
+
+    DeadLetterReason:
+      type: string
+      enum:
+        - unknown_schema_version
+        - payload_schema_invalid
+        - source_identity_mismatch
+        - idempotency_conflict
+        - max_attempts_exceeded
+      description: |
+        Closed set of reasons an envelope is dead-lettered. unknown_schema_version
+        (boundary c); payload_schema_invalid (payload failed events.schema.json);
+        source_identity_mismatch (body source_product != mTLS peer); idempotency_conflict
+        (dedup-key collision under at-least-once); max_attempts_exceeded (TERMINAL — the
+        attempt ceiling that bounds DLQ poisoning).
+
+    DeadLetterMetadata:
+      type: object
+      additionalProperties: false
+      required: [dlq_id, reason, attempt_count, first_failed_at, event_type, source_product, sequence]
+      description: |
+        Metadata projection of a dead-lettered envelope (read-only). NEVER the preserved
+        original_envelope body — the O-001 read-only-metadata boundary forbids re-exposing
+        full payloads on a read seam.
+      properties:
+        dlq_id:
+          type: string
+          format: uuid
+          maxLength: 64
+        reason:
+          $ref: '#/components/schemas/DeadLetterReason'
+        attempt_count:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          description: Attempts before dead-lettering. Bounded; max_attempts_exceeded is terminal.
+        first_failed_at:
+          type: string
+          format: date-time
+          maxLength: 64
+        event_type:
+          type: string
+          pattern: '^[a-z0-9]+(_[a-z0-9]+)*$'
+          maxLength: 64
+          description: Classifying event_type of the dead-lettered envelope (triage without the body).
+        source_product:
+          $ref: '#/components/schemas/SourceProduct'
+        sequence:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+
+    DeadLetterMetadataPage:
+      type: object
+      additionalProperties: false
+      required: [data]
+      description: A cursor-paginated page of dead-letter entry metadata.
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/DeadLetterMetadata'
+        next_cursor:
+          type: [string, "null"]
+          maxLength: 512
+          description: Opaque cursor for the next page, or null when no more pages.
+
+    DeadLetterEnvelope:
+      type: object
+      additionalProperties: false
+      required: [dlq_id, original_envelope, reason, attempt_count, first_failed_at]
+      description: |
+        The dead-letter FAILURE-ENVELOPE: the original envelope PRESERVED, plus why it
+        failed, how many attempts, and when it first failed. This is the full record the
+        O-003 DLQ stores and that replay-from-DLQ re-drives; the GET /v1/bus/dlq read seam
+        returns only the DeadLetterMetadata projection (never original_envelope — O-001
+        read-only-metadata boundary). Closed and bounded (DLQ-poisoning defense).
+      properties:
+        dlq_id:
+          type: string
+          format: uuid
+          maxLength: 64
+        original_envelope:
+          $ref: './event-envelope.schema.json'
+        reason:
+          $ref: '#/components/schemas/DeadLetterReason'
+        attempt_count:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          description: Attempts before dead-lettering. max_attempts_exceeded is terminal — bounds re-drive (DLQ-poisoning defense).
+        first_failed_at:
+          type: string
+          format: date-time
+          maxLength: 64
+        last_failed_at:
+          type: string
+          format: date-time
+          maxLength: 64
+          description: Timestamp of the most recent failed attempt (RFC 3339, UTC), if any.
+
+    ReplayLimit:
+      type: integer
+      minimum: 1
+      maximum: 1000
+      description: |
+        Maximum envelopes to replay in one request (bounded 1..1000; replay-amplification
+        defense). REQUIRED on every replay selector so the cap is enforced at the schema
+        gate, not by a consumer-applied default — the contract's "always with a limit cap"
+        guarantee holds structurally.
+
+    ReplayFromSequence:
+      type: object
+      additionalProperties: false
+      required: [source_product, from_sequence, limit]
+      description: Replay from an inclusive per-source sequence lower bound.
+      properties:
+        source_product:
+          $ref: '#/components/schemas/SourceProduct'
+        from_sequence:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+          description: Inclusive lower bound on the per-source monotonic sequence.
+        limit:
+          $ref: '#/components/schemas/ReplayLimit'
+
+    ReplayFromTimestamp:
+      type: object
+      additionalProperties: false
+      required: [source_product, from_timestamp, limit]
+      description: Replay from an inclusive occurred_at lower bound.
+      properties:
+        source_product:
+          $ref: '#/components/schemas/SourceProduct'
+        from_timestamp:
+          type: string
+          format: date-time
+          maxLength: 64
+          description: Inclusive lower bound on occurred_at (RFC 3339, UTC).
+        limit:
+          $ref: '#/components/schemas/ReplayLimit'
+
+    ReplayFromDlq:
+      type: object
+      additionalProperties: false
+      required: [source_product, dlq_id, limit]
+      description: Re-drive a single dead-lettered entry (replay-from-DLQ).
+      properties:
+        source_product:
+          $ref: '#/components/schemas/SourceProduct'
+        dlq_id:
+          type: string
+          format: uuid
+          maxLength: 64
+          description: The dead-letter entry to re-drive (from GET /v1/bus/dlq).
+        limit:
+          $ref: '#/components/schemas/ReplayLimit'
+
+    ReplayRequest:
+      description: |
+        A BOUNDED replay request. Exactly ONE selector (oneOf) — from_sequence,
+        from_timestamp, or dlq_id — plus the source_product stream and a bounded limit.
+        Unbounded / full event-store replay is deliberately not expressible
+        (replay-amplification defense). CONTRACT-ONLY: acknowledged, not executed
+        (honesty boundary a).
+      oneOf:
+        - $ref: '#/components/schemas/ReplayFromSequence'
+        - $ref: '#/components/schemas/ReplayFromTimestamp'
+        - $ref: '#/components/schemas/ReplayFromDlq'
+
+    ReplayAccepted:
+      type: object
+      additionalProperties: false
+      required: [replay_id, state]
+      description: Acknowledgement that a replay request was accepted (not executed in O-002).
+      properties:
+        replay_id:
+          type: string
+          format: uuid
+          maxLength: 64
+          description: Opaque id for the accepted replay request.
+        state:
+          type: string
+          enum: [pending]
+          description: Always 'pending' at acceptance; no replay runs in O-002 (boundary a).
+
+    SchemaVersions:
+      type: object
+      additionalProperties: false
+      required: [supported, envelope_schema_id]
+      description: |
+        The explicit allow-list of envelope schema_version values this bus accepts, plus
+        the envelope schema $id. Backs the reject-to-DLQ rule (boundary c): an inbound
+        envelope whose schema_version is not in `supported` is routed to the DLQ, never
+        best-effort-parsed.
+      properties:
+        supported:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items:
+            type: integer
+            minimum: 1
+            maximum: 1000
+          description: Accepted envelope schema_version values (v1 = [1]).
+        envelope_schema_id:
+          type: string
+          const: "anoryx:event-envelope:v1"
+          maxLength: 64
+          description: The $id of the envelope schema this contract version pins.
 
   responses:
     Unauthorized:
