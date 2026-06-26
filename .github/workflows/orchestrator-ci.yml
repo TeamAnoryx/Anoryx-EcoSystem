@@ -1,0 +1,33 @@
+name: Anoryx-AI-Orchestrator CI
+
+# Contract-validation lane for O-001. Triggers on the Orchestrator tree AND on the
+# Sentinel contracts it references by $ref — a change to events.schema.json /
+# policy.schema.json that would break an Orchestrator example must run this lane.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Anoryx-AI-Orchestrator/**'
+      - 'Anoryx-Sentinel/contracts/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Anoryx-AI-Orchestrator/**'
+      - 'Anoryx-Sentinel/contracts/**'
+
+jobs:
+  orchestrator-contract:
+    name: Contract validation (OpenAPI 3.1 + locked F-002 schemas)
+    runs-on: ubuntu-latest
+    steps:
+      # Full-repo checkout so the spec's ../../Anoryx-Sentinel/contracts/*.json
+      # external $refs resolve at test time.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install contract toolchain
+        run: pip install -e "Anoryx-AI-Orchestrator[dev]"
+      - name: Lint (ruff + black)
+        run: ruff check Anoryx-AI-Orchestrator && black --check Anoryx-AI-Orchestrator
+      - name: Validate contract (pytest)
+        run: pytest Anoryx-AI-Orchestrator/tests --tb=short -q
