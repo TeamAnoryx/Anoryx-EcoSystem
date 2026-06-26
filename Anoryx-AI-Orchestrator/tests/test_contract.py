@@ -229,7 +229,9 @@ def test_mutualtls_applied_to_every_operation():
                     f"{method.upper()} {path} requirement has no second factor "
                     f"(hmacIngest/serviceToken): {requirement}"
                 )
-    assert operations >= 4, "expected at least the four O-001 operations"
+    assert (
+        operations >= 7
+    ), "expected at least seven operations: four O-001 + three O-002 bus seams"
 
 
 # --------------------------------------------------------------------------- #
@@ -453,15 +455,27 @@ def test_replay_request_examples_validate_and_limit_is_bounded():
 
 
 def test_replay_request_rejects_two_selectors():
-    # The oneOf must reject a request that supplies more than one selector.
+    # The oneOf must reject a request supplying more than one selector — all three
+    # violating pairs, not just one.
     spec = _load_spec()
-    bad = {
-        "source_product": "sentinel",
-        "from_sequence": 1,
-        "dlq_id": "9f8e7d6c-5b4a-4039-8281-706f5e4d3c2b",
-    }
-    with pytest.raises(jsonschema.ValidationError):
-        _component_validator(spec, "ReplayRequest").validate(bad)
+    validator = _component_validator(spec, "ReplayRequest")
+    dlq_id = "9f8e7d6c-5b4a-4039-8281-706f5e4d3c2b"
+    two_selector_cases = [
+        {"source_product": "sentinel", "from_sequence": 1, "dlq_id": dlq_id},
+        {
+            "source_product": "sentinel",
+            "from_sequence": 1,
+            "from_timestamp": "2026-06-26T12:00:00Z",
+        },
+        {
+            "source_product": "sentinel",
+            "from_timestamp": "2026-06-26T12:00:00Z",
+            "dlq_id": dlq_id,
+        },
+    ]
+    for bad in two_selector_cases:
+        with pytest.raises(jsonschema.ValidationError):
+            validator.validate(bad)
 
 
 def test_schema_versions_example_validates_and_pins_v1():

@@ -8,16 +8,19 @@ info:
     emits governance/usage events UP) and Delta (FinOps/budget policy, which submits
     policies DOWN for distribution to Sentinels).
 
-    SCOPE OF THIS DOCUMENT (O-001): this contract defines THREE seams plus the
-    transport security scheme. It is CONTRACT-ONLY — there is no runtime, no
-    persistence, and no enforcement code behind it yet. The ingest, distribution,
-    persistence, registry, UI, and deploy layers are later tasks (O-002…O-008) and
-    MUST NOT be inferred from this document.
+    SCOPE OF THIS DOCUMENT (O-001 + O-002): O-001 defined THREE seams plus the
+    transport security scheme; O-002 adds the cross-product event ENVELOPE that wraps the
+    ingest payload, plus bounded replay, dead-letter (DLQ), and schema-version negotiation
+    (see the O-002 section below). It is CONTRACT-ONLY — there is no runtime, persistence,
+    or enforcement code behind it yet. The ingest pipeline, distribution engine, registry,
+    persistence, UI, and deploy layers are later tasks (O-003…O-008) and MUST NOT be
+    inferred from this document.
 
     ## The three seams
       1. Event ingest (Sentinel → Orchestrator): Sentinel pushes events up via an
-         HMAC-signed webhook POST. Bodies conform to the LOCKED Sentinel event
-         schema (contracts/events.schema.json, $id `sentinel:events:v1`).
+         HMAC-signed webhook POST. Bodies conform to the O-002 event envelope
+         (event-envelope.schema.json), whose payload wraps the LOCKED Sentinel event
+         schema (contracts/events.schema.json, $id `sentinel:events:v1`) UNMODIFIED.
       2. Policy distribution intake (Delta → Orchestrator): Delta submits a policy
          record (conforming to the LOCKED contracts/policy.schema.json, $id
          `sentinel:policy:v1`, frozen at F-008 commit a9e2344) for distribution to
@@ -116,9 +119,11 @@ tags:
   - name: ingest
     description: |
       Event ingest from Sentinel (Sentinel → Orchestrator). HMAC-signed webhook
-      push. Bodies conform to the locked Sentinel event schema. The downstream
-      ingest pipeline (validation, dedup, fan-out) is O-003 and is NOT part of this
-      contract — this seam only acknowledges receipt.
+      push. Bodies conform to the O-002 event envelope (event-envelope.schema.json),
+      whose `payload` member validates against the locked Sentinel event schema
+      (events.schema.json, $id `sentinel:events:v1`) UNMODIFIED. The downstream ingest
+      pipeline (validation, dedup, fan-out) is O-003 and is NOT part of this contract —
+      this seam only acknowledges receipt.
   - name: distribution
     description: |
       Policy distribution intake from Delta (Delta → Orchestrator). Accepts an
@@ -142,11 +147,13 @@ paths:
       tags: [ingest]
       summary: Ingest a single governance/usage event from Sentinel
       description: |
-        Sentinel pushes one event (conforming to the locked events.schema.json,
-        $id `sentinel:events:v1`) over an HMAC-signed webhook. This seam ACKNOWLEDGES
-        receipt only; it performs no pipeline processing (that is O-003). Batching and
-        a cross-product envelope are deliberately NOT specified here (they are O-002);
-        the body is a single event so the contract is not painted into a corner.
+        Sentinel pushes one event WRAPPED in the O-002 event envelope
+        (event-envelope.schema.json, $id `anoryx:event-envelope:v1`) over an HMAC-signed
+        webhook; the envelope's `payload` member is the locked events.schema.json event
+        ($id `sentinel:events:v1`), validating UNMODIFIED. Reconciled from O-001's
+        bare-event body to one canonical event shape (ADR-0002, Fork D). This seam
+        ACKNOWLEDGES receipt only; it performs no pipeline processing (validation, dedup,
+        fan-out is O-003).
 
         Auth: mTLS (peer = Sentinel) AND an HMAC-SHA256 body signature (the F-020
         webhook pattern): the signer computes `HMAC(secret, "{timestamp}.{body}")`
@@ -202,7 +209,7 @@ paths:
                     violation_type: "budget_cost_exceeded"
       responses:
         '202':
-          description: Event accepted for (later) processing. No pipeline runs in O-001.
+          description: Event accepted for (later) processing. No pipeline runs in O-002 (honesty boundary a); the ingest pipeline is O-003.
           content:
             application/json:
               schema:
@@ -839,10 +846,13 @@ components:
     EventMetadata:
       type: object
       additionalProperties: false
-      required: [event_id, event_type, event_timestamp, tenant_id]
+      required: [event_id, event_type, event_timestamp, tenant_id, team_id, project_id, agent_id]
       description: |
         Metadata-only projection of an ingested event (join keys + type + time). NEVER
-        the full event payload (honesty boundary c).
+        the full event payload (honesty boundary c). All FOUR stable IDs are required:
+        every F-002 event variant requires tenant_id/team_id/project_id/agent_id, and
+        these four are the join key between Sentinel events and Delta records, so the
+        projection guarantees them (tightened during O-002 review; see ADR-0002).
       properties:
         event_id:
           type: string

@@ -231,6 +231,12 @@ and what is **explicitly deferred** to O-003.
   `events.schema.json` that would break an envelope example runs this lane (unchanged from O-001).
 - No `policy_type` is added and no Sentinel schema is widened; `policy.schema.json` stays frozen at
   F-008 `a9e2344`.
+- During O-002 review the O-001 `EventMetadata` projection (the `GET /v1/events` read seam) was
+  tightened: `team_id`, `project_id`, and `agent_id` are now **required** alongside `event_id`,
+  `event_type`, `event_timestamp`, and `tenant_id`. Every F-002 event variant requires all four stable
+  IDs, and the four are the join key between Sentinel events and Delta records — so the projection now
+  guarantees them rather than leaving three optional. The existing O-001 example already carried all
+  four, so this is a non-breaking tightening of a published projection.
 
 ## Rollback
 
