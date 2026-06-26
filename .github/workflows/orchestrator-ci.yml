@@ -69,9 +69,11 @@ jobs:
       # exercises the real HMAC receiver -> pipeline -> Postgres path.
       - name: Test (pytest — non-stubbed e2e on a fresh Postgres)
         env:
+          # Ephemeral CI service credentials (mirrors sentinel-ci's inline DB URLs). The
+          # per-event HMAC signing secret is NOT set here — every ingest test monkeypatches
+          # its own ORCH_INGEST_HMAC_SECRET, so no signing secret lives in this workflow.
           ORCH_DATABASE_URL: postgresql://orchestrator:orchestrator_ci_only@localhost:5432/orchestrator_ci
           ORCH_APP_DATABASE_URL: postgresql://orchestrator_app:orchestrator_ci_only@localhost:5432/orchestrator_ci
-          ORCH_INGEST_HMAC_SECRET: ci_only_ingest_hmac_secret
           ORCH_PROVISION_APP_ROLE: "1"
           # CI Postgres has TLS off; disable asyncpg's SSL probe (also avoids a Windows
           # ConnectionResetError when the same suite is run locally by the auditor).

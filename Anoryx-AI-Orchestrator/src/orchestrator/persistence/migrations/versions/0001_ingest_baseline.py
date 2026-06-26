@@ -136,6 +136,9 @@ def upgrade() -> None:
         sa.Column("dlq_id", sa.String(64), nullable=True),
         sa.Column("prev_hash", sa.String(64), nullable=False),
         sa.Column("row_hash", sa.String(64), nullable=False, unique=True),
+        # 'deduped' is RESERVED for a future task. O-003 does NOT append a chain link for a
+        # benign duplicate re-delivery (the chain records the first acceptance only; per-
+        # duplicate links would grow it unboundedly under at-least-once). See ADR-0003.
         sa.CheckConstraint(
             "disposition IN ('accepted','deduped','dead_lettered')",
             name="ck_ial_disposition",

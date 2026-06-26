@@ -131,6 +131,64 @@ async def test_bad_version_reject_to_dlq(app, db_conn, make_valid_envelope):
     assert chain["dlq_reason"] == "unknown_schema_version"
 
 
+async def _assert_dlq(db_conn, env, reason):
+    """Assert a DLQ failure-envelope row + a matching dead_lettered chain link exist."""
+    dlq = await db_conn.fetchrow(
+        "SELECT * FROM dead_letter_queue WHERE original_envelope->>'envelope_id' = $1",
+        env["envelope_id"],
+    )
+    assert dlq is not None, f"no DLQ row for reason {reason}"
+    assert dlq["reason"] == reason
+    chain = await db_conn.fetchrow(
+        "SELECT * FROM ingest_audit_log WHERE dlq_id = $1", dlq["dlq_id"]
+    )
+    assert chain is not None and chain["disposition"] == "dead_lettered"
+    assert chain["dlq_reason"] == reason
+    return dlq
+
+
+async def test_source_identity_mismatch_reject_to_dlq(app, db_conn, make_valid_envelope):
+    env = make_valid_envelope()
+    env["source_product"] = "delta"  # body claims a peer it is not (authenticated = sentinel)
+    assert (await _post(app, env)).status_code == 202
+    await _assert_dlq(db_conn, env, "source_identity_mismatch")
+
+
+async def test_payload_schema_invalid_reject_to_dlq(app, db_conn, make_valid_envelope):
+    env = make_valid_envelope()
+    env["payload"].pop("tenant_id")  # payload fails events.schema.json (missing stable ID)
+    assert (await _post(app, env)).status_code == 202
+    dlq = await _assert_dlq(db_conn, env, "payload_schema_invalid")
+    # tenant_id unextractable from an invalid payload → NULL (RLS-invisible to tenants).
+    assert dlq["tenant_id"] is None
+
+
+async def test_event_type_coherence_mismatch_reject_to_dlq(app, db_conn, make_valid_envelope):
+    env = make_valid_envelope()
+    env["event_type"] = "usage"  # envelope disagrees with payload.event_type (authoritative)
+    assert (await _post(app, env)).status_code == 202
+    await _assert_dlq(db_conn, env, "payload_schema_invalid")
+
+
+async def test_idempotency_key_coherence_mismatch_reject_to_dlq(app, db_conn, make_valid_envelope):
+    env = make_valid_envelope()
+    env["idempotency_key"] = "11111111-2222-4333-8444-555555555555"  # != payload.event_id
+    assert (await _post(app, env)).status_code == 202
+    await _assert_dlq(db_conn, env, "payload_schema_invalid")
+
+
+async def test_idempotency_conflict_reject_to_dlq(app, db_conn, make_valid_envelope):
+    env1 = make_valid_envelope()
+    assert (await _post(app, env1)).status_code == 202
+    # Second delivery: SAME idempotency_key (== event_id, coherent) but DIFFERENT content.
+    env2 = make_valid_envelope()
+    env2["idempotency_key"] = env1["idempotency_key"]
+    env2["payload"]["event_id"] = env1["payload"]["event_id"]  # keep the coherence invariant
+    env2["payload"]["policy_id"] = "99999999-8888-4777-8666-555555555555"  # content differs
+    assert (await _post(app, env2)).status_code == 202
+    await _assert_dlq(db_conn, env2, "idempotency_conflict")
+
+
 _OTHER_TENANT = "00000000-0000-4000-8000-000000000000"
 
 

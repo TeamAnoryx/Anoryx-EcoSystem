@@ -291,6 +291,10 @@ read cannot see tenant B's row), not by inspection.
 - **Coarse DLQ read token (carried, not introduced).** Fork E1 tenant-scopes the DLQ **store**; the
   coarse Delta read token (ADR-0001 boundary d) is an O-006 concern and O-003 does not implement the DLQ
   read seam.
+- **`validate_chain` is O(n) memory.** It fetches the full `ingest_audit_log` chain in order and
+  recomputes each link. For the O-003 scope (first migration; chain validation is audit tooling, not a
+  request-path operation) this is acceptable; a streaming cursor (`yield_per`) over the chain is the
+  O-006 hardening when the audit log grows large.
 
 ## Consequences
 
