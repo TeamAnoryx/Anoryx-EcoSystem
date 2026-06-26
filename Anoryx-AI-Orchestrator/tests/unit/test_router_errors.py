@@ -99,3 +99,19 @@ async def test_structurally_invalid_envelope_returns_422(app, make_valid_envelop
     )
     assert resp.status_code == 422
     assert resp.json()["error"]["code"] == "schema_invalid"
+
+
+async def test_nul_char_in_payload_returns_422(app, make_valid_envelope):
+    # audit M-2: a NUL char cannot be stored in Postgres text/JSONB (neither persisted nor
+    # dead-lettered), so a NUL-bearing body is rejected at the boundary as malformed (422),
+    # never a 503 retry-storm. json.dumps serialises \x00 as the ASCII escape , so the
+    # body is transmittable; the receiver decodes it back to a NUL and rejects it.
+    ts = int(time.time())
+    env = make_valid_envelope()
+    env["payload"]["tenant_id"] = "ab\x00cd"
+    body = json.dumps(env).encode("utf-8")
+    resp = await _post(
+        app, body, {"X-Sentinel-Signature": _sign(body, ts), "X-Sentinel-Timestamp": str(ts)}
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "schema_invalid"

@@ -89,8 +89,13 @@ def _extract_common(payload: Any) -> dict[str, str | None]:
     out: dict[str, str | None] = {}
     for field in _COMMON_FIELDS:
         value = payload.get(field)
+        # Bound length AND reject NUL — Postgres `text` categorically rejects \x00, which
+        # would crash the DLQ-path insert (non-IntegrityError → 503, audit M-2) the same way
+        # an over-length value did (M-1). Either makes the value un-projectable → NULL.
         out[field] = (
-            value if isinstance(value, str) and len(value) <= _COMMON_FIELD_MAXLEN else None
+            value
+            if isinstance(value, str) and len(value) <= _COMMON_FIELD_MAXLEN and "\x00" not in value
+            else None
         )
     return out
 
