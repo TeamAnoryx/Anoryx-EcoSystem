@@ -947,9 +947,12 @@ paths:
       summary: View a tenant's routing/engine config (admin/operator)
       description: |
         Returns the target tenant's routing config (classifier_model_id /
-        audit_mode / team_rpm_limit) via the existing read path (F-012a, ADR-0014
-        §7). Read inside the target tenant's RLS session. Emits
-        `admin_audit_accessed` (cross-tenant read).
+        audit_mode / team_rpm_limit, plus the per-tenant LLM-as-judge band +
+        confidence floor: classifier_confidence_threshold /
+        classifier_skip_threshold / classifier_floor_threshold — F-007, ADR-0025;
+        null = default) via the existing read path (F-012a, ADR-0014 §7). Read
+        inside the target tenant's RLS session. Emits `admin_audit_accessed`
+        (cross-tenant read).
       security:
         - adminAuth: []
       parameters:
@@ -974,11 +977,14 @@ paths:
       summary: Adjust a tenant's routing/engine config (admin/operator)
       description: |
         Applies a BOUNDED update to the target tenant's routing config
-        (classifier_model_id / audit_mode / team_rpm_limit) — F-012a, ADR-0014 §7.
-        The update is validated against the table's EXISTING CHECK constraints
-        (classifier_model_id allow-list, audit_mode in {full,redacted},
-        team_rpm_limit > 0); it changes config DATA, not classifier/limiter LOGIC.
-        Runs inside the target tenant's RLS session. Emits `admin_config_updated`.
+        (classifier_model_id / audit_mode / team_rpm_limit, plus the per-tenant
+        LLM-as-judge band + confidence floor: classifier_confidence_threshold /
+        classifier_skip_threshold / classifier_floor_threshold — F-007, ADR-0025;
+        null = default) — F-012a, ADR-0014 §7. The update is validated against the
+        table's EXISTING CHECK constraints (classifier_model_id allow-list,
+        audit_mode in {full,redacted}, team_rpm_limit > 0, the three thresholds in
+        [0,1]); it changes config DATA, not classifier/limiter LOGIC. Runs inside
+        the target tenant's RLS session. Emits `admin_config_updated`.
       security:
         - adminAuth: []
       parameters:
@@ -3195,10 +3201,18 @@ components:
       description: |
         A target tenant's routing/engine config (F-012a, ADR-0014 §7), reflecting the
         tenant_routing_policy row. Built field-for-field from
-        admin.schemas.ConfigResponse. `configured` is false (and the three config
+        admin.schemas.ConfigResponse. `configured` is false (and the six config
         fields are null) when no routing-policy row exists for the tenant. Config
         data only — never classifier/limiter logic.
-      required: [tenant_id, classifier_model_id, audit_mode, team_rpm_limit, configured]
+      required:
+        - tenant_id
+        - classifier_model_id
+        - audit_mode
+        - team_rpm_limit
+        - classifier_confidence_threshold
+        - classifier_skip_threshold
+        - classifier_floor_threshold
+        - configured
       additionalProperties: false
       properties:
         tenant_id:
@@ -3221,11 +3235,35 @@ components:
           description: |
             Per-team requests-per-minute limit (F-009), or null when unset.
             Constrained to > 0 by the table's CHECK constraint when set.
+        classifier_confidence_threshold:
+          type: [number, "null"]
+          minimum: 0
+          maximum: 1
+          description: |
+            Per-tenant judge confidence floor (F-007, ADR-0025), or null when
+            unset. The judge verdict is ignored when its confidence is below this
+            value. NULL resolves to the default 0.5.
+        classifier_skip_threshold:
+          type: [number, "null"]
+          minimum: 0
+          maximum: 1
+          description: |
+            Per-tenant obvious-attack skip boundary (F-007, ADR-0025), or null
+            when unset. The judge is skipped when the regex score is at or above
+            this value. NULL resolves to the default 0.9.
+        classifier_floor_threshold:
+          type: [number, "null"]
+          minimum: 0
+          maximum: 1
+          description: |
+            Per-tenant obvious-clean floor boundary (F-007, ADR-0025), or null
+            when unset. The judge is skipped when the regex score is below this
+            value. NULL resolves to the default 0.0.
         configured:
           type: boolean
           description: |
-            False (with the three fields null) when no tenant_routing_policy row
-            exists for the tenant; true when a row was found.
+            False (with the six config fields null) when no tenant_routing_policy
+            row exists for the tenant; true when a row was found.
 
     AdminUpdateTenantConfigRequest:
       type: object
@@ -3255,6 +3293,33 @@ components:
           type: integer
           minimum: 1
           description: New per-team RPM limit. Must be > 0 (table CHECK constraint).
+        classifier_confidence_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: |
+            New per-tenant judge confidence floor (F-007, ADR-0025). The judge
+            verdict is ignored when its confidence is below this value. Validated
+            against the table's range/band CHECK constraints; unset leaves the
+            stored value unchanged (NULL resolves to the default 0.5).
+        classifier_skip_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: |
+            New per-tenant obvious-attack skip boundary (F-007, ADR-0025). The
+            judge is skipped when the regex score is at or above this value.
+            Validated against the table's range/band CHECK constraints; unset
+            leaves the stored value unchanged (NULL resolves to the default 0.9).
+        classifier_floor_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: |
+            New per-tenant obvious-clean floor boundary (F-007, ADR-0025). The
+            judge is skipped when the regex score is below this value. Validated
+            against the table's range/band CHECK constraints; unset leaves the
+            stored value unchanged (NULL resolves to the default 0.0).
 
     AdminPolicyStatus:
       type: object

@@ -169,12 +169,20 @@ class AuditPageResponse(BaseModel):
 
 
 class ConfigResponse(BaseModel):
-    """A tenant's F-007/F-009 adjustable config. configured=False when no row exists."""
+    """A tenant's F-007/F-009 adjustable config. configured=False when no row exists.
+
+    The three classifier_*_threshold fields are the ADR-0025 per-tenant judge band
+    overrides; null means "use the default" (confidence 0.5 / skip = judge_skip_score
+    / floor 0.0).
+    """
 
     tenant_id: str
     classifier_model_id: str | None
     audit_mode: str | None
     team_rpm_limit: int | None
+    classifier_confidence_threshold: float | None
+    classifier_skip_threshold: float | None
+    classifier_floor_threshold: float | None
     configured: bool
 
 
@@ -182,7 +190,7 @@ class ConfigUpdateRequest(BaseModel):
     """Bounded config adjust. Only provided fields are changed (model_fields_set).
 
     Validation mirrors the table's CHECK constraints; the DB is the source of truth
-    and backstops at flush.
+    and backstops at flush (range + the floor<=skip band sanity check).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -190,6 +198,11 @@ class ConfigUpdateRequest(BaseModel):
     classifier_model_id: str | None = Field(default=None, max_length=128)
     audit_mode: str | None = Field(default=None, max_length=16)
     team_rpm_limit: int | None = Field(default=None)
+    # ADR-0025 per-tenant judge thresholds, each in [0,1]. The DB band CHECK
+    # (floor <= skip) backstops the cross-field rule at flush → 400.
+    classifier_confidence_threshold: float | None = Field(default=None, ge=0, le=1)
+    classifier_skip_threshold: float | None = Field(default=None, ge=0, le=1)
+    classifier_floor_threshold: float | None = Field(default=None, ge=0, le=1)
 
     @field_validator("audit_mode")
     @classmethod

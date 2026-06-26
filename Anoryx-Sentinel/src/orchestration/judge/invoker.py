@@ -145,9 +145,13 @@ async def _model_authorized(context: Any, judge_model: str) -> bool:
 
     scope = scope_from_context(context.tenant_context)
     try:
+        # get_tenant_session autobegins (set_config before yield), so an explicit
+        # session.begin() here raises InvalidRequestError — which the except below
+        # swallowed, returning False and forcing every classifier model into the
+        # policy_denied fallback (the judge never ran on a real DB). This is a read;
+        # use the autobegun transaction directly.
         async with get_tenant_session(context.tenant_context.tenant_id) as session:
-            async with session.begin():
-                decision = await evaluate_model_policies(session, scope, judge_model)
+            decision = await evaluate_model_policies(session, scope, judge_model)
         return not isinstance(decision, ModelDeny)
     except Exception:
         log.error(

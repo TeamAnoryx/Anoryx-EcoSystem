@@ -22,16 +22,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import (
-    CheckConstraint,
-    DateTime,
-    ForeignKey,
-    Index,
-    Integer,
-    Numeric,
-    String,
-    func,
-)
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from persistence.models.base import Base
@@ -77,6 +68,22 @@ class TenantRoutingPolicy(Base):
     # table; no new table; fully reversible in downgrade().
     team_rpm_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # F-007 enhancement (ADR-0025): per-tenant LLM-as-judge band + confidence floor.
+    # Each NULL = the code default constant, so behavior is byte-identical to the
+    # global posture until an operator sets a value. The judge runs only in the
+    # uncertain band [floor, skip) and its verdict counts only when confidence >=
+    # confidence_threshold. None of these can lower final below the regex score —
+    # they gate whether the judge runs/counts, never the max(regex, judge) blend.
+    classifier_confidence_threshold: Mapped[float | None] = mapped_column(
+        Numeric(precision=4, scale=3), nullable=True  # NULL -> 0.5
+    )
+    classifier_skip_threshold: Mapped[float | None] = mapped_column(
+        Numeric(precision=4, scale=3), nullable=True  # NULL -> 0.9 (obvious-attack skip)
+    )
+    classifier_floor_threshold: Mapped[float | None] = mapped_column(
+        Numeric(precision=4, scale=3), nullable=True  # NULL -> 0.0 (obvious-clean skip)
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -107,6 +114,29 @@ class TenantRoutingPolicy(Base):
         CheckConstraint(
             "team_rpm_limit IS NULL OR team_rpm_limit > 0",
             name="ck_trp_team_rpm_limit",
+        ),
+        # F-007 enhancement (ADR-0025): per-tenant classifier thresholds in [0,1],
+        # plus a band-sanity check that the uncertain band [floor, skip) is not
+        # inverted when both are set.
+        CheckConstraint(
+            "classifier_confidence_threshold IS NULL OR "
+            "(classifier_confidence_threshold >= 0 AND classifier_confidence_threshold <= 1)",
+            name="ck_trp_classifier_confidence",
+        ),
+        CheckConstraint(
+            "classifier_skip_threshold IS NULL OR "
+            "(classifier_skip_threshold >= 0 AND classifier_skip_threshold <= 1)",
+            name="ck_trp_classifier_skip",
+        ),
+        CheckConstraint(
+            "classifier_floor_threshold IS NULL OR "
+            "(classifier_floor_threshold >= 0 AND classifier_floor_threshold <= 1)",
+            name="ck_trp_classifier_floor",
+        ),
+        CheckConstraint(
+            "classifier_floor_threshold IS NULL OR classifier_skip_threshold IS NULL "
+            "OR classifier_floor_threshold <= classifier_skip_threshold",
+            name="ck_trp_classifier_band",
         ),
         Index("ix_trp_tenant_id", "tenant_id"),
     )
