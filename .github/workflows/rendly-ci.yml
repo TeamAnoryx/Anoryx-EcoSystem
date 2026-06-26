@@ -10,7 +10,7 @@ on:
 
 jobs:
   rendly-contracts:
-    name: Contract + domain validation
+    name: Contract + domain + auth validation
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -20,13 +20,15 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - name: Install deps
-        # R-002 adds pydantic (the domain package) to the install via pyproject.
+        # R-002 added pydantic; R-003 adds fastapi + pyjwt[crypto] + cryptography + argon2-cffi
+        # (deps) and httpx (dev, the TestClient transport) via pyproject.
         run: pip install -e ".[dev]"
       - name: Lint (ruff + black)
         run: ruff check . && black --check .
-      - name: Validate contracts + domain model (schemas, invariants, examples) with coverage
-        # One pytest run executes BOTH the R-001 contract suite (tests/contracts) and the
-        # R-002 domain suite (tests/domain: invariants + JSON-Schema conformance). --cov=rendly
-        # enforces the pyproject fail_under gate, so a domain suite that did not run would leave
-        # the package uncovered and FAIL — proving the lane executes the domain tests, not skips.
+      - name: Validate contracts + domain model + auth (schemas, invariants, e2e) with coverage
+        # One pytest run executes the R-001 contract suite (tests/contracts), the R-002 domain
+        # suite (tests/domain), AND the R-003 auth suite (tests/auth: real ES256 issue/verify/
+        # refresh e2e + adversarial cases). --cov=rendly enforces the pyproject fail_under gate,
+        # so any suite that did not run would leave that package surface uncovered and FAIL —
+        # proving the lane executes the auth tests, not skips them (banked rule 4: CI authoritative).
         run: pytest --cov=rendly --cov-report=term-missing --tb=short -q
