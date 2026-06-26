@@ -54,7 +54,12 @@ spec:
             exec:
               command: ["pg_isready", "-U", {{ .Values.postgres.auth.username | quote }}, "-d", {{ .Values.postgres.auth.database | quote }}]
             initialDelaySeconds: 5
-            periodSeconds: 5
+            periodSeconds: 10
+            # Default 1s is too tight on slow (kind/local) disk I/O: pg_isready
+            # times out, the pod flaps NotReady, its Service loses endpoints, and
+            # wait-for-postgres can never connect. Give the exec real headroom.
+            timeoutSeconds: 6
+            failureThreshold: 6
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data

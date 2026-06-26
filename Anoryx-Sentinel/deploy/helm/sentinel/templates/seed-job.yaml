@@ -1,0 +1,65 @@
+{{- if .Values.seed.enabled -}}
+# Demo seed Job (ADR-0027 D4) — mirrors the compose `seed` service. Idempotent
+# (seed.py is check-exists-first). Gated on schema-at-head via wait-for-migrate so
+# it never runs before the sentinel_app role is provisioned (RLS writes need it).
+# seed.py is delivered by the `<fullname>-seed-scripts` ConfigMap (created from the
+# canonical deploy/seed/seed.py by gen-k8s-secret.sh — zero drift vs compose).
+# Mounted at /seed-scripts (NOT /seed): seed.py only writes its key file when /seed
+# exists, so omitting /seed makes it print SEEDED_VIRTUAL_KEY to stdout only — the
+# K8s-native way to retrieve it (`kubectl logs job/<rel>-seed`).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "sentinel.fullname" . }}-seed-{{ .Release.Revision }}
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: seed
+spec:
+  backoffLimit: 2
+  # Counts init + cold image-pull time; tolerate a cold node (wait-for-migrate
+  # blocks until schema-at-head). Warm node: seconds.
+  activeDeadlineSeconds: 1200
+  template:
+    metadata:
+      labels:
+        {{- include "sentinel.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: seed
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "sentinel.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        {{- include "sentinel.waitForPostgres" . | nindent 8 }}
+        {{- include "sentinel.waitForMigrate" . | nindent 8 }}
+      containers:
+        - name: seed
+          image: {{ include "sentinel.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["/usr/local/bin/docker-entrypoint.sh", "python", "/seed-scripts/seed.py"]
+          env:
+            - name: RUN_MIGRATIONS
+              value: "0"
+            - name: SENTINEL_PROVISION_APP_ROLE
+              value: "0"
+            {{- include "sentinel.pgEnv" . | nindent 12 }}
+          {{- if or .Values.envSecret .Values.createEnvSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ include "sentinel.envSecretName" . }}
+          {{- end }}
+          volumeMounts:
+            - name: seed-scripts
+              mountPath: /seed-scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: seed-scripts
+          configMap:
+            name: {{ include "sentinel.fullname" . }}-seed-scripts
+        - name: tmp
+          emptyDir: {}
+{{- end }}

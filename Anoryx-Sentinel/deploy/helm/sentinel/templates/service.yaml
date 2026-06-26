@@ -8,6 +8,7 @@ spec:
   type: {{ .Values.service.type }}
   selector:
     {{- include "sentinel.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
   ports:
     - name: http
       port: {{ .Values.service.port }}

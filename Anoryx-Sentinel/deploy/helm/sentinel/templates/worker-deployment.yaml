@@ -1,26 +1,28 @@
+{{- if .Values.worker.enabled -}}
+# Bulk worker (ADR-0027 D2/D4) — mirrors the compose `worker` service. Uses the
+# bulk image variant (boto3/aioboto3) and the run_worker.py runner from the
+# `<fullname>-worker-scripts` ConfigMap (created from the canonical
+# deploy/worker/run_worker.py — zero drift vs compose). RUN_MIGRATIONS=0 /
+# SENTINEL_PROVISION_APP_ROLE=0: the worker never migrates or provisions; it gates
+# on schema-at-head via wait-for-migrate.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "sentinel.fullname" . }}
+  name: {{ include "sentinel.workerFullname" . }}
   labels:
     {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
 spec:
-  {{- if not .Values.autoscaling.enabled }}
-  replicas: {{ .Values.replicaCount }}
-  {{- end }}
+  replicas: {{ .Values.worker.replicaCount }}
   selector:
     matchLabels:
       {{- include "sentinel.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: gateway
+      app.kubernetes.io/component: worker
   template:
     metadata:
       labels:
         {{- include "sentinel.selectorLabels" . | nindent 8 }}
-        app.kubernetes.io/component: gateway
-      {{- with .Values.podAnnotations }}
-      annotations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+        app.kubernetes.io/component: worker
     spec:
       serviceAccountName: {{ include "sentinel.serviceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
@@ -29,39 +31,27 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      # Gate serving on the schema being at head (ADR-0027 D1). wait-for-migrate
-      # polls `alembic current` so no replica serves an un-migrated DB and none
-      # races the migrate Job.
       initContainers:
         {{- include "sentinel.waitForPostgres" . | nindent 8 }}
         {{- include "sentinel.waitForMigrate" . | nindent 8 }}
       containers:
-        - name: sentinel
-          image: {{ include "sentinel.image" . }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+        - name: worker
+          image: {{ include "sentinel.workerImage" . }}
+          imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          ports:
-            - name: http
-              containerPort: {{ .Values.service.port }}
-              protocol: TCP
+          command: ["/usr/local/bin/docker-entrypoint.sh", "python", "/worker/run_worker.py"]
           env:
-            - name: SENTINEL_WORKERS
-              value: {{ .Values.workers | quote }}
-            - name: SENTINEL_PORT
-              value: {{ .Values.service.port | quote }}
+            - name: RUN_MIGRATIONS
+              value: "0"
+            - name: SENTINEL_PROVISION_APP_ROLE
+              value: "0"
             - name: ENABLE_OTEL
               value: {{ .Values.otelCollector.enabled | quote }}
             {{- if .Values.otelCollector.enabled }}
-            # OTLP/HTTP (:4318) is the core default; gRPC (:4317) needs the
-            # [otlp-grpc] extra (full image) + OTEL_EXPORTER_OTLP_PROTOCOL=grpc.
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://{{ include "sentinel.otelCollectorFullname" . }}:4318"
             {{- end }}
-            # Bundled Postgres: connection PARTS + password via secretKeyRef (kept
-            # OUT of the pod spec). The entrypoint shim assembles DATABASE_URL /
-            # APP_DATABASE_URL. External mode (bundled=false) supplies full URLs
-            # via envSecret instead.
             {{- include "sentinel.pgEnv" . | nindent 12 }}
             {{- if .Values.redis.bundled }}
             - name: REDIS_HOST
@@ -69,7 +59,6 @@ spec:
             - name: REDIS_PORT
               value: "6379"
             {{- end }}
-            # Bulk storage (MinIO) endpoint + bucket; keys come via envSecret.
             {{- include "sentinel.bulkEnv" . | nindent 12 }}
             {{- range .Values.env }}
             - name: {{ .name }}
@@ -81,39 +70,22 @@ spec:
           {{- if or .Values.envSecret .Values.createEnvSecret }}
           envFrom:
             - secretRef:
-                name: {{ .Values.envSecret | default (printf "%s-env" (include "sentinel.fullname" .)) }}
+                name: {{ include "sentinel.envSecretName" . }}
           {{- end }}
-          # readOnlyRootFilesystem=true → provide writable scratch dirs (R9).
           volumeMounts:
+            - name: worker-scripts
+              mountPath: /worker
+              readOnly: true
             - name: tmp
               mountPath: /tmp
             - name: run
               mountPath: /run
-          livenessProbe:
-            httpGet:
-              path: /livez
-              port: http
-            initialDelaySeconds: 5
-            periodSeconds: 15
-            timeoutSeconds: 3
-            failureThreshold: 3
-          readinessProbe:
-            httpGet:
-              path: /readyz
-              port: http
-            periodSeconds: 10
-            timeoutSeconds: 3
-            failureThreshold: 3
-          startupProbe:
-            # Grace for cold start / migration-gated readiness (up to ~120s).
-            httpGet:
-              path: /livez
-              port: http
-            periodSeconds: 5
-            failureThreshold: 24
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            {{- toYaml .Values.worker.resources | nindent 12 }}
       volumes:
+        - name: worker-scripts
+          configMap:
+            name: {{ include "sentinel.fullname" . }}-worker-scripts
         - name: tmp
           emptyDir: {}
         - name: run
@@ -130,3 +102,4 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}

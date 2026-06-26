@@ -1,0 +1,54 @@
+{{- if .Values.minio.enabled -}}
+# minio-init — creates the bulk bucket (mirrors the compose minio-init step). A
+# normal Job (not a hook) so it reconciles with the rest; idempotent
+# (mb --ignore-existing). Waits for MinIO to accept the alias before creating the
+# bucket. Runs non-root with MC_CONFIG_DIR on an emptyDir (mc needs a writable
+# config dir).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "sentinel.minioFullname" . }}-init-{{ .Release.Revision }}
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minio-init
+spec:
+  backoffLimit: 6
+  # Counts cold image-pull (minio/mc) + the wait-for-minio retry loop.
+  activeDeadlineSeconds: 1200
+  template:
+    metadata:
+      labels:
+        {{- include "sentinel.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: minio-init
+    spec:
+      restartPolicy: Never
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: minio-init
+          image: {{ .Values.minio.mcImage }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: MC_CONFIG_DIR
+              value: /tmp/.mc
+            {{- include "sentinel.minioCredsEnv" . | nindent 12 }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "minio-init: waiting for minio"
+              until mc alias set local "http://{{ include "sentinel.minioFullname" . }}:9000" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+                sleep 2
+              done
+              mc mb --ignore-existing "local/{{ .Values.minio.bucket }}"
+              echo "minio-init: bucket {{ .Values.minio.bucket }} ready"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}
