@@ -251,13 +251,24 @@ async def create_chat_completion(
         tenant_context = resolve_tenant_context(request)
 
         # F-007 (ADR-0010 §5): bind the per-request egress context so the outbound
-        # httpx hook can flag disallowed-provider egress. Best-effort — the monitor
-        # is defense-in-depth and must NEVER block the request on a bind failure.
+        # httpx hook can flag disallowed-provider egress. Defense-in-depth — a
+        # DB-connectivity failure must never block the request: bind_egress_context
+        # flags-empty internally on connectivity loss (ADR-0026 Fork 2), so the only
+        # error that can reach here is a logic defect, which we let surface (caught in
+        # CI) rather than swallow into a silently dark monitor.
         try:
+            from sqlalchemy.exc import (
+                InterfaceError,
+                OperationalError,
+            )
+            from sqlalchemy.exc import (
+                TimeoutError as SATimeoutError,
+            )
+
             from gateway.middleware.egress_monitor import bind_egress_context
 
             await bind_egress_context(tenant_context, request_id)
-        except Exception:
+        except (OperationalError, InterfaceError, SATimeoutError, OSError):
             log.error("egress_context_bind_failed", request_id=request_id)
 
         # --- Step 6: Rate limit (keyed on resolved IDs, never IP) ---

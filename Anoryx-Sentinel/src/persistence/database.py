@@ -278,10 +278,15 @@ async def get_tenant_session(tenant_id: str) -> AsyncIterator[AsyncSession]:
     application — it is enforced regardless of application correctness.
 
     Usage:
+        # get_tenant_session AUTOBEGINS — set_config runs before the yield, so the
+        # session is already in a transaction. NEVER wrap it in `session.begin()`:
+        # that raises InvalidRequestError ("a transaction is already begun"), the
+        # F-007 double-begin class (ADR-0026), which a broad `except` silently
+        # swallows into a fail-open control. Read directly on the autobegun
+        # transaction; for writes, commit explicitly.
         async with get_tenant_session(tenant_id) as session:
-            async with session.begin():
-                repo = TeamRepository(session)
-                team = await repo.get_by_id(team_id, caller_tenant_id=tenant_id)
+            repo = TeamRepository(session)
+            team = await repo.get_by_id(team_id, caller_tenant_id=tenant_id)
     """
     if not tenant_id or not tenant_id.strip():
         raise TenantContextRequiredError(
