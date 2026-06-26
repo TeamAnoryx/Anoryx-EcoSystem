@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "delta:financial:v1",
+  "title": "Delta Financial Domain Model",
+  "description": "Wire-facing shapes for the Delta financial domain model (D-001). Every object is closed (additionalProperties:false) and every field bounded, mirroring the Sentinel contracts' F-001 audit posture. Attribution fields (tenant_id/team_id/project_id/agent_id) reproduce the formats from Anoryx-Sentinel/contracts/events.schema.json so a Delta record joins a Sentinel event by identity. Money is integer minor units (cents); no monetary field is a float. This schema is Delta-owned reference for D-002+; the authoritative ledger DDL is deferred to D-003.",
+
+  "$defs": {
+    "tenant_id": { "type": "string", "format": "uuid", "maxLength": 64 },
+    "team_id": { "type": "string", "format": "uuid", "maxLength": 64 },
+    "project_id": { "type": "string", "format": "uuid", "maxLength": 64 },
+    "account_id": { "type": "string", "format": "uuid", "maxLength": 64 },
+    "entry_id": { "type": "string", "format": "uuid", "maxLength": 64 },
+    "txn_id": { "type": "string", "format": "uuid", "maxLength": 64 },
+    "allocation_id": { "type": "string", "format": "uuid", "maxLength": 64 },
+    "event_id": { "type": "string", "format": "uuid", "maxLength": 64 },
+    "agent_id": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$", "maxLength": 64 },
+    "request_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}$", "maxLength": 64 },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "timestamp": { "type": "string", "format": "date-time", "maxLength": 64 },
+
+    "Money": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Exact monetary amount: integer minor units (cents) + ISO-4217 currency. Never a float.",
+      "required": ["minor_units", "currency"],
+      "properties": {
+        "minor_units": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000000000,
+          "description": "Amount in integer cents. Bounded to the largest monetary value any wire contract carries (1e11)."
+        },
+        "currency": { "$ref": "#/$defs/currency" }
+      }
+    },
+
+    "AccountType": { "type": "string", "enum": ["asset", "liability", "equity", "revenue", "expense"] },
+    "EntryDirection": { "type": "string", "enum": ["debit", "credit"] },
+    "BudgetScope": { "type": "string", "enum": ["tenant", "team", "project", "agent"] },
+    "BudgetPeriod": { "type": "string", "enum": ["hourly", "daily", "monthly"] },
+    "WindowGranularity": { "type": "string", "enum": ["hourly", "daily", "monthly"] },
+
+    "Account": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["account_id", "tenant_id", "type", "currency", "name"],
+      "properties": {
+        "account_id": { "$ref": "#/$defs/account_id" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "type": { "$ref": "#/$defs/AccountType" },
+        "currency": { "$ref": "#/$defs/currency" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+
+    "LedgerEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entry_id", "tenant_id", "account_id", "direction", "amount",
+        "team_id", "project_id", "agent_id", "timestamp"
+      ],
+      "properties": {
+        "entry_id": { "$ref": "#/$defs/entry_id" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "account_id": { "$ref": "#/$defs/account_id" },
+        "direction": { "$ref": "#/$defs/EntryDirection" },
+        "amount": { "$ref": "#/$defs/Money" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "timestamp": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+
+    "Transaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A balanced double-entry transaction. The balance/one-currency/one-tenant invariant is enforced by the Delta types and reconciliation checks, NOT expressible in JSON Schema alone.",
+      "required": ["txn_id", "tenant_id", "entries", "timestamp", "description"],
+      "properties": {
+        "txn_id": { "$ref": "#/$defs/txn_id" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "entries": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 1024,
+          "items": { "$ref": "#/$defs/LedgerEntry" }
+        },
+        "timestamp": { "$ref": "#/$defs/timestamp" },
+        "description": { "type": "string", "maxLength": 512 }
+      }
+    },
+
+    "CostCenter": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "cost_center_id is, by decision (Fork 1a), a Sentinel team_id.",
+      "required": ["cost_center_id", "tenant_id", "name"],
+      "properties": {
+        "cost_center_id": { "$ref": "#/$defs/team_id" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+
+    "Project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_id", "team_id", "tenant_id", "name"],
+      "properties": {
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+
+    "AllocationTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope_ref", "amount"],
+      "properties": {
+        "scope_ref": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "amount": { "$ref": "#/$defs/Money" }
+      }
+    },
+
+    "Allocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Total distributed across targets. Sum(targets)==total and one currency are enforced by the Delta types / reconciliation, not by JSON Schema.",
+      "required": ["allocation_id", "tenant_id", "total", "targets", "period"],
+      "properties": {
+        "allocation_id": { "$ref": "#/$defs/allocation_id" },
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "total": { "$ref": "#/$defs/Money" },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1024,
+          "items": { "$ref": "#/$defs/AllocationTarget" }
+        },
+        "period": { "$ref": "#/$defs/BudgetPeriod" }
+      }
+    },
+
+    "BudgetConcept": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Token/cost ceiling per period at a scope. Maps 1:1 to the LOCKED policy.schema.json BudgetLimitPolicy. limit_cost_cents is a stricter INTEGER here (Delta holds integer cents); it serializes into the wire `number` field unchanged. At least one of limit_tokens/limit_cost_cents is required (mirrors the wire anyOf).",
+      "required": ["tenant_id", "team_id", "project_id", "agent_id", "scope", "period", "currency"],
+      "anyOf": [
+        { "required": ["limit_tokens"] },
+        { "required": ["limit_cost_cents"] }
+      ],
+      "properties": {
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "scope": { "$ref": "#/$defs/BudgetScope" },
+        "period": { "$ref": "#/$defs/BudgetPeriod" },
+        "limit_tokens": { "type": "integer", "minimum": 0, "maximum": 1000000000000 },
+        "limit_cost_cents": { "type": "integer", "minimum": 0, "maximum": 100000000000 },
+        "currency": { "$ref": "#/$defs/currency" }
+      }
+    },
+
+    "UsageRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-request token/cost record mirroring events.schema.json UsageEvent. cost_estimate_cents is integer cents (quantized at ingest) and a client-side ESTIMATE, never an authoritative bill.",
+      "required": [
+        "tenant_id", "team_id", "project_id", "agent_id", "model",
+        "tokens_in", "tokens_out", "cost_estimate_cents", "currency",
+        "request_id", "event_id", "event_timestamp"
+      ],
+      "properties": {
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "model": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "tokens_in": { "type": "integer", "minimum": 0, "maximum": 10000000 },
+        "tokens_out": { "type": "integer", "minimum": 0, "maximum": 10000000 },
+        "cost_estimate_cents": { "type": "integer", "minimum": 0, "maximum": 100000000 },
+        "currency": { "$ref": "#/$defs/currency" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "event_timestamp": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+
+    "TimeWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end", "granularity"],
+      "properties": {
+        "start": { "$ref": "#/$defs/timestamp" },
+        "end": { "$ref": "#/$defs/timestamp" },
+        "granularity": { "$ref": "#/$defs/WindowGranularity" }
+      }
+    }
+  }
+}

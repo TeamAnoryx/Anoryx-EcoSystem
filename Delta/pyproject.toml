@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anoryx-delta"
+version = "0.1.0"
+description = "Delta — FinOps / ERP / budget-policy domain model (D-001: contracts + types only)."
+requires-python = ">=3.12"
+dependencies = [
+  "pydantic>=2.7,<3",
+  "jsonschema[format]>=4.22",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff",
+  "black",
+  "pytest",
+  "pytest-cov",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "I", "S"]
+# S101 (assert) and S106 (hardcoded test value) are fine in tests.
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S106"]
+
+[tool.black]
+target-version = ["py312"]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+
+[tool.coverage.report]
+# D-001 is the entire Delta surface; modules held to >=85%.
+fail_under = 85
+show_missing = true

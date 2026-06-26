@@ -1,0 +1,39 @@
+name: delta-ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Delta/**"
+      - ".github/workflows/delta-ci.yml"
+  pull_request:
+    paths:
+      - "Delta/**"
+      - ".github/workflows/delta-ci.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Delta
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[dev]" semgrep
+      - name: Lint
+        # Repo-scoped lint of the whole Delta tree (src + tests), matching the
+        # Sentinel CI convention that lint runs over everything, not just changed src.
+        run: |
+          ruff check .
+          black --check .
+      - name: SAST
+        # The Budget round-trip test reads the LOCKED Sentinel policy schema, so the
+        # full repo is checked out; semgrep is scoped to Delta source only.
+        run: semgrep scan --config=p/python --severity=ERROR --no-git-ignore src/
+      - name: Test
+        # No database: D-001 is types + schemas + validators only (DDL deferred to D-003).
+        run: pytest --tb=short -q --cov=src --cov-report=term-missing
