@@ -5,15 +5,21 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rendly"
 version = "1.0.0"
-description = "Rendly core platform API contract (R-001) + internal domain model (R-002: types, schemas, invariants — no server/DB/DDL)."
+description = "Rendly core platform API contract (R-001) + internal domain model (R-002) + self-contained OAuth2/JWT auth (R-003: ES256 issue/verify/refresh, in-memory user-store seam — no DB/DDL)."
 requires-python = ">=3.12"
-# R-002 adds the FIRST Rendly Python package: the internal domain model (Pydantic v2).
-# It is storage-agnostic — no server, no DB, no DDL (those are R-003/R-004).
+# R-002 added the FIRST Rendly Python package: the internal domain model (Pydantic v2).
+# R-003 adds the self-contained OAuth2 + JWT auth service over those types: real ES256 token
+# mint/verify + rotating refresh, served by FastAPI. Persistence (the real UserStore) is R-004.
 dependencies = [
   "pydantic>=2.7,<3",
+  # R-003 auth surface + crypto:
+  "fastapi>=0.110,<1",            # the auth HTTP surface (token / revoke / users-me).
+  "pyjwt[crypto]>=2.8,<3",        # ES256 JWT mint/verify (vetted lib; no hand-rolled JWT).
+  "cryptography>=42,<50",         # ES256 P-256 key loading (matches the Sentinel pin).
+  "argon2-cffi>=23,<25",          # Argon2id credential hashing (OWASP; matches Sentinel).
 ]
 
-# The contract-validation suite (R-001) + the domain test suite (R-002) share one dev extra.
+# The contract suite (R-001), domain suite (R-002), and auth suite (R-003) share one dev extra.
 [project.optional-dependencies]
 dev = [
   "jsonschema[format]>=4.22,<5",
@@ -21,6 +27,7 @@ dev = [
   "pyyaml>=6,<7",
   "pytest>=8,<9",
   "pytest-cov",
+  "httpx>=0.27,<1",                # FastAPI TestClient transport for the R-003 auth e2e.
   "ruff>=0.5",
   "black>=24",
 ]
