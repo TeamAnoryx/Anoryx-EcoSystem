@@ -51,7 +51,12 @@ import structlog
 
 from orchestration.hooks.base import DetectorResult, PreRequestHook
 from orchestration.judge.base import EVENT_INJECTION_ML, EVENT_RECURSIVE
-from orchestration.judge.config import UNCONFIGURED, ClassifierConfig
+from orchestration.judge.config import (
+    DEFAULT_CONFIDENCE_THRESHOLD,
+    DEFAULT_FLOOR_THRESHOLD,
+    UNCONFIGURED,
+    ClassifierConfig,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -91,9 +96,7 @@ async def _resolve_classifier_config(context: Any) -> ClassifierConfig:
     (fail-safe: the detector then uses the regex score only, never "allow").
     """
     try:
-        from persistence.repositories.tenant_routing_policy_repository import (
-            get_classifier_config,
-        )
+        from persistence.repositories.tenant_routing_policy_repository import get_classifier_config
 
         return await get_classifier_config(context.tenant_context)
     except Exception:
@@ -351,19 +354,32 @@ class InjectionHook(PreRequestHook):
         regex_score, first_rule = _score_and_first_rule(scan_text)
         threshold = self._settings.injection_score_threshold
 
-        ran_judge = self._should_run_judge(regex_score, first_rule, context)
-        if ran_judge:
-            result = await self._judge_verdict(
-                scan_text, regex_score, first_rule, threshold, context
-            )
-        else:
-            result = _regex_verdict(regex_score, first_rule, threshold)
+        # Cheap global gates first (NO DB read): the classifier-off / non-gateway /
+        # known-jailbreak-family path stays on the regex verdict, byte-identical to
+        # F-005 (R8). Resolving per-tenant config never happens on this path.
+        if not self._judge_gates_pass(first_rule, context):
+            return _regex_verdict(regex_score, first_rule, threshold)
 
-        # Recursive-injection observability (layer 4, ADR-0010 §5): emit ONLY when
-        # the judge surface was actually reached (ran_judge) AND the prompt targeted
-        # the classifier. ran_judge implies classifier_enabled, so F-005 mode + the
-        # pre-filter-skip path emit no new event types (R4).
-        if ran_judge and _matches_meta_attack(scan_text):
+        # Past the gates: resolve the per-tenant config ONCE (one RLS read, ADR-0025
+        # Fork-4). The thresholds gate WHETHER the judge runs / counts — never the
+        # max(regex, judge) blend — so no setting can lower final below regex (R1).
+        cfg = await _resolve_classifier_config(context)
+        floor, skip = self._band(cfg)
+
+        # The judge runs only in the per-tenant uncertain band [floor, skip). Outside
+        # it the regex verdict stands (obvious-clean / obvious-attack skip). Skipping
+        # the judge can only keep (never lower) the verdict — escalation-only (R7).
+        if regex_score < floor or regex_score >= skip:
+            return _regex_verdict(regex_score, first_rule, threshold)
+
+        result = await self._judge_verdict(
+            scan_text, regex_score, first_rule, threshold, context, cfg
+        )
+
+        # Recursive-injection observability (layer 4, ADR-0010 §5): emit ONLY when the
+        # judge surface was actually reached (in-band) AND the prompt targeted the
+        # classifier. The gate / out-of-band paths emit no new event types (R4).
+        if _matches_meta_attack(scan_text):
             taken = "blocked" if result.action == "block" else "logged"
             await context.emit(
                 _recursive_event(regex_score, first_rule, taken), detector_slug=_DETECTOR_SLUG
@@ -371,19 +387,37 @@ class InjectionHook(PreRequestHook):
 
         return result
 
-    def _should_run_judge(self, regex_score: float, first_rule: str | None, context: Any) -> bool:
-        """Pre-filter (R7): the judge runs only when enabled, wired, and not obvious."""
-        # Require an explicit bool True — a mocked/absent settings attribute (e.g.
-        # F-005 tests with a MagicMock settings) must stay on the regex path (R4).
+    def _judge_gates_pass(self, first_rule: str | None, context: Any) -> bool:
+        """Cheap, DB-free eligibility gates (R8 / ADR-0025 Fork-4).
+
+        These never read tenant config, so the classifier-off / non-gateway /
+        known-jailbreak-family path returns the regex verdict with NO DB read.
+        Require an explicit bool True for classifier_enabled — a mocked/absent
+        settings attribute (F-005 MagicMock) must stay on the regex path (R4).
+        """
         if getattr(self._settings, "classifier_enabled", False) is not True:
             return False
         if getattr(context, "provider_registry", None) is None:
             return False  # no judge wiring (test / non-gateway path) → regex only
-        if regex_score >= getattr(self._settings, "judge_skip_score", 0.9):
-            return False  # obvious attack — save the call
         if first_rule in JAILBREAK_FAMILY_RULE_IDS:
             return False  # known jailbreak family — safe-by-default skip
         return True
+
+    def _band(self, cfg: ClassifierConfig) -> tuple[float, float]:
+        """Resolve the per-tenant uncertain band [floor, skip) (ADR-0025).
+
+        A NULL per-tenant column falls back to the default: floor → 0.0 (no
+        obvious-clean skip, today's behavior); skip → the existing `judge_skip_score`
+        SETTING (default 0.9), so a deployment that customized that setting is
+        preserved. A per-tenant column overrides the default.
+        """
+        floor = cfg.floor_threshold if cfg.floor_threshold is not None else DEFAULT_FLOOR_THRESHOLD
+        skip = (
+            cfg.skip_threshold
+            if cfg.skip_threshold is not None
+            else getattr(self._settings, "judge_skip_score", 0.9)
+        )
+        return floor, skip
 
     async def _judge_verdict(
         self,
@@ -392,11 +426,11 @@ class InjectionHook(PreRequestHook):
         first_rule: str | None,
         threshold: float,
         context: Any,
+        cfg: ClassifierConfig,
     ) -> DetectorResult:
         """Run the judge through the F-006 layer; blend or fall back to regex (R9)."""
         from orchestration.judge.invoker import JudgeRan, run_judge
 
-        cfg = await _resolve_classifier_config(context)
         gw = getattr(context, "gateway_settings", None)
         request_budget = float(
             getattr(gw, "request_timeout_seconds", self._settings.judge_timeout_seconds)
@@ -410,9 +444,17 @@ class InjectionHook(PreRequestHook):
             request_budget_s=request_budget,
         )
 
+        # Per-tenant confidence floor (NULL → 0.5, the historical hardcode).
+        confidence_floor = (
+            cfg.confidence_threshold
+            if cfg.confidence_threshold is not None
+            else DEFAULT_CONFIDENCE_THRESHOLD
+        )
+
         # Fallback (unconfigured / degraded / invocation_failed / policy_denied) or
-        # low confidence → regex score only. run_judge already emitted its events.
-        if not isinstance(outcome, JudgeRan) or outcome.verdict.confidence < 0.5:
+        # below the per-tenant confidence floor → regex score only. run_judge already
+        # emitted its events. Never "allow" (R9).
+        if not isinstance(outcome, JudgeRan) or outcome.verdict.confidence < confidence_floor:
             return _regex_verdict(regex_score, first_rule, threshold)
 
         verdict = outcome.verdict

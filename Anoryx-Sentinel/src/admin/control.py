@@ -37,7 +37,9 @@ from compliance.gap_analysis import analyze_gaps
 from compliance.mapping import load_framework
 from persistence.database import get_privileged_session, get_tenant_session
 from persistence.repositories.policy_repository import PolicyRepository
-from persistence.repositories.tenant_routing_policy_repository import TenantRoutingPolicyRepository
+from persistence.repositories.tenant_routing_policy_repository import (
+    TenantRoutingPolicyRepository,
+)
 
 # Router deps: validate the path tenant_id, then enforce the operator's tenant-pin
 # + role (ADR-0017 §3 D2, R1). require_admin runs at the parent admin_router.
@@ -77,6 +79,36 @@ def _parse_dt(value: str) -> datetime:
     raise HTTPException(status_code=400, detail="invalid_datetime")
 
 
+def _opt_float(value: object) -> float | None:
+    """NUMERIC column (Decimal) -> float for the JSON response; None passes through."""
+    return None if value is None else float(value)  # type: ignore[arg-type]
+
+
+def _config_response(tenant_id: str, row: object) -> ConfigResponse:
+    """Build a ConfigResponse from a routing-policy row (or None when no row)."""
+    if row is None:
+        return ConfigResponse(
+            tenant_id=tenant_id,
+            classifier_model_id=None,
+            audit_mode=None,
+            team_rpm_limit=None,
+            classifier_confidence_threshold=None,
+            classifier_skip_threshold=None,
+            classifier_floor_threshold=None,
+            configured=False,
+        )
+    return ConfigResponse(
+        tenant_id=tenant_id,
+        classifier_model_id=row.classifier_model_id,
+        audit_mode=row.audit_mode,
+        team_rpm_limit=row.team_rpm_limit,
+        classifier_confidence_threshold=_opt_float(row.classifier_confidence_threshold),
+        classifier_skip_threshold=_opt_float(row.classifier_skip_threshold),
+        classifier_floor_threshold=_opt_float(row.classifier_floor_threshold),
+        configured=True,
+    )
+
+
 @control_router.get("/tenants/{tenant_id}/config", response_model=ConfigResponse)
 async def get_config(tenant_id: str, request: Request) -> ConfigResponse:
     """View a tenant's F-007/F-009 config (classifier / audit mode / team RPM)."""
@@ -85,22 +117,7 @@ async def get_config(tenant_id: str, request: Request) -> ConfigResponse:
         row = await TenantRoutingPolicyRepository(ts).get_config_row(
             tenant_id, caller_tenant_id=tenant_id
         )
-        if row is None:
-            resp = ConfigResponse(
-                tenant_id=tenant_id,
-                classifier_model_id=None,
-                audit_mode=None,
-                team_rpm_limit=None,
-                configured=False,
-            )
-        else:
-            resp = ConfigResponse(
-                tenant_id=tenant_id,
-                classifier_model_id=row.classifier_model_id,
-                audit_mode=row.audit_mode,
-                team_rpm_limit=row.team_rpm_limit,
-                configured=True,
-            )
+        resp = _config_response(tenant_id, row)
     await _emit_access(tenant_id, rid, actor_id(request))
     return resp
 
@@ -125,13 +142,7 @@ async def update_config(tenant_id: str, request: Request) -> ConfigResponse:
             raise HTTPException(status_code=400, detail="invalid_config_value") from None
         if row is None:
             raise HTTPException(status_code=404, detail="no_routing_policy")
-        resp = ConfigResponse(
-            tenant_id=tenant_id,
-            classifier_model_id=row.classifier_model_id,
-            audit_mode=row.audit_mode,
-            team_rpm_limit=row.team_rpm_limit,
-            configured=True,
-        )
+        resp = _config_response(tenant_id, row)
         await ts.commit()
 
     async with get_privileged_session() as ps:

@@ -143,6 +143,43 @@ async def test_config_adjust_audited_and_honest(
     assert ev.team_id == WILDCARD_UUID and ev.project_id == WILDCARD_UUID
 
 
+async def test_config_set_thresholds(admin_app, admin_auth_headers, truncate_audit_log_after):
+    """ADR-0025: operator sets per-tenant judge thresholds; invalid values rejected."""
+    tid, team, proj = await _seed_scope(with_routing_policy=True)
+    async with _client(admin_app) as client:
+        # Valid set → 200, reflected + persisted (read back on a fresh GET).
+        rp = await client.patch(
+            f"/admin/tenants/{tid}/config",
+            json={
+                "classifier_confidence_threshold": 0.8,
+                "classifier_skip_threshold": 0.95,
+                "classifier_floor_threshold": 0.1,
+            },
+            headers=admin_auth_headers,
+        )
+        assert rp.status_code == 200, rp.text
+        assert rp.json()["classifier_confidence_threshold"] == 0.8
+        rg = await client.get(f"/admin/tenants/{tid}/config", headers=admin_auth_headers)
+        assert rg.json()["classifier_skip_threshold"] == 0.95
+        assert rg.json()["classifier_floor_threshold"] == 0.1
+
+        # Out of range (>1) → rejected at the request boundary (Pydantic ge/le).
+        r_hi = await client.patch(
+            f"/admin/tenants/{tid}/config",
+            json={"classifier_confidence_threshold": 1.5},
+            headers=admin_auth_headers,
+        )
+        assert r_hi.status_code in (400, 422), r_hi.text
+
+        # Inverted band (floor > skip) → 400 (DB band CHECK backstop).
+        r_band = await client.patch(
+            f"/admin/tenants/{tid}/config",
+            json={"classifier_floor_threshold": 0.9, "classifier_skip_threshold": 0.1},
+            headers=admin_auth_headers,
+        )
+        assert r_band.status_code == 400, r_band.text
+
+
 async def test_config_update_no_row_404(admin_app, admin_auth_headers, truncate_audit_log_after):
     """Adjusting config for a tenant with no routing policy returns 404 (honest scope)."""
     tid, _, _ = await _seed_scope(with_routing_policy=False)

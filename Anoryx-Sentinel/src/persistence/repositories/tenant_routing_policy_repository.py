@@ -59,6 +59,15 @@ def _parse_csv(value: str) -> list[str]:
     return [tok.strip() for tok in value.split(",") if tok.strip()]
 
 
+def _as_float(value: object) -> float | None:
+    """NUMERIC column (Decimal) -> float; None passes through (NULL stays unset).
+
+    Keeps the resolved ClassifierConfig thresholds as plain floats so they compare
+    cleanly against the regex score / verdict confidence (ADR-0025).
+    """
+    return None if value is None else float(value)  # type: ignore[arg-type]
+
+
 def _validate(allowed: list[str], order: list[str], tenant_id: str) -> None:
     if not allowed:
         raise RoutingPolicyValidationError(f"allowed_providers empty for tenant {tenant_id!r}")
@@ -160,6 +169,12 @@ class TenantRoutingPolicyRepository:
                 specificity=0,
                 model_id=row.classifier_model_id,
                 audit_mode=row.audit_mode,
+                # NUMERIC -> Python float so the resolved config compares cleanly
+                # against the regex score / verdict confidence (ADR-0025). NULL stays
+                # None so the resolver applies the code default.
+                confidence_threshold=_as_float(row.classifier_confidence_threshold),
+                skip_threshold=_as_float(row.classifier_skip_threshold),
+                floor_threshold=_as_float(row.classifier_floor_threshold),
             )
         ]
         return resolve_inherited_config(candidates)
@@ -185,14 +200,23 @@ class TenantRoutingPolicyRepository:
     ) -> TenantRoutingPolicy | None:
         """Bounded update of F-007/F-009 config on an existing row (F-012, ADR-0014 D6).
 
-        Only classifier_model_id / audit_mode / team_rpm_limit may be set. The
-        table's existing CHECK constraints (ck_trp_classifier_model_id allow-list,
-        ck_trp_audit_mode, ck_trp_team_rpm_limit > 0) are the source of truth and
+        Only classifier_model_id / audit_mode / team_rpm_limit and the ADR-0025
+        per-tenant classifier thresholds may be set. The table's existing CHECK
+        constraints (ck_trp_classifier_model_id allow-list, ck_trp_audit_mode,
+        ck_trp_team_rpm_limit > 0, and the ck_trp_classifier_confidence/skip/floor
+        range + ck_trp_classifier_band sanity checks) are the source of truth and
         backstop at flush. Returns the updated row, or None if no row exists (the
         caller maps that to 404 — creating the base routing policy is out of scope,
         owned by F-008/defaults). This changes config DATA only, not engine logic.
         """
-        allowed = {"classifier_model_id", "audit_mode", "team_rpm_limit"}
+        allowed = {
+            "classifier_model_id",
+            "audit_mode",
+            "team_rpm_limit",
+            "classifier_confidence_threshold",
+            "classifier_skip_threshold",
+            "classifier_floor_threshold",
+        }
         unknown = set(updates) - allowed
         if unknown:
             raise ValueError(f"unsupported config fields: {sorted(unknown)}")
@@ -214,9 +238,13 @@ async def get_classifier_config(tenant_context: "TenantContext") -> "ClassifierC
     """
     from persistence.database import get_tenant_session
 
+    # get_tenant_session autobegins (it runs set_config before yielding), so an
+    # explicit `session.begin()` here would raise InvalidRequestError — that error
+    # was previously swallowed by _resolve_classifier_config, silently returning
+    # UNCONFIGURED and disabling the judge on every real-DB request. This is a read;
+    # the autobegun transaction is used directly (no begin/commit needed).
     async with get_tenant_session(tenant_context.tenant_id) as session:
-        async with session.begin():
-            repo = TenantRoutingPolicyRepository(session)
-            return await repo.resolve_classifier_config(
-                tenant_context.tenant_id, caller_tenant_id=tenant_context.tenant_id
-            )
+        repo = TenantRoutingPolicyRepository(session)
+        return await repo.resolve_classifier_config(
+            tenant_context.tenant_id, caller_tenant_id=tenant_context.tenant_id
+        )
