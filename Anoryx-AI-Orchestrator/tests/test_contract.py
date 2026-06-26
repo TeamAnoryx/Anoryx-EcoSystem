@@ -169,16 +169,14 @@ def test_ingest_example_validates_against_events_schema():
     try:
         Draft202012Validator(schema).validate(payload)
     except jsonschema.ValidationError as exc:
-        pytest.fail(
-            f"wrapped ingest payload failed events.schema.json validation: {exc.message}"
-        )
+        pytest.fail(f"wrapped ingest payload failed events.schema.json validation: {exc.message}")
 
 
 def test_distribution_policy_example_validates_against_policy_schema():
     spec = _load_spec()
-    body = spec["paths"]["/v1/policies/distributions"]["post"]["requestBody"][
-        "content"
-    ]["application/json"]["examples"]["budgetLimitDistribution"]["value"]
+    body = spec["paths"]["/v1/policies/distributions"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]["examples"]["budgetLimitDistribution"]["value"]
     policy = body["policy"]
     schema = _load_json(POLICY_SCHEMA)
     try:
@@ -217,9 +215,10 @@ def test_mutualtls_applied_to_every_operation():
             security = operation.get("security", global_security)
             assert security, f"{method.upper()} {path} has no security requirement"
             for requirement in security:
-                assert (
-                    "mutualTLS" in requirement
-                ), f"{method.upper()} {path} security requirement is missing mutualTLS: {requirement}"
+                assert "mutualTLS" in requirement, (
+                    f"{method.upper()} {path} security requirement is missing "
+                    f"mutualTLS: {requirement}"
+                )
                 # mTLS provisioning is deferred (boundary a), so an mTLS-only operation
                 # is effectively unauthenticated until O-008. Require a second factor
                 # (HMAC or service token) on EVERY operation so a future op that forgets
@@ -229,9 +228,7 @@ def test_mutualtls_applied_to_every_operation():
                     f"{method.upper()} {path} requirement has no second factor "
                     f"(hmacIngest/serviceToken): {requirement}"
                 )
-    assert (
-        operations >= 7
-    ), "expected at least seven operations: four O-001 + three O-002 bus seams"
+    assert operations >= 7, "expected at least seven operations: four O-001 + three O-002 bus seams"
 
 
 # --------------------------------------------------------------------------- #
@@ -329,9 +326,9 @@ def _envelope_validator(spec):
 
 
 def _ingest_envelope_example(spec):
-    return spec["paths"]["/v1/ingest/events"]["post"]["requestBody"]["content"][
-        "application/json"
-    ]["examples"]["policyDecisionDenyEnvelope"]["value"]
+    return spec["paths"]["/v1/ingest/events"]["post"]["requestBody"]["content"]["application/json"][
+        "examples"
+    ]["policyDecisionDenyEnvelope"]["value"]
 
 
 def test_envelope_schema_is_valid_draft202012():
@@ -378,9 +375,7 @@ def test_ingest_envelope_example_validates_against_envelope_schema():
     try:
         _envelope_validator(spec).validate(example)
     except jsonschema.ValidationError as exc:
-        pytest.fail(
-            f"ingest envelope example failed envelope-schema validation: {exc.message}"
-        )
+        pytest.fail(f"ingest envelope example failed envelope-schema validation: {exc.message}")
 
 
 def test_ingest_envelope_invariants_hold_in_example():
@@ -445,9 +440,7 @@ def test_replay_request_examples_validate_and_limit_is_bounded():
         try:
             validator.validate(ex["value"])
         except jsonschema.ValidationError as exc:
-            pytest.fail(
-                f"replay example '{name}' failed ReplayRequest validation: {exc.message}"
-            )
+            pytest.fail(f"replay example '{name}' failed ReplayRequest validation: {exc.message}")
     # Bounded limit (replay-amplification defense).
     limit = spec["components"]["schemas"]["ReplayLimit"]
     assert limit["minimum"] == 1
@@ -480,9 +473,9 @@ def test_replay_request_rejects_two_selectors():
 
 def test_schema_versions_example_validates_and_pins_v1():
     spec = _load_spec()
-    example = spec["paths"]["/v1/bus/schema-versions"]["get"]["responses"]["200"][
-        "content"
-    ]["application/json"]["examples"]["v1"]["value"]
+    example = spec["paths"]["/v1/bus/schema-versions"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["examples"]["v1"]["value"]
     try:
         _component_validator(spec, "SchemaVersions").validate(example)
     except jsonschema.ValidationError as exc:
@@ -495,13 +488,8 @@ def test_schema_versions_example_validates_and_pins_v1():
 def test_o002_honesty_boundaries_present_verbatim():
     # Boundaries (a)-(c) must appear verbatim in the binding contract (rule 5).
     desc = _load_spec()["info"]["description"]
-    assert (
-        "Replay and DLQ are SPECIFIED, not implemented — O-003 builds the machinery."
-        in desc
-    )
-    assert (
-        "Delivery is at-least-once; consumers MUST dedupe on idempotency_key." in desc
-    )
+    assert "Replay and DLQ are SPECIFIED, not implemented — O-003 builds the machinery." in desc
+    assert "Delivery is at-least-once; consumers MUST dedupe on idempotency_key." in desc
     assert "Unknown-version handling is reject-to-DLQ." in desc
 
 
