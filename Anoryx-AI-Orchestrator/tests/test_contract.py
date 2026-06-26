@@ -25,6 +25,8 @@ import jsonschema
 import pytest
 import yaml
 from jsonschema import Draft202012Validator
+from referencing import Registry, Resource
+from referencing.jsonschema import DRAFT202012
 
 # Layout: this file is Anoryx-AI-Orchestrator/tests/test_contract.py
 HERE = pathlib.Path(__file__).resolve().parent
@@ -34,6 +36,8 @@ REPO_ROOT = HERE.parent.parent  # Anoryx-AI-Orchestrator/ -> repo root
 SENTINEL_CONTRACTS = REPO_ROOT / "Anoryx-Sentinel" / "contracts"
 EVENTS_SCHEMA = SENTINEL_CONTRACTS / "events.schema.json"
 POLICY_SCHEMA = SENTINEL_CONTRACTS / "policy.schema.json"
+# O-002: the standalone event envelope, a sibling of openapi.yaml in the same dir.
+EVENT_ENVELOPE_SCHEMA = ORCH_CONTRACTS / "event-envelope.schema.json"
 
 _HTTP_METHODS = {"get", "post", "put", "patch", "delete", "options", "head", "trace"}
 
@@ -100,15 +104,25 @@ def test_external_refs_resolve_to_real_files():
 
 
 def test_refs_point_only_at_locked_sentinel_schemas():
-    """Reuse by reference, never by copy: external refs must target the Sentinel files."""
+    """Reuse by reference, never by copy. O-002 (ADR-0002, Fork D) widens the allow-set:
+    openapi.yaml now also $refs the sibling event-envelope.schema.json. The envelope file
+    itself $refs ONLY the locked events.schema.json, so reuse-by-reference is preserved
+    transitively (no Sentinel schema is copied or widened anywhere). Any OTHER external
+    target is still rejected. This is the second of the two O-001 tests deliberately
+    updated, recorded in ADR-0002.
+    """
     spec = _load_spec()
     external = [r for r in _iter_refs(spec) if r.startswith(("../", "./"))]
+    allowed = {
+        EVENTS_SCHEMA.resolve(),
+        POLICY_SCHEMA.resolve(),
+        EVENT_ENVELOPE_SCHEMA.resolve(),
+    }
     for ref in external:
         target = (ORCH_CONTRACTS / ref.split("#", 1)[0]).resolve()
-        assert target in {
-            EVENTS_SCHEMA.resolve(),
-            POLICY_SCHEMA.resolve(),
-        }, f"external $ref points outside the locked Sentinel schemas: {ref}"
+        assert (
+            target in allowed
+        ), f"external $ref points outside the locked schemas + the envelope: {ref}"
 
 
 # --------------------------------------------------------------------------- #
@@ -139,18 +153,24 @@ def test_locked_policy_schema_id_unchanged():
 
 
 def test_ingest_example_validates_against_events_schema():
+    """O-002 reconciliation (ADR-0002, Fork D): the ingest body is now the envelope, so
+    the example is an envelope. Its `payload` member must still validate against the
+    locked events.schema.json UNMODIFIED — the original O-001 intent, one indirection
+    deeper. This is one of the two O-001 tests deliberately updated, recorded in ADR-0002.
+    """
     spec = _load_spec()
     example = spec["paths"]["/v1/ingest/events"]["post"]["requestBody"]["content"][
         "application/json"
-    ]["examples"]["policyDecisionDeny"]["value"]
+    ]["examples"]["policyDecisionDenyEnvelope"]["value"]
+    payload = example["payload"]
     schema = _load_json(EVENTS_SCHEMA)
     # Pin the 2020-12 dialect explicitly (do not rely on $schema autodetection) so the
     # validator dialect can never drift between Sentinel/Orchestrator/Delta.
     try:
-        Draft202012Validator(schema).validate(example)
+        Draft202012Validator(schema).validate(payload)
     except jsonschema.ValidationError as exc:
         pytest.fail(
-            f"ingest example failed events.schema.json validation: {exc.message}"
+            f"wrapped ingest payload failed events.schema.json validation: {exc.message}"
         )
 
 
@@ -255,3 +275,234 @@ def test_codegen_consumes_spec(tmp_path):
         "codegen exited 0 but produced no Distribution model — the spec's own schemas "
         "did not generate (possible silent $ref skip)"
     )
+
+
+# --------------------------------------------------------------------------- #
+# O-002 event bus: envelope, DLQ, replay, version negotiation
+# --------------------------------------------------------------------------- #
+
+
+def _bus_registry(spec):
+    """Mount the spec + the two cross-referenced schema files by their exact file URIs so
+    every $ref resolves: openapi.yaml's `./event-envelope.schema.json` -> the envelope
+    file, and the envelope's `../../Anoryx-Sentinel/contracts/events.schema.json` -> the
+    locked events file. Internal `#/components/...` refs resolve within the spec resource.
+    """
+    return Registry().with_resources(
+        [
+            (
+                SPEC_PATH.as_uri(),
+                Resource.from_contents(spec, default_specification=DRAFT202012),
+            ),
+            (
+                EVENT_ENVELOPE_SCHEMA.as_uri(),
+                Resource.from_contents(
+                    _load_json(EVENT_ENVELOPE_SCHEMA),
+                    default_specification=DRAFT202012,
+                ),
+            ),
+            (
+                EVENTS_SCHEMA.as_uri(),
+                Resource.from_contents(
+                    _load_json(EVENTS_SCHEMA), default_specification=DRAFT202012
+                ),
+            ),
+        ]
+    )
+
+
+def _component_validator(spec, name):
+    """A validator for components.schemas.<name>, with all cross-file refs resolvable."""
+    return Draft202012Validator(
+        {"$ref": f"{SPEC_PATH.as_uri()}#/components/schemas/{name}"},
+        registry=_bus_registry(spec),
+    )
+
+
+def _envelope_validator(spec):
+    """A validator for the standalone envelope schema (its payload $ref resolved)."""
+    return Draft202012Validator(
+        {"$ref": EVENT_ENVELOPE_SCHEMA.as_uri()}, registry=_bus_registry(spec)
+    )
+
+
+def _ingest_envelope_example(spec):
+    return spec["paths"]["/v1/ingest/events"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]["examples"]["policyDecisionDenyEnvelope"]["value"]
+
+
+def test_envelope_schema_is_valid_draft202012():
+    Draft202012Validator.check_schema(_load_json(EVENT_ENVELOPE_SCHEMA))
+
+
+def test_envelope_schema_id_unchanged():
+    # Guards against accidental rename of the cross-product envelope contract id.
+    assert _load_json(EVENT_ENVELOPE_SCHEMA)["$id"] == "anoryx:event-envelope:v1"
+
+
+def test_envelope_is_closed_and_requires_core_fields():
+    schema = _load_json(EVENT_ENVELOPE_SCHEMA)
+    assert schema["additionalProperties"] is False
+    required = set(schema["required"])
+    core = {
+        "schema_version",
+        "envelope_id",
+        "event_type",
+        "source_product",
+        "occurred_at",
+        "idempotency_key",
+        "sequence",
+        "correlation_id",
+        "payload",
+    }
+    assert core <= required, f"envelope missing required core fields: {core - required}"
+
+
+def test_envelope_payload_ref_targets_locked_events_schema():
+    schema = _load_json(EVENT_ENVELOPE_SCHEMA)
+    ref = schema["properties"]["payload"]["$ref"]
+    assert ref == "../../Anoryx-Sentinel/contracts/events.schema.json"
+    target = (EVENT_ENVELOPE_SCHEMA.parent / ref).resolve()
+    assert (
+        target == EVENTS_SCHEMA.resolve()
+    ), f"payload $ref does not target the locked events schema: {target}"
+    assert _load_json(target)["$id"] == "sentinel:events:v1"
+
+
+def test_ingest_envelope_example_validates_against_envelope_schema():
+    spec = _load_spec()
+    example = _ingest_envelope_example(spec)
+    try:
+        _envelope_validator(spec).validate(example)
+    except jsonschema.ValidationError as exc:
+        pytest.fail(
+            f"ingest envelope example failed envelope-schema validation: {exc.message}"
+        )
+
+
+def test_ingest_envelope_invariants_hold_in_example():
+    # The three consumer-enforced invariants (ADR-0002) are demonstrated by the example:
+    # event_type == payload.event_type, idempotency_key == payload.event_id (the F-002 bus
+    # dedup key), correlation_id == payload.request_id, source_product == the mTLS peer.
+    example = _ingest_envelope_example(_load_spec())
+    payload = example["payload"]
+    assert example["event_type"] == payload["event_type"]
+    assert example["idempotency_key"] == payload["event_id"]
+    assert example["correlation_id"] == payload["request_id"]
+    assert example["source_product"] == "sentinel"
+
+
+def test_dead_letter_envelope_preserves_a_valid_original_envelope():
+    # The DLQ failure-envelope wraps the original (a full envelope). Build one from the
+    # ingest example and validate the whole DeadLetterEnvelope (original_envelope ->
+    # envelope -> events all resolve through the registry).
+    spec = _load_spec()
+    dlq = {
+        "dlq_id": "9f8e7d6c-5b4a-4039-8281-706f5e4d3c2b",
+        "original_envelope": _ingest_envelope_example(spec),
+        "reason": "unknown_schema_version",
+        "attempt_count": 3,
+        "first_failed_at": "2026-06-26T12:00:10Z",
+    }
+    try:
+        _component_validator(spec, "DeadLetterEnvelope").validate(dlq)
+    except jsonschema.ValidationError as exc:
+        pytest.fail(f"DeadLetterEnvelope example failed validation: {exc.message}")
+
+
+def test_dead_letter_reason_enum_is_closed():
+    reasons = _load_spec()["components"]["schemas"]["DeadLetterReason"]["enum"]
+    assert set(reasons) == {
+        "unknown_schema_version",
+        "payload_schema_invalid",
+        "source_identity_mismatch",
+        "idempotency_conflict",
+        "max_attempts_exceeded",
+    }
+
+
+def test_dlq_metadata_page_example_validates():
+    spec = _load_spec()
+    example = spec["paths"]["/v1/bus/dlq"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["examples"]["page"]["value"]
+    try:
+        _component_validator(spec, "DeadLetterMetadataPage").validate(example)
+    except jsonschema.ValidationError as exc:
+        pytest.fail(f"DLQ metadata page example failed validation: {exc.message}")
+
+
+def test_replay_request_examples_validate_and_limit_is_bounded():
+    spec = _load_spec()
+    examples = spec["paths"]["/v1/bus/replays"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]["examples"]
+    validator = _component_validator(spec, "ReplayRequest")
+    for name, ex in examples.items():
+        try:
+            validator.validate(ex["value"])
+        except jsonschema.ValidationError as exc:
+            pytest.fail(
+                f"replay example '{name}' failed ReplayRequest validation: {exc.message}"
+            )
+    # Bounded limit (replay-amplification defense).
+    limit = spec["components"]["schemas"]["ReplayLimit"]
+    assert limit["minimum"] == 1
+    assert limit["maximum"] == 1000
+
+
+def test_replay_request_rejects_two_selectors():
+    # The oneOf must reject a request that supplies more than one selector.
+    spec = _load_spec()
+    bad = {
+        "source_product": "sentinel",
+        "from_sequence": 1,
+        "dlq_id": "9f8e7d6c-5b4a-4039-8281-706f5e4d3c2b",
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        _component_validator(spec, "ReplayRequest").validate(bad)
+
+
+def test_schema_versions_example_validates_and_pins_v1():
+    spec = _load_spec()
+    example = spec["paths"]["/v1/bus/schema-versions"]["get"]["responses"]["200"][
+        "content"
+    ]["application/json"]["examples"]["v1"]["value"]
+    try:
+        _component_validator(spec, "SchemaVersions").validate(example)
+    except jsonschema.ValidationError as exc:
+        pytest.fail(f"schema-versions example failed validation: {exc.message}")
+    assert 1 in example["supported"]
+    sv = spec["components"]["schemas"]["SchemaVersions"]
+    assert sv["properties"]["envelope_schema_id"]["const"] == "anoryx:event-envelope:v1"
+
+
+def test_o002_honesty_boundaries_present_verbatim():
+    # Boundaries (a)-(c) must appear verbatim in the binding contract (rule 5).
+    desc = _load_spec()["info"]["description"]
+    assert (
+        "Replay and DLQ are SPECIFIED, not implemented — O-003 builds the machinery."
+        in desc
+    )
+    assert (
+        "Delivery is at-least-once; consumers MUST dedupe on idempotency_key." in desc
+    )
+    assert "Unknown-version handling is reject-to-DLQ." in desc
+
+
+def test_bus_operations_carry_mtls_plus_service_token():
+    # Every new bus op must pair mTLS with a second factor (the same posture O-001's
+    # test_mutualtls_applied_to_every_operation enforces globally).
+    spec = _load_spec()
+    bus_ops = [
+        ("/v1/bus/replays", "post"),
+        ("/v1/bus/dlq", "get"),
+        ("/v1/bus/schema-versions", "get"),
+    ]
+    for path, method in bus_ops:
+        security = spec["paths"][path][method]["security"]
+        assert security, f"{method.upper()} {path} has no security requirement"
+        for requirement in security:
+            assert "mutualTLS" in requirement
+            assert "serviceToken" in requirement

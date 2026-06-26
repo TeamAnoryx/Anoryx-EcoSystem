@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "anoryx:event-envelope:v1",
+  "title": "Anoryx Ecosystem Event Envelope",
+  "description": "The canonical cross-product wrapper (O-002, ADR-0002) around a locked Sentinel F-002 event. The `payload` member is the whole events.schema.json oneOf, referenced by $ref and validating UNMODIFIED — the envelope never copies or widens the locked schema. The envelope adds the bus-level fields the cross-product event bus needs: identity (envelope_id), ordering (sequence), idempotency (idempotency_key), correlation (correlation_id/causation_id), provenance (source_product), and schema version (schema_version). VALIDATOR DIALECT: Sentinel, Anoryx-AI-Orchestrator, and Delta MUST validate envelopes with a JSON Schema Draft 2020-12 validator (same dialect as the wrapped payload) so no parser-differential exists. The object is closed (additionalProperties:false) and every field is bounded (maxLength/maximum) per the F-001 audit posture: closed schemas remove a silent smuggling channel and bounded fields remove a DoS-via-inspection vector. HONESTY BOUNDARIES (ADR-0002, non-removable): (a) replay and DLQ are SPECIFIED, not implemented — O-003 builds the machinery; (b) delivery is at-least-once, consumers MUST dedupe on idempotency_key; (c) unknown schema_version handling is reject-to-DLQ. THREE CONTRACT INVARIANTS that JSON Schema cannot express across sibling values and that a consumer (O-003) MUST enforce fail-closed: event_type MUST equal payload.event_type (payload authoritative); idempotency_key MUST equal payload.event_id for events (the F-002 bus dedup key); source_product MUST equal the mTLS-authenticated peer identity (never trusted from the body, rule 7). Disagreement on any of the three is rejected (to DLQ).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "envelope_id",
+    "event_type",
+    "source_product",
+    "occurred_at",
+    "idempotency_key",
+    "sequence",
+    "correlation_id",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000,
+      "description": "Envelope schema major version. A v1 consumer accepts 1. An unrecognized value still STRUCTURALLY validates (so a well-formed but unknown-version envelope is ROUTED to the DLQ, not rejected with a 422) — the reject-to-DLQ disposition (honesty boundary c) is a documented consumer obligation (O-003), not a schema constraint. Pinning this with a const would make reject-to-DLQ unreachable and untestable. Bounded to cap inspection cost."
+    },
+    "envelope_id": {
+      "type": "string",
+      "format": "uuid",
+      "maxLength": 64,
+      "description": "Unique identifier of THIS envelope (UUID v4). Distinct from payload.event_id — the envelope and the event it carries have separate identities."
+    },
+    "event_type": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$",
+      "maxLength": 64,
+      "description": "Routing / DLQ-triage hint surfaced at the envelope level so a router or a dead-lettered entry is classifiable WITHOUT deserializing the large oneOf payload. MUST equal payload.event_type; the payload is authoritative; a consumer rejects-to-DLQ on disagreement. Charset restricted to a lowercase underscore slug (forbids control characters and whitespace; log-injection defense). Mirrors the event_type const shape in events.schema.json."
+    },
+    "source_product": {
+      "type": "string",
+      "enum": ["sentinel", "orchestrator", "delta", "rendly"],
+      "description": "The emitting ecosystem product. Its TRUSTED value is established by the RECEIVER from the mTLS-authenticated peer identity; the body value MUST be verified against the peer and is NEVER trusted from the body (rule 7). Disagreement is rejected. Closed enum = the four Anoryx ecosystem products; for the event-ingest seam the authenticated peer is Sentinel."
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 64,
+      "description": "Envelope emission time (RFC 3339 / ISO 8601 date-time, UTC). Distinct from payload.event_timestamp, which is the time of the underlying domain event."
+    },
+    "idempotency_key": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+      "maxLength": 128,
+      "description": "Consumer deduplication key. Delivery is at-least-once (honesty boundary b): consumers MUST dedupe on this value. For Sentinel events it MUST equal the server-resolved payload.event_id (F-002's designated bus dedup key). Forging it to a previously-seen value would cause a consumer to drop (suppress) a new event — defended by binding to the server-resolved event_id plus the ingest HMAC tamper-evidence (ADR-0002 threat 5). Charset restricted to forbid control characters and whitespace (log-injection defense)."
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "Monotonic, strictly increasing per-source_product emission sequence number. Bounded replay (POST /v1/bus/replays, from_sequence) uses it as an inclusive lower bound. Bounded to the JS-safe integer ceiling to cap inspection cost."
+    },
+    "correlation_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+      "maxLength": 128,
+      "description": "Groups all envelopes belonging to one causal chain. Defaults to the originating payload.request_id. Charset restricted to forbid control characters and whitespace (log-injection defense)."
+    },
+    "causation_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+      "maxLength": 128,
+      "description": "OPTIONAL envelope_id of the direct predecessor that caused this envelope. Absent at the root of a causal chain. Charset restricted to forbid control characters and whitespace (log-injection defense)."
+    },
+    "payload": {
+      "$ref": "../../Anoryx-Sentinel/contracts/events.schema.json",
+      "description": "The wrapped Sentinel event. References the LOCKED Anoryx-Sentinel/contracts/events.schema.json ($id sentinel:events:v1, oneOf over all variants) by $ref; the payload validates against it UNMODIFIED. This contract REFERENCES — it never redefines, copies, or widens — the locked schema. Same relative path the O-001 openapi.yaml already uses."
+    }
+  }
+}
