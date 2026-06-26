@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "delta:budget-policy:v1",
+  "title": "Delta Budget Policy Document",
+  "description": "The Delta-side budget *policy* document (D-002): a hard cap (BudgetConcept, the only part that serializes) plus advisory soft-warning / escalation tiers and the policy envelope. SHAPE ONLY — enforcement is D-005, signing/intake is F-008. Every object is closed (additionalProperties:false) and every field bounded, mirroring delta-financial.schema.json. HONEST SCOPE: the `warnings` here are Delta-advisory; they NEVER enter the signed policy and Sentinel never sees them (ADR-0002 Fork 1). The SERIALIZED hard cap (emitted by BudgetPolicy.to_policy_payload) validates against the UNMODIFIED Anoryx-Sentinel/contracts/policy.schema.json BudgetLimitPolicy — this Delta schema validates the WRAPPER doc, not the wire record. The cross-field warning invariants (homogeneous basis, strictly ascending, every absolute threshold < cap.limit_cost_cents) are enforced by the Delta Pydantic validators, NOT by this schema (JSON Schema cannot express them), exactly as D-001's balance/sum invariants are.",
+
+  "$defs": {
+    "tenant_id": { "type": "string", "format": "uuid", "maxLength": 64 },
+    "team_id": { "type": "string", "format": "uuid", "maxLength": 64 },
+    "project_id": { "type": "string", "format": "uuid", "maxLength": 64 },
+    "policy_id": { "type": "string", "format": "uuid", "maxLength": 64 },
+    "agent_id": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$", "maxLength": 64 },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "timestamp": { "type": "string", "format": "date-time", "maxLength": 64 },
+    "policy_version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "Monotonic version per policy_id; bounded to JS Number.MAX_SAFE_INTEGER (mirrors the locked policy.schema.json bound)."
+    },
+
+    "BudgetScope": { "type": "string", "enum": ["tenant", "team", "project", "agent"] },
+    "BudgetPeriod": { "type": "string", "enum": ["hourly", "daily", "monthly"] },
+    "WarningAction": {
+      "type": "string",
+      "enum": ["notify", "alert", "page"],
+      "description": "Advisory escalation label. DELTA-ADVISORY ONLY: Sentinel never receives it and nothing enforces it until D-005."
+    },
+
+    "BudgetConcept": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The hard cap. Maps 1:1 to the LOCKED policy.schema.json BudgetLimitPolicy; this is the ONLY part of a BudgetPolicy that serializes to F-008. At least one of limit_tokens/limit_cost_cents is required (mirrors the wire anyOf). limit_cost_cents is integer cents (a valid JSON `number` on the wire).",
+      "required": ["tenant_id", "team_id", "project_id", "agent_id", "scope", "period", "currency"],
+      "anyOf": [
+        { "required": ["limit_tokens"] },
+        { "required": ["limit_cost_cents"] }
+      ],
+      "properties": {
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "scope": { "$ref": "#/$defs/BudgetScope" },
+        "period": { "$ref": "#/$defs/BudgetPeriod" },
+        "limit_tokens": { "type": "integer", "minimum": 0, "maximum": 1000000000000 },
+        "limit_cost_cents": { "type": "integer", "minimum": 0, "maximum": 100000000000 },
+        "currency": { "$ref": "#/$defs/currency" }
+      }
+    },
+
+    "BudgetWarningTier": {
+      "description": "One advisory warning tier: a threshold (percent XOR absolute cents) + an action. Exactly one threshold basis per tier (oneOf). 100% is the cap, not a warning, so percent is bounded to [1,99].",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["threshold_percent", "action"],
+          "properties": {
+            "threshold_percent": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 99,
+              "description": "Warning trips at this percent of the cap. < 100 (100% is the cap)."
+            },
+            "action": { "$ref": "#/$defs/WarningAction" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["threshold_cost_cents", "action"],
+          "properties": {
+            "threshold_cost_cents": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000000000,
+              "description": "Warning trips at this absolute integer-cents spend. The validator additionally requires it to be < cap.limit_cost_cents."
+            },
+            "action": { "$ref": "#/$defs/WarningAction" }
+          }
+        }
+      ]
+    },
+
+    "BudgetPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Hard cap + advisory warnings + envelope. Only `cap` serializes to the LOCKED BudgetLimitPolicy; `warnings` are Delta-advisory and never signed. `signature` is NOT part of this document — it is supplied at emit time by the signer.",
+      "required": ["cap", "policy_id", "policy_version", "effective_from"],
+      "properties": {
+        "cap": { "$ref": "#/$defs/BudgetConcept" },
+        "policy_id": { "$ref": "#/$defs/policy_id" },
+        "policy_version": { "$ref": "#/$defs/policy_version" },
+        "effective_from": { "$ref": "#/$defs/timestamp" },
+        "warnings": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/BudgetWarningTier" },
+          "description": "Advisory warning tiers (default empty). Bounded to 64 to cap intake cost. Homogeneous basis + strictly ascending + every absolute threshold < cap are validator-enforced, not schema-enforced."
+        }
+      }
+    }
+  }
+}
