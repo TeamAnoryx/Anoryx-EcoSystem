@@ -69,14 +69,29 @@ def _content_hash(payload: Any) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+# Max length of a payload-derived common field projected into the bounded String(64)
+# audit/DLQ columns. On the reject-to-DLQ paths the payload has NOT passed
+# events.schema.json, so an attacker (secret-holder) could send an over-length value; an
+# unbounded projection overflows varchar(64) → DataError (NOT IntegrityError) → propagates
+# → 503, leaving the event neither accepted NOR dead-lettered (un-DLQ'able poison + retry
+# storm, audit M-1). Treat an over-length value like a non-string → NULL (RLS-invisible).
+_COMMON_FIELD_MAXLEN = 64
+
+
 def _extract_common(payload: Any) -> dict[str, str | None]:
-    """Best-effort pull of the F-002 common fields from *payload* (str or None each)."""
+    """Best-effort pull of the F-002 common fields from *payload* (str or None each).
+
+    A value that is not a string, or is longer than the bounded column, becomes None so
+    a malformed/oversized payload still dead-letters cleanly instead of crashing to 503.
+    """
     if not isinstance(payload, dict):
         return {field: None for field in _COMMON_FIELDS}
     out: dict[str, str | None] = {}
     for field in _COMMON_FIELDS:
         value = payload.get(field)
-        out[field] = value if isinstance(value, str) else None
+        out[field] = (
+            value if isinstance(value, str) and len(value) <= _COMMON_FIELD_MAXLEN else None
+        )
     return out
 
 

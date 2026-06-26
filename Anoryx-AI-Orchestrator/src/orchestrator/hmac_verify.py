@@ -40,6 +40,8 @@ class HmacResult:
 
 
 _SIG_PREFIX = "sha256="
+_SIG_HEX_LEN = 64  # SHA-256 hex digest length
+_HEXDIGITS = frozenset("0123456789abcdefABCDEF")
 _OK = HmacResult(HmacOutcome.OK, "ok")
 
 
@@ -69,6 +71,12 @@ def verify_ingest_signature(
     provided_hex = signature_header[len(_SIG_PREFIX) :]
     if not provided_hex:
         return HmacResult(HmacOutcome.UNAUTHENTICATED, "signature_missing")
+    # A SHA-256 hex digest is exactly 64 hex chars. Reject anything else as malformed
+    # BEFORE hmac.compare_digest — a non-ASCII header value would otherwise raise TypeError
+    # ("comparing strings with non-ASCII characters") and surface as a 503 instead of a
+    # clean 401 (audit L-1). This is a charset/shape gate, not a verification.
+    if len(provided_hex) != _SIG_HEX_LEN or any(c not in _HEXDIGITS for c in provided_hex):
+        return HmacResult(HmacOutcome.UNAUTHENTICATED, "signature_malformed")
 
     # --- Replay window (stale -> 403) ----------------------------------------- #
     if abs(now - ts) > tolerance_seconds:

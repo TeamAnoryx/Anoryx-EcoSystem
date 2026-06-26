@@ -77,6 +77,18 @@ async def test_malformed_json_returns_422(app):
     assert resp.json()["error"]["code"] == "schema_invalid"
 
 
+async def test_non_hex_signature_returns_401(app, make_valid_envelope):
+    ts = int(time.time())
+    body = json.dumps(make_valid_envelope()).encode("utf-8")
+    resp = await _post(
+        app,
+        body,
+        {"X-Sentinel-Signature": "sha256=" + "z" * 64, "X-Sentinel-Timestamp": str(ts)},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "unauthorized"
+
+
 async def test_structurally_invalid_envelope_returns_422(app, make_valid_envelope):
     ts = int(time.time())
     env = make_valid_envelope()

@@ -109,6 +109,36 @@ def test_wrong_signature_is_rejected():
     assert result.code == "signature_invalid"
 
 
+def test_non_hex_signature_is_unauthenticated():
+    # A 64-char but non-hex signature is malformed → 401 (not a 403 mismatch).
+    ts = int(_NOW)
+    result = verify_ingest_signature(
+        secret=_SECRET,
+        raw_body=_BODY,
+        signature_header="sha256=" + "z" * 64,
+        timestamp_header=str(ts),
+        tolerance_seconds=300,
+        now=_NOW,
+    )
+    assert result.outcome is HmacOutcome.UNAUTHENTICATED
+    assert result.code == "signature_malformed"
+
+
+def test_non_ascii_signature_is_unauthenticated():
+    # audit L-1: a non-ASCII signature would raise TypeError in hmac.compare_digest; the
+    # charset gate must reject it as a clean UNAUTHENTICATED before the compare.
+    ts = int(_NOW)
+    result = verify_ingest_signature(
+        secret=_SECRET,
+        raw_body=_BODY,
+        signature_header="sha256=" + "é" * 64,
+        timestamp_header=str(ts),
+        tolerance_seconds=300,
+        now=_NOW,
+    )
+    assert result.outcome is HmacOutcome.UNAUTHENTICATED
+
+
 def test_tampered_body_is_rejected():
     ts = int(_NOW)
     sig = _sign(ts, _BODY)

@@ -189,6 +189,19 @@ async def test_idempotency_conflict_reject_to_dlq(app, db_conn, make_valid_envel
     await _assert_dlq(db_conn, env2, "idempotency_conflict")
 
 
+async def test_oversized_payload_field_still_dlqs_not_503(app, db_conn, make_valid_envelope):
+    """audit M-1: an over-length payload-derived field on a reject-to-DLQ path must still
+    dead-letter cleanly (202 + DLQ row), not overflow varchar(64) → DataError → 503 (which
+    would leave the event neither accepted nor dead-lettered)."""
+    env = make_valid_envelope()
+    env["schema_version"] = 2  # DLQ path; payload is NOT schema-validated
+    env["payload"]["tenant_id"] = "A" * 200  # far over the String(64) bound
+    resp = await _post(app, env)
+    assert resp.status_code == 202  # dead-lettered cleanly, NOT 503
+    dlq = await _assert_dlq(db_conn, env, "unknown_schema_version")
+    assert dlq["tenant_id"] is None  # over-length value projected to NULL (RLS-invisible)
+
+
 _OTHER_TENANT = "00000000-0000-4000-8000-000000000000"
 
 

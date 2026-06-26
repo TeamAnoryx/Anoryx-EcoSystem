@@ -155,7 +155,25 @@ async def validate_chain(session: AsyncSession) -> bool:
     """Re-validate the full chain in order: each row_hash recomputes and links to prev.
 
     Returns True iff every link verifies. O(n) — privileged session (sees all tenants).
+
+    FAIL-LOUD (audit L-2): the chain is global and is read with NO tenant GUC, so under a
+    non-BYPASSRLS role the RLS predicate hides every row and the loop would vacuously
+    return True ("integrity verified" over an invisible chain). Assert the role bypasses
+    RLS first; otherwise raise rather than report a false pass.
     """
+    bypass = (
+        await session.execute(
+            text(
+                "SELECT bool_or(rolbypassrls OR rolsuper) FROM pg_roles "
+                "WHERE rolname = current_user"
+            )
+        )
+    ).scalar()
+    if not bypass:
+        raise RuntimeError(
+            "validate_chain requires a BYPASSRLS/superuser privileged session; a "
+            "non-bypass role sees an RLS-scoped subset and would falsely report integrity."
+        )
     result = await session.execute(
         select(IngestAuditLog).order_by(IngestAuditLog.sequence_number.asc())
     )

@@ -12,6 +12,8 @@ are O-006. The distribution seams are O-004. mTLS termination is O-008.
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -42,7 +44,8 @@ def create_app() -> FastAPI:
         the event was NOT durably recorded, so we return 503 (not 202). The at-least-once
         emitter retries. exc args are never logged/echoed (may carry sensitive data).
         """
-        request_id = request.headers.get("X-Request-Id", "req-orch-unhandled")
+        # Server-generated id — never reflect an unvalidated client X-Request-Id (audit L-3).
+        request_id = "req-orch-" + uuid.uuid4().hex[:24]
         return JSONResponse(
             status_code=503,
             content={
