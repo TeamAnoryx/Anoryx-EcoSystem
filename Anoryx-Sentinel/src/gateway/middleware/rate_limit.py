@@ -346,26 +346,47 @@ async def _fetch_team_rpm_limit_from_db(tenant_id: str, team_id: str) -> int | N
     limit: int | None = None
     try:
         from sqlalchemy import select
+        from sqlalchemy.exc import (
+            InterfaceError,
+            OperationalError,
+        )
+        from sqlalchemy.exc import (
+            TimeoutError as SATimeoutError,
+        )
 
         from persistence.models.tenant_routing_policy import TenantRoutingPolicy
 
+        # get_tenant_session autobegins (it runs set_config before yielding), so an
+        # explicit `session.begin()` here would raise InvalidRequestError — the F-007
+        # double-begin class (ADR-0026), which the old broad `except` swallowed into a
+        # silent team-tier no-op on every real-DB request. This is a read; use the
+        # autobegun transaction directly (no begin/commit needed).
         async with _get_tenant_session(tenant_id) as session:
-            async with session.begin():
-                stmt = select(TenantRoutingPolicy.team_rpm_limit).where(
-                    TenantRoutingPolicy.tenant_id == tenant_id
-                )
-                result = await session.execute(stmt)
-                row = result.scalar_one_or_none()
-                # row is the scalar team_rpm_limit value (int or None)
-                limit = int(row) if row is not None else None
-    except Exception as exc:
+            stmt = select(TenantRoutingPolicy.team_rpm_limit).where(
+                TenantRoutingPolicy.tenant_id == tenant_id
+            )
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            # row is the scalar team_rpm_limit value (int or None)
+            limit = int(row) if row is not None else None
+    except (OperationalError, InterfaceError, SATimeoutError, OSError) as exc:
+        # ADR-0026 Fork 1 (+ audit High): a genuine DB-connectivity error — a down DB
+        # surfaced as a builtin OSError (ConnectionRefusedError / socket.gaierror / the
+        # builtin TimeoutError from command_timeout), a connection loss, or a
+        # pool-checkout timeout (sqlalchemy.exc.TimeoutError) — is a DELIBERATE, bounded
+        # fail-open: the team tier no-ops while the Redis tenant/vkey tiers still cap (a
+        # rate limiter is an availability control; failing it closed on a Postgres blip
+        # would be a self-inflicted DoS). The set excludes InvalidRequestError /
+        # ProgrammingError so a begin()-class logic defect raises loudly instead of
+        # silently disabling the tier. Do NOT cache on a connectivity error — let the
+        # next request retry rather than poison the TTL.
         log.warning(
             "team_rpm_limit_db_read_failed",
             tenant_id=tenant_id,
             # L3 pattern: error type only, never the message (may contain credentials).
             error_class=type(exc).__name__,
         )
-        limit = None
+        return None
 
     # Cache the result (including None = "no limit configured") so subsequent
     # requests within the TTL skip the DB round-trip.

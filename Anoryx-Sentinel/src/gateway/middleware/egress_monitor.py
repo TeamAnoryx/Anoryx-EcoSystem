@@ -85,17 +85,21 @@ async def egress_request_hook(request: httpx.Request) -> None:
 
 
 async def _resolve_allowed_providers(tenant_context: TenantContext) -> list[str]:
-    """Read the tenant's allowed providers on a tenant session (RLS, R13)."""
+    """Read the tenant's allowed providers on a tenant session (RLS, R13).
+
+    get_tenant_session autobegins (set_config before yield), so an explicit
+    `session.begin()` here would raise InvalidRequestError — the F-007 double-begin
+    class (ADR-0026). This is a read; use the autobegun transaction directly.
+    """
     from persistence.database import get_tenant_session
     from persistence.repositories.tenant_routing_policy_repository import (
         TenantRoutingPolicyRepository,
     )
 
     async with get_tenant_session(tenant_context.tenant_id) as session:
-        async with session.begin():
-            policy = await TenantRoutingPolicyRepository(session).get_for_tenant(
-                tenant_context.tenant_id, caller_tenant_id=tenant_context.tenant_id
-            )
+        policy = await TenantRoutingPolicyRepository(session).get_for_tenant(
+            tenant_context.tenant_id, caller_tenant_id=tenant_context.tenant_id
+        )
     return list(policy.allowed_providers)
 
 
@@ -105,12 +109,33 @@ async def bind_egress_context(tenant_context: TenantContext, request_id: str) ->
     Resolves the tenant's allowed providers once and stores the binding on the
     contextvar (task-local). Called by the chat-completions handler after the
     tenant context is resolved.
+
+    ADR-0026 Fork 2 (+ audit High): a genuine DB-connectivity error — a down DB
+    (builtin OSError: ConnectionRefusedError / DNS / command-timeout), a connection
+    loss, or a pool-checkout timeout (sqlalchemy.exc.TimeoutError) — binds an EMPTY
+    allow-list so every tracked outbound provider is flagged (shadow_ai_detected_outbound)
+    rather than the monitor going dark. F-018 is detect-only (ADR-0021), so this never
+    blocks the request — it only raises alert volume during a DB outage. The set
+    excludes InvalidRequestError so a begin()-class logic defect propagates (raises)
+    instead of being swallowed into a request-blocking 500.
     """
-    allowed = await _resolve_allowed_providers(tenant_context)
+    from sqlalchemy.exc import (
+        InterfaceError,
+        OperationalError,
+    )
+    from sqlalchemy.exc import (
+        TimeoutError as SATimeoutError,
+    )
+
+    try:
+        allowed: tuple[str, ...] = tuple(await _resolve_allowed_providers(tenant_context))
+    except (OperationalError, InterfaceError, SATimeoutError, OSError):
+        log.error("egress_allowlist_db_error_flagging_all", request_id=request_id)
+        allowed = ()  # flag-on-uncertainty: empty allow-list → every tracked egress flagged
     current_egress_context.set(
         EgressContext(
             tenant_context=tenant_context,
             request_id=request_id,
-            allowed_providers=tuple(allowed),
+            allowed_providers=allowed,
         )
     )
