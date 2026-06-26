@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rendly-contracts"
+version = "1.0.0"
+description = "Rendly core platform API contract (R-001) and its validation suite."
+requires-python = ">=3.12"
+dependencies = []
+
+# R-001 is a CONTRACT package — there is no application code (servers/persistence are
+# R-003+). The only Python here is the contract-validation test suite, so the dev extra
+# carries the validators and lint tools the CI lane runs.
+[project.optional-dependencies]
+dev = [
+  "jsonschema[format]>=4.22,<5",
+  "openapi-spec-validator>=0.7,<0.8",
+  "pyyaml>=6,<7",
+  "pytest>=8,<9",
+  "ruff>=0.5",
+  "black>=24",
+]
+
+[tool.setuptools]
+# No importable package — this project ships specs + tests only.
+packages = []
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

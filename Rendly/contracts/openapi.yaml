@@ -1,0 +1,1223 @@
+openapi: "3.1.0"
+info:
+  title: Rendly Core Platform API
+  version: "1.0.0"
+  description: |
+    Rendly — zero-trust enterprise communication platform (secure-comms MVP). A
+    Slack/Teams/Zoom replacement where all messages, transcripts, and video logs
+    stay strictly inside the company's control.
+
+    SINGLE SOURCE OF TRUTH for the Rendly REST surface. ONLY the api-architect agent
+    may edit this file. Every builder agent (R-003..R-010) CONFORMS to this file and
+    never invents endpoints. The real-time WebSocket surface (chat + 1-on-1 huddle
+    signaling) is governed by `contracts/messages.schema.json`; the stable identifier
+    schema by `contracts/ids.md`.
+
+    ## Identity (self-contained — R-001 FORK B = B1)
+    Rendly issues its OWN OAuth2 + JWT tokens (R-003 implements issuance). R-001 takes
+    NO dependency on Sentinel F-014 SSO or any Orchestrator/Delta contract, which keeps
+    it parallel-safe. A future unified cross-product identity (O-010, post-investment)
+    is reserved as a documented seam only (see contracts/ids.md and ADR-0001 D2).
+
+    ## Authoritative tenant binding (security-critical)
+    The access token is the SOLE source of truth for `tenant_id` and the acting
+    `user_id`. Rendly resolves them SERVER-SIDE from the verified token's claims; they
+    are NEVER read from a client-supplied body field or header. A request whose path or
+    body names a different tenant is REJECTED with 403 (`tenant_context_mismatch`) —
+    the client can never widen, override, or impersonate a context the token does not
+    already authorize. All attribution on stored records uses the server-resolved
+    values. (This mirrors the Sentinel virtual-API-key → ID binding.)
+
+    ## Fail-safe inspection seam (R-001 FORK D = D1; seam only, R-008 implements)
+    Message content is inspected SYNCHRONOUSLY and FAIL-CLOSED before delivery/persist.
+    On a block or any inspection-seam error, the send is REJECTED (never silently
+    passed) — a message carrying a secret/PII is never delivered. On the REST surface
+    this surfaces as 403 `message_blocked` for content-bearing writes; on the WebSocket
+    send path it surfaces as a `chat.ack` with `status:"blocked"` (see
+    contracts/messages.schema.json). DETECTION ITSELF IS NOT IMPLEMENTED in R-001 — the
+    result fields and fail-closed semantics are reserved for R-008.
+
+    ## Privacy
+    Error responses never echo the request body and never contain plaintext PII.
+    `message` is a fixed template chosen SOLELY by `error_code` (no request-derived
+    interpolation). Correlate issues using the `request_id` returned on every response.
+
+    ## Honesty boundaries (non-removable — the MVP is narrower than the product name)
+      1. HUDDLES ARE 1-ON-1 ONLY. Group/multi-party huddles are R-011 (post-investment)
+         and are OUT OF SCOPE. There is no participant-list surface here.
+      2. THE SENTINEL INSPECTION INTEGRATION IS A SEAM ONLY. R-001 reserves the result
+         fields and fail-closed error codes; the actual PII/injection/secret detection
+         is R-008 and is NOT implemented. Huddle MEDIA is never content-inspected — only
+         chat message content and signaling metadata pass the seam.
+      3. THE DELTA-TEAM -> CHANNEL AUTO-MAPPING IS A SEAM ONLY. The channel model carries
+         a `source` discriminator and an opaque `external_ref` to document the future
+         extension point; the actual auto-mapping is R-006 vs D-016 with a manual
+         fallback. R-001 NEVER auto-maps — every channel defaults to `source:"manual"`.
+      4. ARCHIVAL FIELDS ARE DEFINED ONLY. Records carry hash-chain-ready archival
+         metadata, but immutable archiving (chain construction/verification) is R-009.
+
+    Framing in this document is intentionally "audit-ready" and "risk reduction",
+    never "compliant" or "blocks all attacks".
+
+servers:
+  - url: https://rendly.anoryx.io/v1
+    description: Production
+  - url: http://localhost:8080/v1
+    description: Local development
+
+security:
+  - oauth2: []
+
+tags:
+  - name: auth
+    description: Self-contained OAuth2 + JWT token issuance, refresh, and revocation (R-003).
+  - name: users
+    description: User profile / identity resources (R-004).
+  - name: channels
+    description: Role-based secure channels and membership (R-005/R-006).
+  - name: messages
+    description: Channel message history (read). The SEND path is WebSocket-only — see realtime.
+  - name: realtime
+    description: |
+      The single real-time WebSocket carrying BOTH team chat and 1-on-1 huddle
+      signaling (R-001 FORK E = E1, one transport). Frame shapes are governed by
+      contracts/messages.schema.json. This OpenAPI document describes only the HTTP
+      upgrade handshake; the message catalog is the source of truth for frames.
+  - name: huddles
+    description: 1-on-1 voice/video huddle bootstrap (R-007). ICE/TURN config only; the
+      offer/answer/ICE signaling and huddle lifecycle flow over the realtime WebSocket.
+  - name: observability
+    description: Liveness probe for deployment (R-010). Not part of the client product surface.
+
+paths:
+
+  /auth/token:
+    post:
+      tags: [auth]
+      summary: Issue an access + refresh token (OAuth2).
+      description: |
+        Self-contained OAuth2 token endpoint. Supported grants: `password` (direct
+        credential) and `refresh_token`. The access token is a Rendly-issued JWT (claim
+        shape documented under components.schemas.AccessTokenClaims). `authorization_code`
+        / OIDC is a documented R-003 extension seam and is NOT offered in R-001.
+        Errors use the standard Rendly Error envelope (not the RFC6749 error object) for
+        envelope uniformity + the no-PII fixed-message discipline; see ADR-0001 D2.
+      operationId: issueToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TokenRequest" }
+      responses:
+        "200":
+          description: A new token pair.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /auth/revoke:
+    post:
+      tags: [auth]
+      summary: Revoke a refresh token (logout).
+      description: |
+        Revokes the supplied refresh token (RFC 7009 style). Idempotent: revoking an
+        already-invalid token still returns 204 (no token-existence is leaked).
+      operationId: revokeToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RevokeRequest" }
+      responses:
+        "204":
+          description: The token is revoked (or was already invalid).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /users/me:
+    get:
+      tags: [users]
+      summary: Get the authenticated user's profile.
+      operationId: getMyProfile
+      security: [{ oauth2: ["profile:read"] }]
+      responses:
+        "200":
+          description: The current user's profile.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    patch:
+      tags: [users]
+      summary: Update the authenticated user's profile.
+      description: |
+        Updates the caller's own profile. Free-text fields (e.g. status_text) pass the
+        synchronous inspection seam (FORK D) and a block returns 403 `message_blocked`.
+      operationId: updateMyProfile
+      security: [{ oauth2: ["profile:write"] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserUpdate" }
+      responses:
+        "200":
+          description: The updated profile.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /users:
+    get:
+      tags: [users]
+      summary: List users in the tenant directory.
+      description: Keyset-paginated directory of users in the caller's tenant.
+      operationId: listUsers
+      security: [{ oauth2: ["profile:read"] }]
+      parameters:
+        - { $ref: "#/components/parameters/Cursor" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200":
+          description: A page of users.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /users/{user_id}:
+    parameters:
+      - { $ref: "#/components/parameters/UserIdPath" }
+    get:
+      tags: [users]
+      summary: Get a user's profile by id (tenant-scoped).
+      operationId: getUser
+      security: [{ oauth2: ["profile:read"] }]
+      responses:
+        "200":
+          description: The requested user's profile.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /channels:
+    get:
+      tags: [channels]
+      summary: List channels visible to the authenticated user.
+      operationId: listChannels
+      security: [{ oauth2: ["channels:read"] }]
+      parameters:
+        - { $ref: "#/components/parameters/Cursor" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200":
+          description: A page of channels.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [channels]
+      summary: Create a channel.
+      description: |
+        Creates a role-based channel. R-001 always creates `source:"manual"` channels;
+        the `source:"delta_team"` value + opaque `external_ref` document the future
+        Delta-team auto-mapping seam (R-006 vs D-016, manual fallback) and are NOT
+        auto-populated here. The channel name passes the inspection seam (FORK D).
+      operationId: createChannel
+      security: [{ oauth2: ["channels:write"] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelCreate" }
+      responses:
+        "201":
+          description: The created channel.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Channel" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /channels/{channel_id}:
+    parameters:
+      - { $ref: "#/components/parameters/ChannelIdPath" }
+    get:
+      tags: [channels]
+      summary: Get a channel by id.
+      operationId: getChannel
+      security: [{ oauth2: ["channels:read"] }]
+      responses:
+        "200":
+          description: The channel.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Channel" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    patch:
+      tags: [channels]
+      summary: Update a channel (rename / archive).
+      operationId: updateChannel
+      security: [{ oauth2: ["channels:admin"] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelUpdate" }
+      responses:
+        "200":
+          description: The updated channel.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Channel" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [channels]
+      summary: Archive a channel.
+      description: Archives the channel (soft delete). Idempotent for an already-archived channel.
+      operationId: archiveChannel
+      security: [{ oauth2: ["channels:admin"] }]
+      responses:
+        "204":
+          description: The channel is archived.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /channels/{channel_id}/members:
+    parameters:
+      - { $ref: "#/components/parameters/ChannelIdPath" }
+    get:
+      tags: [channels]
+      summary: List channel members and their roles.
+      operationId: listChannelMembers
+      security: [{ oauth2: ["channels:read"] }]
+      parameters:
+        - { $ref: "#/components/parameters/Cursor" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200":
+          description: A page of memberships.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MembershipList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /channels/{channel_id}/members/{user_id}:
+    parameters:
+      - { $ref: "#/components/parameters/ChannelIdPath" }
+      - { $ref: "#/components/parameters/UserIdPath" }
+    put:
+      tags: [channels]
+      summary: Add a member or set a member's role.
+      description: Adds the user to the channel at the given role, or updates the existing role (idempotent upsert).
+      operationId: upsertChannelMember
+      security: [{ oauth2: ["channels:admin"] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MembershipUpsert" }
+      responses:
+        "200":
+          description: The created or updated membership.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Membership" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [channels]
+      summary: Remove a member from a channel.
+      operationId: removeChannelMember
+      security: [{ oauth2: ["channels:admin"] }]
+      responses:
+        "204":
+          description: The member is removed (idempotent).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /channels/{channel_id}/messages:
+    parameters:
+      - { $ref: "#/components/parameters/ChannelIdPath" }
+    get:
+      tags: [messages]
+      summary: Read channel message history.
+      description: |
+        Keyset-paginated message history ordered by the archival `seq`. Returns durable
+        message records carrying the archival metadata (FORK C). The SEND path is
+        WebSocket-only (`chat.send` in contracts/messages.schema.json) — there is no
+        REST create-message endpoint, so the synchronous fail-closed inspection seam
+        cannot be bypassed.
+      operationId: listChannelMessages
+      security: [{ oauth2: ["chat:read"] }]
+      parameters:
+        - { $ref: "#/components/parameters/Cursor" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200":
+          description: A page of message records.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessageHistory" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /realtime:
+    get:
+      tags: [realtime]
+      summary: Open the real-time WebSocket (chat + 1-on-1 huddle signaling).
+      description: |
+        HTTP/1.1 Upgrade to a WebSocket. The SINGLE real-time transport carrying both
+        team chat and 1-on-1 huddle signaling (FORK E = E1). Frame shapes are governed
+        SOLELY by contracts/messages.schema.json (dispatch via the `msg_type` const);
+        this operation documents only the handshake.
+
+        AUTH: the access token is presented on the upgrade request via
+        `Authorization: Bearer <jwt>` (non-browser clients) or, for browsers that cannot
+        set the Authorization header on a WebSocket, via the `Sec-WebSocket-Protocol`
+        subprotocol value `rendly.bearer.<jwt>`. The server MUST treat that subprotocol
+        value as a SECRET — never log or archive it, and acknowledge only a non-secret
+        subprotocol token in the handshake response (otherwise the bearer leaks into
+        proxy/access logs). The server resolves tenant_id + user_id from the token and
+        emits a `session.welcome` frame; a missing/invalid/expired token fails the
+        handshake with 401 (no socket is opened). The handshake requires only `chat:read`,
+        so a read-only client (dashboard, archive bot) may receive; `chat:write` is
+        enforced per-frame at send time, so a token lacking it can open the socket but its
+        `chat.send` frames are rejected.
+      operationId: openRealtime
+      security: [{ oauth2: ["chat:read"] }]
+      responses:
+        "101": { description: Switching Protocols — the WebSocket is established; see contracts/messages.schema.json for frames. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /huddles/ice-servers:
+    get:
+      tags: [huddles]
+      summary: Get ICE/TURN server configuration for a 1-on-1 huddle.
+      description: |
+        Returns the SELF-HOSTED ICE/TURN configuration the client uses to establish the
+        1-on-1 WebRTC peer connection — Rendly never hands out an external meeting link
+        (no Zoom/Meet URL leaves the org). Credentials are short-lived. Group/SFU media
+        is out of scope (1-on-1 only).
+      operationId: getIceServers
+      security: [{ oauth2: ["huddle:initiate"] }]
+      responses:
+        "200":
+          description: ICE server configuration.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IceServersResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /healthz:
+    get:
+      tags: [observability]
+      summary: Liveness probe.
+      description: Unauthenticated liveness check for deployment (R-010). Returns no tenant data.
+      operationId: healthz
+      security: []
+      responses:
+        "200":
+          description: The service is live.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+components:
+
+  securitySchemes:
+    oauth2:
+      type: oauth2
+      description: |
+        Rendly self-contained OAuth2 + JWT (R-001 FORK B = B1). The access token is a
+        Rendly-issued JWT whose claims (see schemas.AccessTokenClaims) are the
+        AUTHORITATIVE, server-resolved source of truth for `tenant_id` and `user_id`.
+        Tenant binding is enforced fail-closed: a request that addresses a different
+        tenant than the token's `tenant_id` is rejected 403 (`tenant_context_mismatch`).
+        A missing/malformed/expired/forged token returns 401. Scopes gate per-endpoint
+        capability; channel-level RBAC roles (owner/admin/member/guest) gate per-channel
+        actions in addition to scopes. `authorization_code`/OIDC is a documented R-003
+        extension seam (and the O-010 unified-identity federation seam) — NOT offered in
+        R-001.
+        NOTE: R-001 exposes NO client-supplied field that carries tenant_id, so cross-tenant
+        isolation is enforced structurally via tenant-scoped 404 resolution (a resource in
+        another tenant is indistinguishable from a non-existent one). The
+        `tenant_context_mismatch` error code is reserved for a future tenant-referencing
+        request field.
+      flows:
+        password:
+          tokenUrl: https://rendly.anoryx.io/v1/auth/token
+          refreshUrl: https://rendly.anoryx.io/v1/auth/token
+          scopes:
+            "profile:read": Read user profiles in the tenant.
+            "profile:write": Update the caller's own profile.
+            "channels:read": List and read channels and membership.
+            "channels:write": Create channels.
+            "channels:admin": Administer channels and membership (rename, archive, member roles).
+            "chat:read": Read channel message history and open the realtime socket for receive.
+            "chat:write": Send chat messages over the realtime socket.
+            "huddle:initiate": Start a 1-on-1 huddle and fetch ICE configuration.
+
+  headers:
+    XRequestId:
+      description: Correlation id echoed on every response; matches request_id in the body and in audit/archival records.
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9._-]{1,64}$"
+        maxLength: 64
+    XRateLimitLimit:
+      description: The request ceiling for the current window.
+      schema: { type: integer, minimum: 0 }
+    XRateLimitRemaining:
+      description: Requests remaining in the current window.
+      schema: { type: integer, minimum: 0 }
+    XRateLimitReset:
+      description: Unix epoch seconds when the window resets.
+      schema: { type: integer, minimum: 0 }
+
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque keyset pagination cursor from a previous response's next_cursor.
+      schema:
+        type: string
+        maxLength: 512
+        pattern: "^[A-Za-z0-9._=-]{1,512}$"
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Maximum items to return (default 50).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    UserIdPath:
+      name: user_id
+      in: path
+      required: true
+      description: User identifier (UUID v4), tenant-scoped.
+      schema:
+        type: string
+        format: uuid
+        pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        maxLength: 64
+    ChannelIdPath:
+      name: channel_id
+      in: path
+      required: true
+      description: Channel identifier (UUID v4), tenant-scoped.
+      schema:
+        type: string
+        format: uuid
+        pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        maxLength: 64
+
+  responses:
+    BadRequest:
+      description: |
+        Malformed request — an invalid or out-of-bounds body (exceeding a field
+        maxLength/maxItems/maximum or carrying unknown keys), an invalid query
+        parameter, or a request the server could not safely interpret. Structural and
+        size checks run BEFORE content inspection (fail-safe).
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: invalid_request
+            message: "The request body is invalid or violates a field constraint."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    Unauthorized:
+      description: Missing, malformed, expired, or invalid access token.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: invalid_token
+            message: "The access token is missing, expired, or invalid."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    Forbidden:
+      description: |
+        Authenticated but not permitted. Returned when the token lacks the required
+        scope or the caller lacks the required channel role, when a supplied context does
+        not match the token's tenant (`tenant_context_mismatch` — the token, not the
+        payload, is the source of truth for tenant), or when the inspection seam blocks
+        content (`message_blocked`, fail-closed; R-008 implements detection).
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            forbidden:
+              value:
+                error_code: forbidden
+                message: "The caller is not permitted to perform this action."
+                request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+            tenantMismatch:
+              value:
+                error_code: tenant_context_mismatch
+                message: "The addressed tenant does not match the access token's authorized tenant."
+                request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+            messageBlocked:
+              value:
+                error_code: message_blocked
+                message: "Content was blocked by the safety inspection seam."
+                request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    NotFound:
+      description: |
+        The addressed resource does not exist OR is not visible in the caller's tenant.
+        TENANT-ISOLATION: a resource owned by another tenant and a non-existent resource
+        return the SAME 404, so cross-tenant existence is never revealed. The body never
+        echoes request content or PII.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: not_found
+            message: "The requested resource was not found."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    Conflict:
+      description: The request conflicts with current state (e.g. a duplicate channel name in scope).
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: conflict
+            message: "The request conflicts with the current state of the resource."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    PayloadTooLarge:
+      description: |
+        Request body exceeds the maximum allowed size. The cap is enforced at the edge
+        BEFORE body parsing or content inspection (fail-safe sizing).
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: request_too_large
+            message: "The request body exceeds the maximum allowed size."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    TooManyRequests:
+      description: Rate limit exceeded for this token / request context. Limits are enforced server-side.
+      headers:
+        X-RateLimit-Limit: { $ref: "#/components/headers/XRateLimitLimit" }
+        X-RateLimit-Remaining: { $ref: "#/components/headers/XRateLimitRemaining" }
+        X-RateLimit-Reset: { $ref: "#/components/headers/XRateLimitReset" }
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema: { type: integer, minimum: 0 }
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: rate_limit_exceeded
+            message: "Rate limit exceeded. Retry after the window resets."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    InternalError:
+      description: |
+        Unexpected server-side error. Per fail-safe policy, when inspection cannot
+        complete the request is BLOCKED and a 5xx is returned — traffic is never passed
+        through on internal failure. The body never contains request content or PII.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: internal_error
+            message: "An internal error occurred. The request was not processed."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+
+  schemas:
+
+    Error:
+      type: object
+      description: |
+        Standard error envelope for all non-2xx responses (including the token endpoint).
+        Deliberately minimal: no request body, no headers, no PII. `message` is a FIXED
+        template chosen SOLELY by `error_code` — there is NO request-derived interpolation
+        — so each code maps 1:1 to one stable string. The code/message pairing is NOT
+        schema-enforced (independent enums) and is maintained by the implementation and
+        covered by a unit test. Correlate with server-side records via request_id.
+      required: [error_code, message, request_id]
+      additionalProperties: false
+      properties:
+        error_code:
+          type: string
+          description: Stable, machine-readable error category.
+          enum:
+            - invalid_request
+            - request_too_large
+            - invalid_token
+            - tenant_context_mismatch
+            - forbidden
+            - message_blocked
+            - rate_limit_exceeded
+            - not_found
+            - conflict
+            - internal_error
+        message:
+          type: string
+          maxLength: 200
+          description: Fixed, human-readable explanation chosen ONLY by error_code; never echoes request content, field names, or PII.
+          enum:
+            - "The request body is invalid or violates a field constraint."
+            - "The request body exceeds the maximum allowed size."
+            - "The access token is missing, expired, or invalid."
+            - "The addressed tenant does not match the access token's authorized tenant."
+            - "The caller is not permitted to perform this action."
+            - "Content was blocked by the safety inspection seam."
+            - "Rate limit exceeded. Retry after the window resets."
+            - "The requested resource was not found."
+            - "The request conflicts with the current state of the resource."
+            - "An internal error occurred. The request was not processed."
+        request_id:
+          type: string
+          pattern: "^[A-Za-z0-9._-]{1,64}$"
+          maxLength: 64
+      example:
+        error_code: invalid_token
+        message: "The access token is missing, expired, or invalid."
+        request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+
+    TokenRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        OAuth2 token request. For grant_type=password: username + password required. For
+        grant_type=refresh_token: refresh_token required. `scope` is an optional
+        space-delimited subset of the granted scopes.
+      required: [grant_type]
+      properties:
+        grant_type:
+          type: string
+          enum: [password, refresh_token]
+        username:
+          type: string
+          maxLength: 320
+        password:
+          type: string
+          maxLength: 1024
+        refresh_token:
+          type: string
+          maxLength: 4096
+        scope:
+          type: string
+          maxLength: 512
+          description: Optional space-delimited scope request, subset of the user's granted scopes.
+      example:
+        grant_type: password
+        username: "alex@example.com"
+        password: "REDACTED"
+        scope: "profile:read chat:read chat:write channels:read"
+
+    TokenResponse:
+      type: object
+      additionalProperties: false
+      description: OAuth2 token response. access_token is a Rendly-issued JWT (see AccessTokenClaims).
+      required: [access_token, token_type, expires_in, scope]
+      properties:
+        access_token:
+          type: string
+          maxLength: 8192
+          description: Rendly-issued JWT access token.
+        token_type:
+          type: string
+          const: Bearer
+        expires_in:
+          type: integer
+          minimum: 1
+          maximum: 86400
+          description: Access-token lifetime in seconds (Phase-0 default ceiling 1 hour).
+        refresh_token:
+          type: string
+          maxLength: 4096
+          description: Present on a password grant; rotate on each refresh.
+        scope:
+          type: string
+          maxLength: 512
+          description: Space-delimited granted scopes.
+      example:
+        access_token: "eyJhbGciOiJFUzI1Ni"
+        token_type: Bearer
+        expires_in: 3600
+        refresh_token: "rt_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+        scope: "profile:read chat:read chat:write channels:read"
+
+    RevokeRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+          maxLength: 4096
+          description: The refresh token to revoke.
+      example:
+        token: "rt_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+
+    AccessTokenClaims:
+      type: object
+      additionalProperties: false
+      description: |
+        DOCUMENTATION schema for the decoded JWT access-token payload (not a wire body).
+        These claims are the authoritative, server-resolved identity. `iss` is fixed to
+        the Rendly issuer; `idp_subject` is RESERVED for the future O-010 unified-identity
+        federation seam and is null in R-001.
+      required: [iss, sub, tenant_id, scope, token_use, iat, exp, jti]
+      properties:
+        iss: { type: string, const: "https://rendly.anoryx.io", description: Token issuer. }
+        sub: { type: string, format: uuid, maxLength: 64, description: The acting user_id (see contracts/ids.md). }
+        tenant_id: { type: string, format: uuid, maxLength: 64, description: Authoritative tenant binding. }
+        scope: { type: string, maxLength: 512, description: Space-delimited granted scopes. }
+        roles:
+          type: array
+          maxItems: 64
+          description: Tenant-level roles carried for convenience; channel-level RBAC is resolved server-side per channel.
+          items: { type: string, maxLength: 64 }
+        token_use: { type: string, const: access }
+        iat: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        exp: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        jti: { type: string, pattern: "^[A-Za-z0-9._-]{1,64}$", maxLength: 64, description: "Token id (revocation/replay defense). Charset-bounded against log injection." }
+        idp_subject:
+          type: ["string", "null"]
+          maxLength: 256
+          description: RESERVED (O-010 future seam). Opaque external-IdP subject surrogate; null in R-001.
+      example:
+        iss: "https://rendly.anoryx.io"
+        sub: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
+        tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+        scope: "profile:read chat:read chat:write channels:read"
+        roles: ["member"]
+        token_use: access
+        iat: 1782825600
+        exp: 1782829200
+        jti: "jti_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+        idp_subject: null
+
+    User:
+      type: object
+      additionalProperties: false
+      description: A user profile (R-004). display_name and status_text are tenant-internal; user_id is an opaque surrogate, never PII.
+      required: [user_id, tenant_id, display_name, presence, created_at]
+      properties:
+        user_id: { type: string, format: uuid, maxLength: 64 }
+        tenant_id: { type: string, format: uuid, maxLength: 64 }
+        display_name: { type: string, maxLength: 128 }
+        status_text: { type: ["string", "null"], maxLength: 256 }
+        presence: { type: string, enum: [online, away, busy, offline] }
+        created_at: { type: string, format: date-time, maxLength: 64 }
+      example:
+        user_id: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
+        tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+        display_name: "Alex Rivera"
+        status_text: "Shipping R-001"
+        presence: online
+        created_at: "2026-06-01T09:00:00Z"
+
+    UserUpdate:
+      type: object
+      additionalProperties: false
+      description: Profile fields the caller may update on their own profile. Free-text passes the inspection seam.
+      properties:
+        display_name: { type: string, maxLength: 128 }
+        status_text: { type: ["string", "null"], maxLength: 256 }
+      example:
+        display_name: "Alex Rivera"
+        status_text: "In a huddle"
+
+    UserList:
+      type: object
+      additionalProperties: false
+      required: [users]
+      properties:
+        users:
+          type: array
+          maxItems: 200
+          items: { $ref: "#/components/schemas/User" }
+        next_cursor: { type: ["string", "null"], maxLength: 512 }
+      example:
+        users:
+          - user_id: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
+            tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+            display_name: "Alex Rivera"
+            status_text: null
+            presence: online
+            created_at: "2026-06-01T09:00:00Z"
+        next_cursor: null
+
+    Channel:
+      type: object
+      additionalProperties: false
+      description: |
+        A role-based secure channel. `source` documents the Delta-team auto-mapping seam:
+        R-001 always emits `manual`; `delta_team` + the opaque `external_ref` are reserved
+        for R-006/D-016 (manual fallback) and are never auto-populated here.
+      required: [channel_id, tenant_id, name, type, source, external_ref, created_by, created_at, archived]
+      properties:
+        channel_id: { type: string, format: uuid, maxLength: 64 }
+        tenant_id: { type: string, format: uuid, maxLength: 64 }
+        name: { type: string, maxLength: 128 }
+        type: { type: string, enum: [public, private, dm] }
+        source:
+          type: string
+          enum: [manual, delta_team]
+          description: Provenance. `manual` only in R-001; `delta_team` is the reserved auto-mapping seam (R-006/D-016).
+        external_ref:
+          type: ["string", "null"]
+          maxLength: 64
+          description: RESERVED. Opaque external reference (e.g. a future Delta team id) for the auto-mapping seam; null in R-001.
+        created_by: { type: string, format: uuid, maxLength: 64 }
+        created_at: { type: string, format: date-time, maxLength: 64 }
+        archived: { type: boolean }
+      example:
+        channel_id: "b3c4d5e6-abcd-1234-ef01-234567890abc"
+        tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+        name: "eng-platform"
+        type: private
+        source: manual
+        external_ref: null
+        created_by: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
+        created_at: "2026-06-10T10:00:00Z"
+        archived: false
+
+    ChannelCreate:
+      type: object
+      additionalProperties: false
+      description: |
+        Channel creation input. R-001 creates only `source:"manual"` channels. The
+        Delta-team mapping fields (`source:"delta_team"` / `external_ref`) are NOT
+        client-settable — they are server-managed and reserved for the R-006/D-016 mapping
+        seam. Because the object is closed (additionalProperties:false), a client-supplied
+        `external_ref` is REJECTED (400), not silently ignored, so a client can never seed
+        the mapping pointer.
+      required: [name, type]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        type: { type: string, enum: [public, private, dm] }
+      example:
+        name: "eng-platform"
+        type: private
+
+    ChannelUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        archived: { type: boolean }
+      example:
+        name: "eng-platform-archive"
+        archived: true
+
+    ChannelList:
+      type: object
+      additionalProperties: false
+      required: [channels]
+      properties:
+        channels:
+          type: array
+          maxItems: 200
+          items: { $ref: "#/components/schemas/Channel" }
+        next_cursor: { type: ["string", "null"], maxLength: 512 }
+      example:
+        channels:
+          - channel_id: "b3c4d5e6-abcd-1234-ef01-234567890abc"
+            tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+            name: "eng-platform"
+            type: private
+            source: manual
+            external_ref: null
+            created_by: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
+            created_at: "2026-06-10T10:00:00Z"
+            archived: false
+        next_cursor: null
+
+    Membership:
+      type: object
+      additionalProperties: false
+      description: A channel membership with its RBAC role. Carries tenant_id like every other resource (contracts/ids.md).
+      required: [channel_id, tenant_id, user_id, role, added_at]
+      properties:
+        channel_id: { type: string, format: uuid, maxLength: 64 }
+        tenant_id: { type: string, format: uuid, maxLength: 64 }
+        user_id: { type: string, format: uuid, maxLength: 64 }
+        role: { type: string, enum: [owner, admin, member, guest] }
+        added_at: { type: string, format: date-time, maxLength: 64 }
+      example:
+        channel_id: "b3c4d5e6-abcd-1234-ef01-234567890abc"
+        tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+        user_id: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
+        role: owner
+        added_at: "2026-06-10T10:00:00Z"
+
+    MembershipUpsert:
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties:
+        role: { type: string, enum: [owner, admin, member, guest] }
+      example:
+        role: member
+
+    MembershipList:
+      type: object
+      additionalProperties: false
+      required: [members]
+      properties:
+        members:
+          type: array
+          maxItems: 200
+          items: { $ref: "#/components/schemas/Membership" }
+        next_cursor: { type: ["string", "null"], maxLength: 512 }
+      example:
+        members:
+          - channel_id: "b3c4d5e6-abcd-1234-ef01-234567890abc"
+            tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+            user_id: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
+            role: owner
+            added_at: "2026-06-10T10:00:00Z"
+        next_cursor: null
+
+    ArchivalMeta:
+      type: object
+      additionalProperties: false
+      description: |
+        Hash-chain-ready archival metadata (FORK C, define-only). Mirrors the
+        contracts/messages.schema.json ArchivalMeta. The hash fields are RESERVED and
+        null until R-009 builds the tamper-evident chain.
+      required: [schema_version, record_id, created_at, seq, prev_record_hash, content_hash]
+      properties:
+        schema_version: { type: string, const: "1" }
+        record_id: { type: string, format: uuid, maxLength: 64 }
+        created_at: { type: string, format: date-time, maxLength: 64 }
+        seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        prev_record_hash: { type: ["string", "null"], pattern: "^[0-9a-f]{64}$", maxLength: 64 }
+        content_hash: { type: ["string", "null"], pattern: "^[0-9a-f]{64}$", maxLength: 64 }
+      example:
+        schema_version: "1"
+        record_id: "c4d5e6f7-bcde-2345-f012-34567890abcd"
+        created_at: "2026-06-26T12:00:01Z"
+        seq: 42
+        prev_record_hash: null
+        content_hash: null
+
+    InspectionResult:
+      type: object
+      additionalProperties: false
+      description: |
+        Result of the Sentinel safety inspection seam (FORK D, seam only; R-008
+        implements). Mirrors the contracts/messages.schema.json InspectionResult.
+        status=pass on a delivered/stored message (fail-closed pre-send).
+      required: [status]
+      properties:
+        status: { type: string, enum: [pass, blocked, seam_unavailable] }
+        evaluated_at: { type: string, format: date-time, maxLength: 64 }
+        detectors:
+          type: array
+          maxItems: 16
+          description: RESERVED (R-008). Per-detector outcomes, metadata only — never the offending content. Mirrors messages.schema.json InspectionResult.detectors.
+          items:
+            type: object
+            additionalProperties: false
+            required: [category, outcome]
+            properties:
+              category: { type: string, enum: [pii, injection, secret] }
+              outcome: { type: string, enum: [pass, block] }
+      example:
+        status: pass
+        evaluated_at: "2026-06-26T12:00:01Z"
+
+    MessageRecord:
+      type: object
+      additionalProperties: false
+      description: A durable chat message record (REST history view; mirrors the WebSocket chat.message frame minus msg_type).
+      required: [message_id, tenant_id, channel_id, sender_user_id, content, content_type, archival, inspection]
+      properties:
+        message_id: { type: string, format: uuid, maxLength: 64 }
+        tenant_id: { type: string, format: uuid, maxLength: 64 }
+        channel_id: { type: string, format: uuid, maxLength: 64 }
+        sender_user_id: { type: string, format: uuid, maxLength: 64 }
+        content: { type: string, maxLength: 16384 }
+        content_type: { type: string, enum: [text, markdown] }
+        archival: { $ref: "#/components/schemas/ArchivalMeta" }
+        inspection: { $ref: "#/components/schemas/InspectionResult" }
+      example:
+        message_id: "c4d5e6f7-bcde-2345-f012-34567890abcd"
+        tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+        channel_id: "b3c4d5e6-abcd-1234-ef01-234567890abc"
+        sender_user_id: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
+        content: "Ship R-001 today."
+        content_type: text
+        archival:
+          schema_version: "1"
+          record_id: "c4d5e6f7-bcde-2345-f012-34567890abcd"
+          created_at: "2026-06-26T12:00:01Z"
+          seq: 42
+          prev_record_hash: null
+          content_hash: null
+        inspection:
+          status: pass
+          evaluated_at: "2026-06-26T12:00:01Z"
+
+    MessageHistory:
+      type: object
+      additionalProperties: false
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          maxItems: 200
+          items: { $ref: "#/components/schemas/MessageRecord" }
+        next_cursor: { type: ["string", "null"], maxLength: 512 }
+      example:
+        messages:
+          - message_id: "c4d5e6f7-bcde-2345-f012-34567890abcd"
+            tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+            channel_id: "b3c4d5e6-abcd-1234-ef01-234567890abc"
+            sender_user_id: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
+            content: "Ship R-001 today."
+            content_type: text
+            archival:
+              schema_version: "1"
+              record_id: "c4d5e6f7-bcde-2345-f012-34567890abcd"
+              created_at: "2026-06-26T12:00:01Z"
+              seq: 42
+              prev_record_hash: null
+              content_hash: null
+            inspection:
+              status: pass
+              evaluated_at: "2026-06-26T12:00:01Z"
+        next_cursor: null
+
+    IceServersResponse:
+      type: object
+      additionalProperties: false
+      description: Self-hosted ICE/TURN configuration for a 1-on-1 WebRTC peer connection. No external meeting link is ever issued.
+      required: [ice_servers, ttl_seconds]
+      properties:
+        ice_servers:
+          type: array
+          maxItems: 16
+          items:
+            type: object
+            additionalProperties: false
+            required: [urls]
+            properties:
+              urls:
+                type: array
+                maxItems: 8
+                items: { type: string, maxLength: 256 }
+              username: { type: ["string", "null"], maxLength: 256 }
+              credential: { type: ["string", "null"], maxLength: 256 }
+        ttl_seconds: { type: integer, minimum: 1, maximum: 86400 }
+      example:
+        ice_servers:
+          - urls: ["stun:turn.rendly.anoryx.io:3478"]
+            username: null
+            credential: null
+          - urls: ["turn:turn.rendly.anoryx.io:3478?transport=udp"]
+            username: "1782829200:7d9e2f3a"
+            credential: "REDACTED_SHORT_LIVED"
+        ttl_seconds: 600
+
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, const: ok }
+      example:
+        status: ok
