@@ -1,0 +1,781 @@
+openapi: "3.1.0"
+info:
+  title: Anoryx Orchestrator Internal API
+  version: "1.0.0"
+  description: |
+    Internal, product-to-product API for Anoryx-AI-Orchestrator — the central
+    orchestration layer between Anoryx Sentinel (the zero-trust AI gateway, which
+    emits governance/usage events UP) and Delta (FinOps/budget policy, which submits
+    policies DOWN for distribution to Sentinels).
+
+    SCOPE OF THIS DOCUMENT (O-001): this contract defines THREE seams plus the
+    transport security scheme. It is CONTRACT-ONLY — there is no runtime, no
+    persistence, and no enforcement code behind it yet. The ingest, distribution,
+    persistence, registry, UI, and deploy layers are later tasks (O-002…O-008) and
+    MUST NOT be inferred from this document.
+
+    ## The three seams
+      1. Event ingest (Sentinel → Orchestrator): Sentinel pushes events up via an
+         HMAC-signed webhook POST. Bodies conform to the LOCKED Sentinel event
+         schema (contracts/events.schema.json, $id `sentinel:events:v1`).
+      2. Policy distribution intake (Delta → Orchestrator): Delta submits a policy
+         record (conforming to the LOCKED contracts/policy.schema.json, $id
+         `sentinel:policy:v1`, frozen at F-008 commit a9e2344) for distribution to
+         one or more Sentinels. The Orchestrator's distribution engine (O-004, NOT
+         in this contract) forwards it to Sentinel's existing F-012a admin/intake
+         surface.
+      3. Query API (Delta → Orchestrator): read-only metadata reads — policy
+         distribution status and event query/read.
+
+    ## The four stable IDs (see Anoryx-Sentinel/contracts/ids.md — LOCKED, IMMUTABLE)
+    Every event carries the four stable IDs (tenant_id / team_id / project_id /
+    agent_id) plus event_id, event_timestamp, request_id. These are the join key
+    between Sentinel events and Delta records; this contract references them by
+    `$ref` into the locked Sentinel schemas and never redefines them.
+
+    ## Schema reuse by reference (never by copy)
+    Event and policy bodies are `$ref`'d directly from the Sentinel contract files
+    (`../../Anoryx-Sentinel/contracts/events.schema.json` and `…/policy.schema.json`).
+    OpenAPI 3.1 aligns with JSON Schema 2020-12 (the dialect those files use), so the
+    locked schemas are referenced with no translation. Every example payload in this
+    document validates against those files UNMODIFIED. This contract REFERENCES — it
+    never redefines or extends — the locked schemas. In particular the `policy_type`
+    enum and both CHECK constraints in policy.schema.json are CLOSED; O-001 adds no
+    policy_type.
+
+    ## Validator dialect
+    Sentinel, Anoryx-AI-Orchestrator, and Delta MUST all validate referenced records
+    with a JSON Schema Draft 2020-12 validator so no parser-differential exists.
+
+    ## HONESTY BOUNDARIES (non-removable; rule 14)
+    (a) mTLS is DECLARED in this contract; certificate PROVISIONING is DEFERRED to
+        O-008 (F-034). Until then the mutualTLS scheme is a contract declaration, not
+        a live, enforced channel.
+    (b) Policy signing is PASS-THROUGH by default: the Orchestrator forwards an
+        already-signed (F-008 compact-JWS) policy record and does NOT sign on Delta's
+        behalf. Orchestrator-signing is an OPTIONAL, GATED capability that is NOT
+        enabled in v1 (the `sign_on_behalf` field is documented but disabled).
+    (c) The query API is READ-ONLY METADATA at this stage. It exposes distribution
+        status and event metadata; it does not mutate state and does not return full
+        event payloads.
+    (d) The Delta query service token is COARSE-GRAINED: per-tenant read
+        authorization is NOT yet enforced (deferred to O-006). A token holder can read
+        event/distribution metadata across tenants. The `tenant_id`/`team_id` query
+        filters are conveniences, NOT an authorization boundary. Treat the token
+        accordingly until O-006 lands.
+
+    ## Trust boundary (what each auth layer does / does not cover)
+    mTLS authenticates the PEER PRODUCT (Sentinel or Delta), not the message. The
+    per-message HMAC body signature on event ingest (reusing the F-020 webhook
+    pattern) gives per-event tamper-evidence and a replay window; it does NOT
+    establish product identity (mTLS does). The Delta service token authorizes the
+    distribution + query caller; it is bearer-only and does NOT sign request bodies.
+    The Orchestrator does NOT cryptographically re-verify the F-008 compact-JWS on a
+    distributed policy at this seam — Sentinel's intake (Anoryx-Sentinel/src/policy/
+    intake.py) is the verifying authority that resolves authoritative scope from the
+    signature and rejects body-ID disagreement. See ADR-0001 §Threat model.
+
+    Framing in this document is intentionally "audit-ready" and "risk reduction",
+    never "compliant" or "blocks all attacks".
+
+servers:
+  - url: https://orchestrator.anoryx.io
+    description: Production (internal network only)
+  - url: http://localhost:8081
+    description: Local development
+
+# mTLS authenticates the peer product on EVERY operation (DoD #3). Each operation
+# adds a second factor (HMAC on ingest, service token on distribution + query) via
+# an operation-level security override.
+security:
+  - mutualTLS: []
+
+tags:
+  - name: ingest
+    description: |
+      Event ingest from Sentinel (Sentinel → Orchestrator). HMAC-signed webhook
+      push. Bodies conform to the locked Sentinel event schema. The downstream
+      ingest pipeline (validation, dedup, fan-out) is O-003 and is NOT part of this
+      contract — this seam only acknowledges receipt.
+  - name: distribution
+    description: |
+      Policy distribution intake from Delta (Delta → Orchestrator). Accepts an
+      already-signed policy record for distribution to one or more Sentinels. The
+      distribution engine that performs the outbound forward is O-004 and is NOT
+      part of this contract.
+  - name: query
+    description: |
+      Read-only metadata reads for Delta — policy distribution status and event
+      query. Read-only at this stage (honesty boundary c).
+
+paths:
+  /v1/ingest/events:
+    post:
+      operationId: ingestEvent
+      tags: [ingest]
+      summary: Ingest a single governance/usage event from Sentinel
+      description: |
+        Sentinel pushes one event (conforming to the locked events.schema.json,
+        $id `sentinel:events:v1`) over an HMAC-signed webhook. This seam ACKNOWLEDGES
+        receipt only; it performs no pipeline processing (that is O-003). Batching and
+        a cross-product envelope are deliberately NOT specified here (they are O-002);
+        the body is a single event so the contract is not painted into a corner.
+
+        Auth: mTLS (peer = Sentinel) AND an HMAC-SHA256 body signature (the F-020
+        webhook pattern): the signer computes `HMAC(secret, "{timestamp}.{body}")`
+        and sends `X-Sentinel-Signature: sha256=<hex>` plus `X-Sentinel-Timestamp`
+        (Unix seconds). Receivers reject timestamps outside a ±300s window
+        (replay defense). A syntactically present signature is NOT a verified
+        signature; verification is a receiver obligation (O-003).
+      security:
+        - mutualTLS: []
+          hmacIngest: []
+      parameters:
+        - $ref: '#/components/parameters/IngestTimestamp'
+      requestBody:
+        required: true
+        description: |
+          A single Sentinel event. Validates against the locked
+          Anoryx-Sentinel/contracts/events.schema.json (oneOf over all event
+          variants) UNMODIFIED.
+        content:
+          application/json:
+            schema:
+              $ref: "../../Anoryx-Sentinel/contracts/events.schema.json"
+            examples:
+              policyDecisionDeny:
+                summary: A policy_decision_deny event (validates against events.schema.json)
+                value:
+                  event_type: policy_decision_deny
+                  tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+                  team_id: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
+                  project_id: "b3c4d5e6-abcd-1234-ef01-234567890abc"
+                  agent_id: "gateway-core"
+                  event_id: "c1d2e3f4-5678-4abc-9def-0123456789ab"
+                  event_timestamp: "2026-06-26T12:00:00Z"
+                  request_id: "req-o001-ingest-example-01"
+                  action_taken: blocked
+                  policy_id: "d4e5f6a7-9012-4bcd-8ef0-123456789abc"
+                  requested_model: "gpt-4o"
+                  violation_type: "budget_cost_exceeded"
+      responses:
+        '202':
+          description: Event accepted for (later) processing. No pipeline runs in O-001.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventIngestAccepted'
+              examples:
+                accepted:
+                  value:
+                    status: accepted
+                    event_id: "c1d2e3f4-5678-4abc-9def-0123456789ab"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /v1/policies/distributions:
+    post:
+      operationId: createPolicyDistribution
+      tags: [distribution]
+      summary: Submit a signed policy for distribution to one or more Sentinels
+      description: |
+        Delta submits a policy record for distribution. The `policy` member conforms
+        to the locked Anoryx-Sentinel/contracts/policy.schema.json ($id
+        `sentinel:policy:v1`, frozen at F-008 a9e2344) UNMODIFIED, and carries its own
+        embedded compact-JWS `signature` (the F-008 signing path). This is the
+        PASS-THROUGH path: the Orchestrator forwards the already-signed record to
+        Sentinel's intake; it does NOT sign on Delta's behalf (honesty boundary b).
+        `sign_on_behalf` is documented but GATED OFF in v1.
+
+        The outbound forward to Sentinel (and its status reconciliation) is O-004 and
+        is NOT implemented by this contract. Sentinel's intake
+        (Anoryx-Sentinel/src/policy/intake.py) remains the verifying authority that
+        resolves authoritative scope from the signature.
+
+        Auth: mTLS (peer = Delta) AND a Delta service token (bearer).
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyDistributionRequest'
+            examples:
+              budgetLimitDistribution:
+                summary: Distribute a budget_limit policy (policy validates against policy.schema.json)
+                value:
+                  policy:
+                    policy_type: budget_limit
+                    tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+                    team_id: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
+                    project_id: "b3c4d5e6-abcd-1234-ef01-234567890abc"
+                    agent_id: "delta-budget"
+                    policy_id: "e5f6a7b8-0123-4cde-9f01-23456789abcd"
+                    policy_version: 1
+                    effective_from: "2026-06-26T00:00:00Z"
+                    signature: "eyJhbGciOiJFUzI1NiJ9.eyJ0ZW5hbnRfaWQiOiIyYTRmOGMxZSJ9.MEUCIQDexampleSignatureSegmentAAAA"
+                    period: monthly
+                    scope: team
+                    max_cost_cents_per_period: 500000
+                  targets:
+                    - sentinel_id: "sentinel-prod-eu-1"
+                  sign_on_behalf: false
+      responses:
+        '202':
+          description: |
+            Distribution request accepted and assigned an opaque distribution_id.
+            Acceptance is NOT confirmation of delivery to any Sentinel (that is the
+            O-004 distribution engine + the GET status seam).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DistributionAccepted'
+              examples:
+                accepted:
+                  value:
+                    distribution_id: "a7b8c9d0-1234-4ef0-9abc-def012345678"
+                    policy_id: "e5f6a7b8-0123-4cde-9f01-23456789abcd"
+                    state: pending
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /v1/policies/distributions/{distribution_id}:
+    get:
+      operationId: getPolicyDistributionStatus
+      tags: [query]
+      summary: Read the distribution status of a submitted policy (read-only metadata)
+      description: |
+        Returns the distribution status for a previously submitted policy. READ-ONLY
+        METADATA (honesty boundary c): per-target delivery state, no policy body, no
+        mutation.
+
+        NOTE: the service token is COARSE-GRAINED — per-tenant read authorization is
+        deferred to O-006 (honesty boundary d).
+
+        Auth: mTLS (peer = Delta) AND a Delta service token (bearer).
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/DistributionId'
+      responses:
+        '200':
+          description: The distribution status record (metadata only).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DistributionStatus'
+              examples:
+                partial:
+                  value:
+                    distribution_id: "a7b8c9d0-1234-4ef0-9abc-def012345678"
+                    policy_id: "e5f6a7b8-0123-4cde-9f01-23456789abcd"
+                    state: partial
+                    created_at: "2026-06-26T12:00:05Z"
+                    targets:
+                      - sentinel_id: "sentinel-prod-eu-1"
+                        state: distributed
+                        last_attempt_at: "2026-06-26T12:00:06Z"
+                      - sentinel_id: "sentinel-prod-us-1"
+                        state: failed
+                        last_attempt_at: "2026-06-26T12:00:06Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/events:
+    get:
+      operationId: queryEvents
+      tags: [query]
+      summary: Query ingested event metadata (read-only metadata)
+      description: |
+        Returns a metadata-only, cursor-paginated list of ingested events for Delta.
+        READ-ONLY METADATA (honesty boundary c): join keys + type + time only, never
+        full event payloads. Filtering by tenant/team/agent/type/time is supported.
+
+        NOTE: the service token is COARSE-GRAINED — per-tenant read authorization is
+        deferred to O-006 (honesty boundary d). The tenant_id/team_id filters are
+        conveniences, not an authorization boundary.
+
+        Auth: mTLS (peer = Delta) AND a Delta service token (bearer).
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/FilterTenantId'
+        - $ref: '#/components/parameters/FilterTeamId'
+        - $ref: '#/components/parameters/FilterAgentId'
+        - $ref: '#/components/parameters/FilterEventType'
+        - $ref: '#/components/parameters/FilterSince'
+        - $ref: '#/components/parameters/FilterUntil'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: A page of event metadata records.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventMetadataPage'
+              examples:
+                page:
+                  value:
+                    data:
+                      - event_id: "c1d2e3f4-5678-4abc-9def-0123456789ab"
+                        event_type: policy_decision_deny
+                        event_timestamp: "2026-06-26T12:00:00Z"
+                        tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+                        team_id: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
+                        project_id: "b3c4d5e6-abcd-1234-ef01-234567890abc"
+                        agent_id: "gateway-core"
+                        request_id: "req-o001-ingest-example-01"
+                    next_cursor: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+
+  securitySchemes:
+    mutualTLS:
+      type: mutualTLS
+      description: |
+        Mutual-TLS client-certificate authentication of the PEER PRODUCT (Sentinel
+        or Delta). DECLARED here and APPLIED to every operation; certificate
+        PROVISIONING and trust-store setup are DEFERRED to O-008 (F-034). Until then
+        this scheme is a contract declaration, not a live enforced channel (honesty
+        boundary a). mTLS establishes product identity only — it does not sign or
+        authorize individual request bodies.
+
+    hmacIngest:
+      type: apiKey
+      in: header
+      name: X-Sentinel-Signature
+      description: |
+        Per-event HMAC-SHA256 body signature on the ingest seam, reusing the F-020
+        webhook pattern (Anoryx-Sentinel/src/orchestration/webhooks/signer.py). The
+        signer computes `HMAC-SHA256(signing_secret, "{timestamp}.{body}")` and sends
+        the hex digest as `X-Sentinel-Signature: sha256=<hex>`, paired with the
+        `X-Sentinel-Timestamp` header (Unix epoch seconds). Receivers MUST reject a
+        timestamp outside a ±300s window (replay defense) and MUST recompute and
+        compare the digest in constant time. NOTE: `apiKey` is the closest OpenAPI 3.1
+        modelable type for an HMAC header; the real semantics (keyed signature over
+        timestamp+body, not a static secret) are described here, not in the type. A
+        present, well-formed signature is NOT a verified signature.
+
+    serviceToken:
+      type: http
+      scheme: bearer
+      description: |
+        Delta service token (bearer) authorizing the distribution + query caller.
+        Bearer-only: it authorizes the caller but does NOT sign request bodies (the
+        embedded policy compact-JWS does that for distribution). Issued/rotated by
+        deploy tooling; provisioning details are out of scope for O-001.
+
+  parameters:
+    IngestTimestamp:
+      name: X-Sentinel-Timestamp
+      in: header
+      required: true
+      description: |
+        Unix epoch seconds (UTC) of signing, the timestamp half of the HMAC signed
+        payload `"{timestamp}.{body}"`. Receivers reject values outside ±300s.
+      schema:
+        type: string
+        # Unix epoch SECONDS: 10 digits today, 11 covers through year ~5138.
+        # Nanosecond/millisecond magnitudes are out of contract by construction.
+        pattern: '^[0-9]{10,11}$'
+        maxLength: 11
+      example: "1781784000"
+
+    DistributionId:
+      name: distribution_id
+      in: path
+      required: true
+      description: Opaque identifier returned by POST /v1/policies/distributions.
+      schema:
+        type: string
+        format: uuid
+        maxLength: 64
+      example: "a7b8c9d0-1234-4ef0-9abc-def012345678"
+
+    FilterTenantId:
+      name: tenant_id
+      in: query
+      required: false
+      description: Filter events to this tenant (UUID v4).
+      schema:
+        type: string
+        format: uuid
+        maxLength: 64
+
+    FilterTeamId:
+      name: team_id
+      in: query
+      required: false
+      description: Filter events to this team (UUID v4).
+      schema:
+        type: string
+        format: uuid
+        maxLength: 64
+
+    FilterAgentId:
+      name: agent_id
+      in: query
+      required: false
+      description: |
+        Filter events to this emitting Sentinel component (lowercase slug, e.g.
+        `gateway-core`). Matches the agent_id shape in events.schema.json — NOT a UUID,
+        NOT the end-user AI model name.
+      schema:
+        type: string
+        pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+        maxLength: 64
+
+    FilterEventType:
+      name: event_type
+      in: query
+      required: false
+      description: |
+        Filter to a single event_type const (one of the variants in
+        events.schema.json, e.g. `policy_decision_deny`).
+      schema:
+        type: string
+        pattern: '^[a-z0-9]+(_[a-z0-9]+)*$'
+        maxLength: 64
+
+    FilterSince:
+      name: since
+      in: query
+      required: false
+      description: Inclusive lower bound on event_timestamp (RFC 3339 date-time, UTC).
+      schema:
+        type: string
+        format: date-time
+        maxLength: 64
+
+    FilterUntil:
+      name: until
+      in: query
+      required: false
+      description: Exclusive upper bound on event_timestamp (RFC 3339 date-time, UTC).
+      schema:
+        type: string
+        format: date-time
+        maxLength: 64
+
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Maximum number of metadata records to return (bounded).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque pagination cursor from a previous response's next_cursor.
+      schema:
+        type: string
+        maxLength: 512
+
+  schemas:
+
+    EventIngestAccepted:
+      type: object
+      additionalProperties: false
+      required: [status, event_id]
+      description: Acknowledgement that an event was accepted for later processing.
+      properties:
+        status:
+          type: string
+          enum: [accepted]
+        event_id:
+          type: string
+          format: uuid
+          maxLength: 64
+          description: Echo of the accepted event's event_id (the bus dedup key).
+
+    PolicyDistributionTarget:
+      type: object
+      additionalProperties: false
+      required: [sentinel_id]
+      description: |
+        A distribution target. `sentinel_id` is an OPAQUE Sentinel deployment
+        identifier resolved by the O-005 registry; this contract does not define the
+        registry or the resolution rules.
+      properties:
+        sentinel_id:
+          type: string
+          pattern: '^[A-Za-z0-9._-]{1,128}$'
+          maxLength: 128
+          description: Opaque Sentinel deployment id (registry-resolved in O-005).
+
+    PolicyDistributionRequest:
+      type: object
+      additionalProperties: false
+      required: [policy]
+      description: |
+        A policy-distribution submission. `policy` is an already-signed policy record
+        that validates against the LOCKED policy.schema.json UNMODIFIED (its embedded
+        compact-JWS `signature` is the F-008 signing path). `targets` is optional; when
+        omitted the distribution engine (O-004) resolves targets from the policy scope.
+      properties:
+        policy:
+          $ref: "../../Anoryx-Sentinel/contracts/policy.schema.json"
+        targets:
+          type: array
+          maxItems: 256
+          description: Optional explicit distribution targets.
+          items:
+            $ref: '#/components/schemas/PolicyDistributionTarget'
+        sign_on_behalf:
+          type: boolean
+          enum: [false]
+          default: false
+          description: |
+            GATED / DISABLED in v1 (honesty boundary b). Constrained to `false` at the
+            SCHEMA layer (enum: [false]) so the contract itself rejects `true` — this is
+            secure-by-construction, not secure-by-documentation. When false the
+            Orchestrator passes the already-signed policy through unchanged. Enabling
+            Orchestrator-signing on Delta's behalf is a deliberate trust-surface
+            expansion that requires a NEW ADR to widen this field to a plain boolean.
+            Holding Delta's signing key is the larger trust surface and is intentionally
+            not the default.
+
+    DistributionAccepted:
+      type: object
+      additionalProperties: false
+      required: [distribution_id, policy_id, state]
+      description: Acknowledgement that a distribution request was accepted (not yet delivered).
+      properties:
+        distribution_id:
+          type: string
+          format: uuid
+          maxLength: 64
+          description: Opaque id for status lookup via GET /v1/policies/distributions/{distribution_id}.
+        policy_id:
+          type: string
+          format: uuid
+          maxLength: 64
+          description: Echo of the submitted policy's policy_id.
+        state:
+          type: string
+          enum: [pending]
+          description: Always 'pending' at acceptance; delivery is asynchronous (O-004).
+
+    DistributionTargetStatus:
+      type: object
+      additionalProperties: false
+      required: [sentinel_id, state]
+      description: Per-target delivery state (metadata only).
+      properties:
+        sentinel_id:
+          type: string
+          pattern: '^[A-Za-z0-9._-]{1,128}$'
+          maxLength: 128
+        state:
+          type: string
+          enum: [pending, distributed, failed]
+          description: Delivery state for this target. No error bodies are exposed here.
+        last_attempt_at:
+          type: string
+          format: date-time
+          maxLength: 64
+          description: Timestamp of the last delivery attempt (RFC 3339, UTC), if any.
+
+    DistributionStatus:
+      type: object
+      additionalProperties: false
+      required: [distribution_id, policy_id, state, created_at]
+      description: |
+        Distribution status for a submitted policy (read-only metadata). Aggregated
+        `state` plus per-target states. No policy body is returned.
+      properties:
+        distribution_id:
+          type: string
+          format: uuid
+          maxLength: 64
+        policy_id:
+          type: string
+          format: uuid
+          maxLength: 64
+        state:
+          type: string
+          enum: [pending, distributed, partial, failed]
+          description: Aggregate distribution state across all targets.
+        created_at:
+          type: string
+          format: date-time
+          maxLength: 64
+        targets:
+          type: array
+          maxItems: 256
+          items:
+            $ref: '#/components/schemas/DistributionTargetStatus'
+
+    EventMetadata:
+      type: object
+      additionalProperties: false
+      required: [event_id, event_type, event_timestamp, tenant_id]
+      description: |
+        Metadata-only projection of an ingested event (join keys + type + time). NEVER
+        the full event payload (honesty boundary c).
+      properties:
+        event_id:
+          type: string
+          format: uuid
+          maxLength: 64
+        event_type:
+          type: string
+          pattern: '^[a-z0-9]+(_[a-z0-9]+)*$'
+          maxLength: 64
+        event_timestamp:
+          type: string
+          format: date-time
+          maxLength: 64
+        tenant_id:
+          type: string
+          format: uuid
+          maxLength: 64
+        team_id:
+          type: string
+          format: uuid
+          maxLength: 64
+        project_id:
+          type: string
+          format: uuid
+          maxLength: 64
+        agent_id:
+          # The fourth stable ID (join key). Lowercase slug, mirroring the agent_id
+          # shape in events.schema.json — NOT a UUID, NOT the end-user AI model name.
+          type: string
+          pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+          maxLength: 64
+        request_id:
+          type: string
+          pattern: '^[A-Za-z0-9._-]{1,64}$'
+          maxLength: 64
+
+    EventMetadataPage:
+      type: object
+      additionalProperties: false
+      required: [data]
+      description: A cursor-paginated page of event metadata.
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/EventMetadata'
+        next_cursor:
+          type: [string, "null"]
+          maxLength: 512
+          description: Opaque cursor for the next page, or null when no more pages.
+
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: |
+        Standard error envelope. Never echoes the request body, never contains
+        plaintext PII; correlate via request_id.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              pattern: '^[a-z0-9]+(_[a-z0-9]+)*$'
+              maxLength: 64
+              description: Stable machine-readable error code slug.
+            message:
+              type: string
+              maxLength: 512
+              description: Human-readable, PII-free description.
+            request_id:
+              type: string
+              pattern: '^[A-Za-z0-9._-]{1,64}$'
+              maxLength: 64
+
+  responses:
+    Unauthorized:
+      description: |
+        Peer authentication failed — invalid/absent mTLS client certificate or
+        (on ingest) a missing/invalid HMAC signature, or (on Delta seams) a
+        missing/invalid service token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            unauthorized:
+              value:
+                error:
+                  code: unauthorized
+                  message: peer authentication failed
+                  request_id: "req-o001-ingest-example-01"
+    Forbidden:
+      description: |
+        Authenticated but not permitted — e.g. an ingest HMAC timestamp outside the
+        ±300s replay window, or a signature mismatch.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            forbidden:
+              value:
+                error:
+                  code: signature_invalid
+                  message: request signature rejected
+                  request_id: "req-o001-ingest-example-01"
+    NotFound:
+      description: No distribution exists for the supplied distribution_id.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            notFound:
+              value:
+                error:
+                  code: not_found
+                  message: distribution not found
+                  request_id: "req-o001-query-example-01"
+    UnprocessableEntity:
+      description: |
+        The body failed schema validation against the locked Sentinel schema
+        (events.schema.json on ingest, policy.schema.json on distribution).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            invalid:
+              value:
+                error:
+                  code: schema_invalid
+                  message: request body failed schema validation
+                  request_id: "req-o001-ingest-example-01"

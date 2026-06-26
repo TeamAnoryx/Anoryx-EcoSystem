@@ -1,0 +1,42 @@
+# Anoryx-AI-Orchestrator — O-001 contract test harness ONLY.
+#
+# This is intentionally a deps-only / test-only project: O-001 is contract-only
+# (no runtime, no package, no DB). There is no importable source package here yet;
+# `packages = []` disables setuptools auto-discovery so `pip install -e .[dev]`
+# installs the validation toolchain without trying to build a package.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anoryx-orchestrator-contracts"
+version = "0.0.0"
+description = "Anoryx-AI-Orchestrator API contract (O-001) — OpenAPI 3.1 spec + contract-validation tests."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  # YAML loader for the OpenAPI spec.
+  "pyyaml>=6.0,<7",
+  # JSON Schema Draft 2020-12 validator — same library + version band Sentinel uses
+  # for its runtime + contract tests, so no parser-differential between products.
+  "jsonschema[format]>=4.22,<5",
+  # OpenAPI 3.1 structural validation of the spec document.
+  "openapi-spec-validator>=0.7,<1",
+  # Codegen smoke (DoD #4): a types/client generator must consume the spec.
+  "datamodel-code-generator>=0.25,<1",
+  "pytest>=8,<9",
+  # Lint/format the Orchestrator Python (the contract tests + any future modules).
+  # An orchestrator-only PR is not covered by sentinel-ci's repo-wide lint, so this
+  # lane lints its own tree (mirrors the ci-lint-repo-wide discipline per product).
+  "ruff>=0.5,<1",
+  "black>=24,<26",
+]
+
+[tool.setuptools]
+packages = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
