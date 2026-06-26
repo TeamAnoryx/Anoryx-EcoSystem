@@ -1049,13 +1049,16 @@ components:
       type: integer
       minimum: 1
       maximum: 1000
-      default: 100
-      description: Maximum envelopes to replay in one request (bounded; replay-amplification defense).
+      description: |
+        Maximum envelopes to replay in one request (bounded 1..1000; replay-amplification
+        defense). REQUIRED on every replay selector so the cap is enforced at the schema
+        gate, not by a consumer-applied default — the contract's "always with a limit cap"
+        guarantee holds structurally.
 
     ReplayFromSequence:
       type: object
       additionalProperties: false
-      required: [source_product, from_sequence]
+      required: [source_product, from_sequence, limit]
       description: Replay from an inclusive per-source sequence lower bound.
       properties:
         source_product:
@@ -1071,7 +1074,7 @@ components:
     ReplayFromTimestamp:
       type: object
       additionalProperties: false
-      required: [source_product, from_timestamp]
+      required: [source_product, from_timestamp, limit]
       description: Replay from an inclusive occurred_at lower bound.
       properties:
         source_product:
@@ -1087,7 +1090,7 @@ components:
     ReplayFromDlq:
       type: object
       additionalProperties: false
-      required: [source_product, dlq_id]
+      required: [source_product, dlq_id, limit]
       description: Re-drive a single dead-lettered entry (replay-from-DLQ).
       properties:
         source_product:
