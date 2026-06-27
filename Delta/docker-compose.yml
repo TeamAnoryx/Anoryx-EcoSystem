@@ -1,0 +1,67 @@
+# docker-compose.yml — Delta ledger local-dev / fresh-compose-up stack (D-003).
+#
+# Topology (ADR-0003 Fork 4): Delta runs its OWN Postgres for local/CI here (the
+# shared Sentinel Postgres lives in Anoryx-Sentinel/docker-compose.yml, which the
+# cross-project hook forbids Delta from editing). Production points Delta at the
+# shared instance's `delta` schema with no code change.
+#
+# Local-dev passwords use ${VAR:-default} substitution. NEVER commit real creds;
+# production injects them from Vault/KMS.
+#
+# QUICK START:
+#   docker compose up -d --build      # postgres + one-shot migrate/provision
+#   # delta-migrate exits 0 once the schema + delta_app password are in place.
+# Teardown + clean volume:  docker compose down -v
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: delta-postgres
+    ports:
+      - "5544:5432"            # host 5544 avoids clash with Sentinel's 5432/5433
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-delta}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-delta}
+      POSTGRES_DB: ${POSTGRES_DB:-delta_dev}
+    volumes:
+      - delta-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-delta} -d ${POSTGRES_DB:-delta_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 90s        # initdb is slow on Docker Desktop bind I/O
+    restart: unless-stopped
+    networks:
+      - delta-net
+
+  # One-shot: runs `alembic upgrade head` then provisions the delta_app SCRAM
+  # password (RUN_MIGRATIONS=1, DELTA_PROVISION_APP_ROLE=1 baked into the image).
+  # Exits 0 when the fresh DB is migrated AND a delta_app login is possible.
+  delta-migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: anoryx-delta:0.2.0
+    container_name: delta-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-delta}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-delta}
+      POSTGRES_DB: ${POSTGRES_DB:-delta_dev}
+      RUN_MIGRATIONS: "1"
+      DELTA_PROVISION_APP_ROLE: "1"
+    restart: "no"
+    networks:
+      - delta-net
+
+networks:
+  delta-net:
+    driver: bridge
+
+volumes:
+  delta-postgres-data:

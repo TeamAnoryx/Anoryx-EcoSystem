@@ -12,7 +12,8 @@ on:
       - ".github/workflows/delta-ci.yml"
 
 jobs:
-  build:
+  # Fast lane: lint + SAST + the pure (no-DB) D-001/D-002 type suite.
+  quality:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -25,15 +26,98 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]" semgrep
       - name: Lint
-        # Repo-scoped lint of the whole Delta tree (src + tests), matching the
-        # Sentinel CI convention that lint runs over everything, not just changed src.
+        # Repo-scoped lint of the whole Delta tree. ruff AND black both run — ruff
+        # short-circuits CI, so black must be invoked explicitly or its failures hide.
         run: |
           ruff check .
           black --check .
       - name: SAST
-        # The Budget round-trip test reads the LOCKED Sentinel policy schema, so the
-        # full repo is checked out; semgrep is scoped to Delta source only.
         run: semgrep scan --config=p/python --severity=ERROR --no-git-ignore src/
-      - name: Test
-        # No database: D-001 is types + schemas + validators only (DDL deferred to D-003).
-        run: pytest --tb=short -q --cov=src --cov-report=term-missing
+
+  # DB lane: the D-003 ledger tests against a real Postgres (Fork 6 — must EXECUTE).
+  # Proves the balanced invariant, append-only, RLS isolation, idempotency, reversal,
+  # and concurrency on the actual database, plus fresh-DB delta_app authentication.
+  ledger-db:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Delta
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: delta
+          POSTGRES_PASSWORD: delta
+          POSTGRES_DB: delta_dev
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://delta:delta@localhost:5432/delta_dev
+      APP_DATABASE_URL: postgresql://delta_app:delta@localhost:5432/delta_dev
+      DELTA_PROVISION_APP_ROLE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Ledger DB tests (+ coverage)
+        # The persistence/ suite runs only here (it requires the live DB). Coverage
+        # over the whole src tree; the ledger-core modules are held to >=90% below.
+        run: |
+          pytest --tb=short -q --cov=src --cov-report=term-missing
+      - name: Ledger-core coverage floor (>=90%)
+        run: |
+          pytest -q \
+            --cov=delta.persistence.ledger_store \
+            --cov=delta.persistence.balances \
+            --cov=delta.persistence.database \
+            --cov-fail-under=90 \
+            --cov-report=term-missing \
+            tests/persistence
+
+  # Migration reversibility: upgrade -> downgrade -> upgrade on a fresh DB, then a
+  # full drop-schema rebuild (a true fresh build, not a downgrade-base reset).
+  migration-roundtrip:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Delta
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: delta
+          POSTGRES_PASSWORD: delta
+          POSTGRES_DB: delta_dev
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://delta:delta@localhost:5432/delta_dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: upgrade -> downgrade -> upgrade
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+      - name: drop-schema rebuild (true fresh build)
+        run: |
+          python -c "import os,psycopg; c=psycopg.connect(os.environ['DATABASE_URL']); c.autocommit=True; c.execute('DROP SCHEMA IF EXISTS delta CASCADE'); c.close()"
+          alembic upgrade head
