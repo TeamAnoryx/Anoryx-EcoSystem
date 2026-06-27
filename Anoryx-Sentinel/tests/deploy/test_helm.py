@@ -59,9 +59,17 @@ def test_helm_template_renders():
         "autoscaling.enabled=true",
     )
     assert r2.returncode == 0, r2.stderr
-    kinds2 = {d["kind"] for d in yaml.safe_load_all(r2.stdout) if d}
+    docs2 = [d for d in yaml.safe_load_all(r2.stdout) if d]
+    kinds2 = {d["kind"] for d in docs2}
     assert "HorizontalPodAutoscaler" in kinds2
-    assert "PersistentVolumeClaim" not in kinds2
+    # External mode disables the bundled PG/Redis, so the bundled-POSTGRES PVC must
+    # be absent. MinIO is a SEPARATE bundled store (F-010 Part 2) with its own
+    # minio.enabled toggle, left enabled here — so its PVC legitimately remains.
+    # Assert by name that only the postgres PVC is gone, not that all PVCs vanish
+    # (the old `"PersistentVolumeClaim" not in kinds2` predated MinIO).
+    pvc_names2 = {d["metadata"]["name"] for d in docs2 if d["kind"] == "PersistentVolumeClaim"}
+    assert not any(n.endswith("-postgres") for n in pvc_names2), pvc_names2
+    assert any(n.endswith("-minio") for n in pvc_names2), pvc_names2
 
 
 def test_helm_networkpolicy_restrictive():
