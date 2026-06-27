@@ -60,6 +60,14 @@ spec:
               value: "6379"
             {{- end }}
             {{- include "sentinel.bulkEnv" . | nindent 12 }}
+            # Upstream provider base URL — set on the worker too (mirrors compose),
+            # so the bulk path shares the gateway's required config surface.
+            - name: UPSTREAM_BASE_URL
+              value: {{ .Values.upstreamBaseUrl | quote }}
+            # PII detection toggle — OFF for the slim image (no Presidio); the bulk
+            # worker runs the same inspection hooks as the gateway.
+            - name: PII_DETECTION_ENABLED
+              value: {{ .Values.piiDetectionEnabled | quote }}
             {{- range .Values.env }}
             - name: {{ .name }}
               value: {{ .value | quote }}

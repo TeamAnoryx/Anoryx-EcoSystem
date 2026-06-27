@@ -56,11 +56,22 @@ fresh one), reconciled alongside the other resources, with:
 - an **initContainer `wait-for-postgres`** (same Sentinel image, runs a `pg_isready`
   / TCP-connect loop) so the migrate container starts only once bundled Postgres
   accepts connections; and
-- the **same entrypoint-shim invocation** as today —
-  `command: ["/usr/local/bin/docker-entrypoint.sh"]`, `args: ["alembic","upgrade","head"]`,
-  `SENTINEL_PROVISION_APP_ROLE=1` — so the alembic-to-head **and** the SCRAM
-  `sentinel_app` provisioning run identically to compose. **This logic is unchanged**;
-  only the Job's lifecycle (hook → normal resource + init-gate) changes.
+- the **same entrypoint-shim invocation as compose** —
+  `command: ["/usr/local/bin/docker-entrypoint.sh"]` with **`RUN_MIGRATIONS=1`** and
+  **`SENTINEL_PROVISION_APP_ROLE=1`** — so the entrypoint runs `alembic upgrade head`
+  **and then** the SCRAM `sentinel_app` provisioning, in that order, identically to
+  the compose gateway. **This logic is unchanged**; only the Job's lifecycle
+  (hook → normal resource + init-gate) changes.
+
+  **Ordering is load-bearing (a bug surfaced by actually deploying).** The migration
+  must run via `RUN_MIGRATIONS=1`, **not** by passing `["alembic","upgrade","head"]`
+  as the container `args`. The entrypoint runs the provision step *before* it `exec`s
+  `args` (an `exec` is the last thing it does), and the provision step
+  (`ALTER ROLE sentinel_app …`) depends on the role that migration **0006** creates.
+  So migration-via-`args` provisions before the role exists and fails on every fresh
+  install (`role "sentinel_app" does not exist`). Migration runs through
+  `RUN_MIGRATIONS` (entrypoint step 2, before provision at step 3); the Job's `args`
+  are a read-only `alembic current` head-confirmation that `exec`s last and exits 0.
 
 The **serve and seed pods gate on migrate completion** via a shared
 `wait-for-migrate` initContainer (a `_helpers.tpl` partial, reused by gateway,
@@ -138,6 +149,33 @@ for the worker's bulk/boto3 extras, `anoryx-sentinel-frontend`) are **built loca
 and `kind load docker-image`-ed**, with `image.*` values overridden to those tags
 (the chart's default `ghcr.io/…:{appVersion}-{variant}` remains for registry pulls).
 Access for the demo is `kubectl port-forward` (Services stay `ClusterIP`).
+
+### D6 — runtime config the bundled/slim demo requires (live-surfaced)
+
+Walking the demo bar on a real cluster surfaced two more "rendering is not
+deploying" gaps the chart now closes (same class as the D1 migrate bug):
+
+- **`UPSTREAM_BASE_URL` is required and was unset.** `GatewaySettings.upstream_base_url`
+  is a required field; the gateway crashes on boot without it. The chart had no
+  default and `values.example.yaml` did not set it, so every gateway/worker pod
+  `CrashLoopBackOff`ed. The chart now defaults `upstreamBaseUrl` to
+  `https://api.openai.com/v1` (mirroring the compose `${UPSTREAM_BASE_URL:-…}`
+  default) and wires it onto the gateway and worker.
+- **PII detection must be OFF on the slim image.** The default image is `slim`,
+  which omits Presidio/spaCy (they ship only in the full image / `pii-spacy`
+  extra). Per the fail-safe contract (ADR-0007 D3) a PII hook that cannot load its
+  analyzer BLOCKS the request (`HookFailSafeError` → 500), so a slim gateway with
+  PII detection on fail-safe-blocks **every** `/v1` request. The chart adds
+  `piiDetectionEnabled` (default **false**, wired to `PII_DETECTION_ENABLED` on
+  gateway + worker); set it true only with a full/`pii-spacy` image. **Security
+  note:** this changes the default detection posture to PII-off — coherent with
+  the default slim image (which cannot do PII at all), but it is a deliberate
+  default and full-image deployments must re-enable it. Secret + injection
+  detection have no heavy deps and remain on; the demo's governed-block bar is met
+  by an **injection** block (regex, `classifier_enabled=false`) → `403
+  policy_blocked` + hash-chained audit row, with no upstream provider key (Phase 0
+  has no upstream-key vaulting, so a non-blocked request forwards keyless and fails
+  at the upstream rather than yielding a Sentinel-side 403).
 
 ## Honest deferrals (F-022 / later — named, not half-built)
 

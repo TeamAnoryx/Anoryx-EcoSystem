@@ -71,6 +71,14 @@ spec:
             {{- end }}
             # Bulk storage (MinIO) endpoint + bucket; keys come via envSecret.
             {{- include "sentinel.bulkEnv" . | nindent 12 }}
+            # Upstream provider base URL — REQUIRED (GatewaySettings.upstream_base_url);
+            # without it the app crashes on boot. Mirrors the compose default.
+            - name: UPSTREAM_BASE_URL
+              value: {{ .Values.upstreamBaseUrl | quote }}
+            # PII detection toggle — OFF for the slim image (no Presidio); on the
+            # slim image a PII hook fail-safe-blocks every request (ADR-0007 D3).
+            - name: PII_DETECTION_ENABLED
+              value: {{ .Values.piiDetectionEnabled | quote }}
             {{- range .Values.env }}
             - name: {{ .name }}
               value: {{ .value | quote }}

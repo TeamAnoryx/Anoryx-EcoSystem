@@ -52,6 +52,21 @@ createEnvSecret: false
 secretData: {}                 # map of KEY: value, used only when createEnvSecret=true
 
 # --- Non-secret config (plain env vars) -------------------------------------- #
+# Upstream provider base URL (OpenAI-compatible). REQUIRED by the gateway — the
+# app fails to start without it (GatewaySettings.upstream_base_url). Mirrors the
+# compose default (`UPSTREAM_BASE_URL:-https://api.openai.com/v1`) so the chart
+# boots zero-config; override per provider. The provider API KEY is delivered
+# separately (vault/virtual-key vault), so with this set but no key configured,
+# governed requests are blocked (the demo's 403 policy_blocked path).
+upstreamBaseUrl: "https://api.openai.com/v1"
+# PII detection (Presidio) master toggle. The default `slim` image (image.variant)
+# does NOT bundle Presidio/spaCy — they ship only in the full image / the
+# `pii-spacy` extra. Per the fail-safe contract (ADR-0007 D3) a PII hook that
+# cannot load its analyzer BLOCKS every request (HookFailSafeError → 500), so the
+# slim image MUST run with PII detection OFF or it cannot serve any /v1 traffic.
+# Set this true ONLY when image.* points at a full image built with the pii-spacy
+# extra. (Secret + injection detection have no heavy deps and stay on by default.)
+piiDetectionEnabled: false
 env: []                        # list of {name, value}
 extraEnv: []
 

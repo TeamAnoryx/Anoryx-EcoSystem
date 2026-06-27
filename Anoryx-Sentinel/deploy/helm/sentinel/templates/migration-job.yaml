@@ -43,10 +43,22 @@ spec:
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           # Run via the entrypoint shim so it assembles the connection URLs from
-          # the password secretKeyRef (kept out of the pod spec), then execs alembic.
+          # the password secretKeyRef (kept out of the pod spec). The entrypoint
+          # runs `alembic upgrade head` (gated on RUN_MIGRATIONS=1) and THEN
+          # provisions the sentinel_app SCRAM password — and that order is
+          # mandatory: the provision step (`ALTER ROLE sentinel_app …`) needs the
+          # role that migration 0006 creates. Passing the migration via `args`
+          # instead does NOT work, because the entrypoint exec's `args` LAST (after
+          # the provision step), so the role would not yet exist when provision runs
+          # (the bug that failed every fresh bundled install). This mirrors the
+          # compose `RUN_MIGRATIONS=1` + `SENTINEL_PROVISION_APP_ROLE=1` gateway
+          # exactly. The `args` below are a read-only head confirmation that exits 0
+          # (the entrypoint exec's them after migrate+provision both succeed).
           command: ["/usr/local/bin/docker-entrypoint.sh"]
-          args: ["alembic", "upgrade", "head"]
+          args: ["alembic", "current"]
           env:
+            - name: RUN_MIGRATIONS
+              value: "1"
             {{- if .Values.migrations.provisionAppRole }}
             - name: SENTINEL_PROVISION_APP_ROLE
               value: "1"
