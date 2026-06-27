@@ -17,13 +17,13 @@ Anoryx Sentinel {{ .Chart.AppVersion }} has been deployed as release "{{ .Releas
 {{- if not .Values.envSecret }}
 {{- if not .Values.createEnvSecret }}
 
-WARNING: no `envSecret` is set and `createEnvSecret` is false. The gateway needs
-SENTINEL_KEY_SECRET and UPSTREAM_BASE_URL (and, in external mode, the DB/Redis
-URLs). Create a Secret and set `envSecret`:
-   kubectl -n {{ .Release.Namespace }} create secret generic sentinel-env \
-     --from-literal=SENTINEL_KEY_SECRET=$(openssl rand -base64 48) \
-     --from-literal=UPSTREAM_BASE_URL=https://api.openai.com/v1
-   helm upgrade {{ .Release.Name }} ... --set envSecret=sentinel-env
+WARNING: no `envSecret` is set and `createEnvSecret` is false. The gateway/worker/
+frontend/seed need SENTINEL_KEY_SECRET, SENTINEL_ADMIN_TOKEN, SESSION_SECRET, and
+BULK_STORAGE_ACCESS_KEY/SECRET_KEY (and, in external mode, the DB/Redis URLs).
+Create them with the helper (keeps secrets out of the repo — ADR-0027 D3):
+   bash deploy/helm/gen-k8s-secret.sh {{ .Release.Namespace }} {{ .Release.Name }}
+   helm upgrade {{ .Release.Name }} ... --set envSecret={{ include "sentinel.envSecretName" . }}
+Until then MinIO falls back to minioadmin/minioadmin and the gateway has no key secret.
 {{- end }}
 {{- end }}
 {{- if or .Values.postgres.bundled .Values.redis.bundled }}

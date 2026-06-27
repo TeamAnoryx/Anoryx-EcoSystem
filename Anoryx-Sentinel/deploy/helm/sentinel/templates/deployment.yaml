@@ -11,10 +11,12 @@ spec:
   selector:
     matchLabels:
       {{- include "sentinel.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
   template:
     metadata:
       labels:
         {{- include "sentinel.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: gateway
       {{- with .Values.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
@@ -27,6 +29,12 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # Gate serving on the schema being at head (ADR-0027 D1). wait-for-migrate
+      # polls `alembic current` so no replica serves an un-migrated DB and none
+      # races the migrate Job.
+      initContainers:
+        {{- include "sentinel.waitForPostgres" . | nindent 8 }}
+        {{- include "sentinel.waitForMigrate" . | nindent 8 }}
       containers:
         - name: sentinel
           image: {{ include "sentinel.image" . }}
@@ -50,31 +58,27 @@ spec:
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://{{ include "sentinel.otelCollectorFullname" . }}:4318"
             {{- end }}
-            {{- if .Values.postgres.bundled }}
             # Bundled Postgres: connection PARTS + password via secretKeyRef (kept
-            # OUT of the pod spec — code-review Med). The entrypoint shim assembles
-            # DATABASE_URL / APP_DATABASE_URL. External mode (bundled=false) supplies
-            # full URLs via envSecret instead.
-            - name: POSTGRES_HOST
-              value: {{ include "sentinel.postgresFullname" . | quote }}
-            - name: POSTGRES_PORT
-              value: "5432"
-            - name: POSTGRES_USER
-              value: {{ .Values.postgres.auth.username | quote }}
-            - name: POSTGRES_DB
-              value: {{ .Values.postgres.auth.database | quote }}
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.postgres.auth.existingSecret | default (include "sentinel.postgresFullname" .) }}
-                  key: POSTGRES_PASSWORD
-            {{- end }}
+            # OUT of the pod spec). The entrypoint shim assembles DATABASE_URL /
+            # APP_DATABASE_URL. External mode (bundled=false) supplies full URLs
+            # via envSecret instead.
+            {{- include "sentinel.pgEnv" . | nindent 12 }}
             {{- if .Values.redis.bundled }}
             - name: REDIS_HOST
               value: {{ include "sentinel.redisFullname" . | quote }}
             - name: REDIS_PORT
               value: "6379"
             {{- end }}
+            # Bulk storage (MinIO) endpoint + bucket; keys come via envSecret.
+            {{- include "sentinel.bulkEnv" . | nindent 12 }}
+            # Upstream provider base URL — REQUIRED (GatewaySettings.upstream_base_url);
+            # without it the app crashes on boot. Mirrors the compose default.
+            - name: UPSTREAM_BASE_URL
+              value: {{ .Values.upstreamBaseUrl | quote }}
+            # PII detection toggle — OFF for the slim image (no Presidio); on the
+            # slim image a PII hook fail-safe-blocks every request (ADR-0007 D3).
+            - name: PII_DETECTION_ENABLED
+              value: {{ .Values.piiDetectionEnabled | quote }}
             {{- range .Values.env }}
             - name: {{ .name }}
               value: {{ .value | quote }}

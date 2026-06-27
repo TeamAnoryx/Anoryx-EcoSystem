@@ -1,0 +1,113 @@
+{{- if .Values.worker.enabled -}}
+# Bulk worker (ADR-0027 D2/D4) — mirrors the compose `worker` service. Uses the
+# bulk image variant (boto3/aioboto3) and the run_worker.py runner from the
+# `<fullname>-worker-scripts` ConfigMap (created from the canonical
+# deploy/worker/run_worker.py — zero drift vs compose). RUN_MIGRATIONS=0 /
+# SENTINEL_PROVISION_APP_ROLE=0: the worker never migrates or provisions; it gates
+# on schema-at-head via wait-for-migrate.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sentinel.workerFullname" . }}
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "sentinel.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "sentinel.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: {{ include "sentinel.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        {{- include "sentinel.waitForPostgres" . | nindent 8 }}
+        {{- include "sentinel.waitForMigrate" . | nindent 8 }}
+      containers:
+        - name: worker
+          image: {{ include "sentinel.workerImage" . }}
+          imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["/usr/local/bin/docker-entrypoint.sh", "python", "/worker/run_worker.py"]
+          env:
+            - name: RUN_MIGRATIONS
+              value: "0"
+            - name: SENTINEL_PROVISION_APP_ROLE
+              value: "0"
+            - name: ENABLE_OTEL
+              value: {{ .Values.otelCollector.enabled | quote }}
+            {{- if .Values.otelCollector.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://{{ include "sentinel.otelCollectorFullname" . }}:4318"
+            {{- end }}
+            {{- include "sentinel.pgEnv" . | nindent 12 }}
+            {{- if .Values.redis.bundled }}
+            - name: REDIS_HOST
+              value: {{ include "sentinel.redisFullname" . | quote }}
+            - name: REDIS_PORT
+              value: "6379"
+            {{- end }}
+            {{- include "sentinel.bulkEnv" . | nindent 12 }}
+            # Upstream provider base URL — set on the worker too (mirrors compose),
+            # so the bulk path shares the gateway's required config surface.
+            - name: UPSTREAM_BASE_URL
+              value: {{ .Values.upstreamBaseUrl | quote }}
+            # PII detection toggle — OFF for the slim image (no Presidio); the bulk
+            # worker runs the same inspection hooks as the gateway.
+            - name: PII_DETECTION_ENABLED
+              value: {{ .Values.piiDetectionEnabled | quote }}
+            {{- range .Values.env }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if or .Values.envSecret .Values.createEnvSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ include "sentinel.envSecretName" . }}
+          {{- end }}
+          volumeMounts:
+            - name: worker-scripts
+              mountPath: /worker
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: run
+              mountPath: /run
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+      volumes:
+        - name: worker-scripts
+          configMap:
+            name: {{ include "sentinel.fullname" . }}-worker-scripts
+        - name: tmp
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

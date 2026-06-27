@@ -1,23 +1,27 @@
 {{- if .Values.migrations.enabled -}}
-# Pre-upgrade Alembic migration Job (ADR-0012 §4). Runs `alembic upgrade head`
-# before the app rolls out, so /readyz can pass. Overrides the image ENTRYPOINT
-# with `command`, so it reads connection URLs directly from the envSecret (the
-# entrypoint shim is bypassed — Helm uses k8s Secrets, not file secrets).
+# Alembic migration Job (ADR-0027 D1). A NORMAL release resource (NOT a Helm
+# pre-install hook): a pre-install hook would run before the bundled Postgres
+# resource exists and fail on a fresh install (the bug that shipped in PR #14 —
+# the chart only ever worked against an external DB). Instead, a
+# `wait-for-postgres` initContainer gates the migration on the DB accepting
+# connections, and the serve/seed pods gate on schema-at-head via a
+# `wait-for-migrate` initContainer. Runs `alembic upgrade head` + (when
+# provisionAppRole) the sentinel_app SCRAM provisioning THROUGH the entrypoint
+# shim, so it assembles the connection URLs from the password secretKeyRef
+# exactly as the compose stack does (the Part-1 gap-#1 fix, reproduced unchanged).
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: {{ include "sentinel.fullname" . }}-migrate-{{ .Release.Revision }}
   labels:
     {{- include "sentinel.labels" . | nindent 4 }}
-  annotations:
-    "helm.sh/hook": pre-install,pre-upgrade
-    "helm.sh/hook-weight": "-5"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
   backoffLimit: 2
-  # Bound a hung migration so the hook-delete policy does not wait indefinitely
-  # and a slow migration cannot silently overlap a retry (code-review Low).
-  activeDeadlineSeconds: 600
+  # Bound a hung migration. NOTE: this counts initContainer + image-pull time, so
+  # it must tolerate a cold first pull of the bundled-store images on a fresh node
+  # (the wait-for-postgres init blocks until Postgres is up). 30m headroom; on a
+  # warm node the Job finishes in seconds.
+  activeDeadlineSeconds: 1800
   template:
     metadata:
       labels:
@@ -27,6 +31,11 @@ spec:
       serviceAccountName: {{ include "sentinel.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- $waitPg := include "sentinel.waitForPostgres" . | trim }}
+      {{- if $waitPg }}
+      initContainers:
+        {{- $waitPg | nindent 8 }}
+      {{- end }}
       containers:
         - name: migrate
           image: {{ include "sentinel.image" . }}
@@ -34,29 +43,27 @@ spec:
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           # Run via the entrypoint shim so it assembles the connection URLs from
-          # the password secretKeyRef (kept out of the pod spec), then execs alembic.
+          # the password secretKeyRef (kept out of the pod spec). The entrypoint
+          # runs `alembic upgrade head` (gated on RUN_MIGRATIONS=1) and THEN
+          # provisions the sentinel_app SCRAM password — and that order is
+          # mandatory: the provision step (`ALTER ROLE sentinel_app …`) needs the
+          # role that migration 0006 creates. Passing the migration via `args`
+          # instead does NOT work, because the entrypoint exec's `args` LAST (after
+          # the provision step), so the role would not yet exist when provision runs
+          # (the bug that failed every fresh bundled install). This mirrors the
+          # compose `RUN_MIGRATIONS=1` + `SENTINEL_PROVISION_APP_ROLE=1` gateway
+          # exactly. The `args` below are a read-only head confirmation that exits 0
+          # (the entrypoint exec's them after migrate+provision both succeed).
           command: ["/usr/local/bin/docker-entrypoint.sh"]
-          args: ["alembic", "upgrade", "head"]
+          args: ["alembic", "current"]
           env:
+            - name: RUN_MIGRATIONS
+              value: "1"
             {{- if .Values.migrations.provisionAppRole }}
             - name: SENTINEL_PROVISION_APP_ROLE
               value: "1"
             {{- end }}
-            {{- if .Values.postgres.bundled }}
-            - name: POSTGRES_HOST
-              value: {{ include "sentinel.postgresFullname" . | quote }}
-            - name: POSTGRES_PORT
-              value: "5432"
-            - name: POSTGRES_USER
-              value: {{ .Values.postgres.auth.username | quote }}
-            - name: POSTGRES_DB
-              value: {{ .Values.postgres.auth.database | quote }}
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.postgres.auth.existingSecret | default (include "sentinel.postgresFullname" .) }}
-                  key: POSTGRES_PASSWORD
-            {{- end }}
+            {{- include "sentinel.pgEnv" . | nindent 12 }}
           {{- if or .Values.envSecret .Values.createEnvSecret }}
           envFrom:
             - secretRef:

@@ -1,0 +1,101 @@
+# Anoryx Sentinel — example values for the LOCAL single-cluster demo (ADR-0027).
+#
+# Copy + adjust, then:  helm install sentinel deploy/helm/sentinel -n sentinel -f my-values.yaml
+#
+# This file documents EVERY value the Part-2 demo needs. It contains NO secrets —
+# the sensitive material is delivered as a K8s Secret created out-of-band by
+# deploy/helm/gen-k8s-secret.sh (see "Secret" note at the bottom). NEVER commit a
+# values file that contains real secret values (R3 / no-secrets-in-repo).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Local images (built from the repo Dockerfiles, then `kind load docker-image`):
+#   docker build -t anoryx-sentinel:0.10.0 .
+#   docker build -t anoryx-sentinel:0.10.0-bulk --build-arg INSTALL_EXTRAS=bedrock .
+#   docker build -t anoryx-sentinel-frontend:local ./frontend
+#   kind load docker-image anoryx-sentinel:0.10.0 anoryx-sentinel:0.10.0-bulk anoryx-sentinel-frontend:local
+# ─────────────────────────────────────────────────────────────────────────────
+
+image:
+  repository: anoryx-sentinel
+  tag: "0.10.0"                 # local tag (not the ghcr default)
+  pullPolicy: IfNotPresent      # IfNotPresent so the kind-loaded image is used
+
+# Single replica for the demo (avoids needing >1 schedulable node's resources).
+replicaCount: 1
+
+worker:
+  enabled: true
+  image:
+    repository: anoryx-sentinel
+    tag: "0.10.0-bulk"          # bulk extras (boto3) for the bulk pipeline
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+
+frontend:
+  enabled: true
+  image:
+    repository: anoryx-sentinel-frontend
+    tag: "local"
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  service:
+    type: ClusterIP             # reached via `kubectl port-forward` for the demo
+    port: 3000
+
+minio:
+  enabled: true
+  bucket: sentinel-bulk
+  storage: 8Gi                  # demo PVC size; uses the cluster default StorageClass
+
+# Bundled stores (self-contained demo). Set bundled=false + external.* for managed.
+postgres:
+  bundled: true
+  storage: 8Gi
+  auth:
+    username: sentinel
+    database: sentinel_dev
+    # Dev-grade default; the bundled-postgres Secret is created by gen-k8s-secret.sh.
+    # (Leaving this as the default keeps the entrypoint's URL assembly working.)
+    password: sentinel
+redis:
+  bundled: true
+
+# Migrate Job runs alembic to head + provisions the sentinel_app SCRAM password
+# on first run (ADR-0027 D1). Keep both true for a fresh demo DB.
+migrations:
+  enabled: true
+  provisionAppRole: true
+
+seed:
+  enabled: true                 # mint the demo tenant/team/project/virtual key
+
+# Disabled for the local demo (single node; not needed for the bar).
+autoscaling: { enabled: false }
+podDisruptionBudget: { enabled: false }
+# NetworkPolicy is restrictive by default; on kind (no NetworkPolicy-enforcing CNI)
+# it is inert. Leave enabled (no-op) or disable explicitly.
+networkPolicy: { enabled: true }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Secret (NOT rendered by the chart for the demo — created out-of-band):
+#
+#   bash deploy/helm/gen-k8s-secret.sh sentinel        # namespace
+#
+# creates two Secrets from freshly generated dev values:
+#   <release>-sentinel-postgres : POSTGRES_PASSWORD
+#   <release>-sentinel-env      : SENTINEL_KEY_SECRET, SENTINEL_ADMIN_TOKEN,
+#                                 SESSION_SECRET, BULK_STORAGE_ACCESS_KEY,
+#                                 BULK_STORAGE_SECRET_KEY
+# then point the chart at the env Secret:
+envSecret: "sentinel-sentinel-env"
+# (gen-k8s-secret.sh prints the exact name for your release.)
+#
+# Escape hatch ONLY (NOT for committed files) — render the env Secret from values:
+#   createEnvSecret: true
+#   secretData:
+#     SENTINEL_KEY_SECRET: "…"
+#     SENTINEL_ADMIN_TOKEN: "…"
+#     SESSION_SECRET: "…"
+#     BULK_STORAGE_ACCESS_KEY: "…"
+#     BULK_STORAGE_SECRET_KEY: "…"
+# ─────────────────────────────────────────────────────────────────────────────

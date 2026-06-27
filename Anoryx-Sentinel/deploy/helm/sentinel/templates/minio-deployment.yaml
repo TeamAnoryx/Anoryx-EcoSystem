@@ -1,0 +1,72 @@
+{{- if .Values.minio.enabled -}}
+# Bundled MinIO — DEV/DEMO-GRADE bulk storage (ADR-0027 D2, mirrors the compose
+# minio service). Single replica + PVC. Runs non-root (uid 1000) with fsGroup so
+# the official image can own /data; no readOnlyRootFilesystem (MinIO writes its
+# .minio.sys metadata under /data). Root creds come from the app envSecret so the
+# bucket is owned by the same BULK_STORAGE_* credentials the gateway/worker use.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sentinel.minioFullname" . }}
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minio
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "sentinel.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: minio
+  template:
+    metadata:
+      labels:
+        {{- include "sentinel.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: minio
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: minio
+          image: {{ .Values.minio.image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          args: ["server", "/data", "--console-address", ":9001"]
+          env:
+            {{- include "sentinel.minioCredsEnv" . | nindent 12 }}
+          ports:
+            - name: s3
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: s3
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: s3
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            {{- toYaml .Values.minio.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "sentinel.minioFullname" . }}
+{{- end }}

@@ -34,9 +34,17 @@ ingress:
   tls: []
 
 # --- Sensitive config -------------------------------------------------------- #
-# Name of a PRE-EXISTING Kubernetes Secret holding the gateway's sensitive env
-# (DATABASE_URL, APP_DATABASE_URL, REDIS_URL, SENTINEL_KEY_SECRET,
-# UPSTREAM_BASE_URL, provider keys). Surfaced via envFrom: secretRef.
+# Name of a PRE-EXISTING Kubernetes Secret holding the gateway's sensitive env,
+# surfaced via envFrom: secretRef on gateway / worker / frontend / seed.
+# Create it WITHOUT committing values — see deploy/helm/gen-k8s-secret.sh
+# (ADR-0027 D3). Required keys (bundled-store demo):
+#   SENTINEL_KEY_SECRET        HMAC for virtual API key fingerprints (64 hex)
+#   SENTINEL_ADMIN_TOKEN       break-glass admin token (console + /admin/*)
+#   SESSION_SECRET             admin-console session cookie HMAC
+#   BULK_STORAGE_ACCESS_KEY    MinIO access key (== minio root user)
+#   BULK_STORAGE_SECRET_KEY    MinIO secret key (== minio root password)
+# External-store mode (bundled=false) ALSO needs: DATABASE_URL, APP_DATABASE_URL,
+# REDIS_URL, UPSTREAM_BASE_URL, provider keys.
 envSecret: ""
 # Set true ONLY to have the chart render the Secret from secretData below (not
 # recommended for production — prefer an externally-managed Secret / ESO).
@@ -44,6 +52,21 @@ createEnvSecret: false
 secretData: {}                 # map of KEY: value, used only when createEnvSecret=true
 
 # --- Non-secret config (plain env vars) -------------------------------------- #
+# Upstream provider base URL (OpenAI-compatible). REQUIRED by the gateway — the
+# app fails to start without it (GatewaySettings.upstream_base_url). Mirrors the
+# compose default (`UPSTREAM_BASE_URL:-https://api.openai.com/v1`) so the chart
+# boots zero-config; override per provider. The provider API KEY is delivered
+# separately (vault/virtual-key vault), so with this set but no key configured,
+# governed requests are blocked (the demo's 403 policy_blocked path).
+upstreamBaseUrl: "https://api.openai.com/v1"
+# PII detection (Presidio) master toggle. The default `slim` image (image.variant)
+# does NOT bundle Presidio/spaCy — they ship only in the full image / the
+# `pii-spacy` extra. Per the fail-safe contract (ADR-0007 D3) a PII hook that
+# cannot load its analyzer BLOCKS every request (HookFailSafeError → 500), so the
+# slim image MUST run with PII detection OFF or it cannot serve any /v1 traffic.
+# Set this true ONLY when image.* points at a full image built with the pii-spacy
+# extra. (Secret + injection detection have no heavy deps and stay on by default.)
+piiDetectionEnabled: false
 env: []                        # list of {name, value}
 extraEnv: []
 
@@ -85,6 +108,60 @@ redis:
     host: ""
     port: 6379
     secretName: ""             # Secret providing REDIS_URL
+
+# --- Bundled MinIO (bulk storage; ADR-0027 D2 — mirrors compose minio + init)  #
+# Access/secret keys are SENSITIVE and come from the app envSecret
+# (BULK_STORAGE_ACCESS_KEY / BULK_STORAGE_SECRET_KEY); only endpoint + bucket are
+# injected as plain env. minio-init creates the bucket (mc mb --ignore-existing).
+minio:
+  enabled: true
+  image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+  mcImage: minio/mc:RELEASE.2024-10-08T09-37-26Z
+  bucket: sentinel-bulk
+  storage: 8Gi
+  storageClassName: ""
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+# --- Worker (bulk pipeline; ADR-0027 D2/D4) --------------------------------- #
+# Separate image from the gateway — needs the bulk extras (boto3/aioboto3). The
+# run_worker.py runner is mounted from a ConfigMap (mirrors the compose
+# bind-mount; it is NOT baked into the image).
+worker:
+  enabled: true
+  image:
+    repository: ghcr.io/teamanoryx/anoryx-sentinel
+    # Defaults to "{AppVersion}-bulk" (e.g. 0.10.0-bulk). Override for local images.
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+
+# --- Frontend / admin console (Next.js BFF; ADR-0027 D2) -------------------- #
+# Reaches the gateway in-cluster (SENTINEL_API_URL). SENTINEL_ADMIN_TOKEN +
+# SESSION_SECRET come from the app envSecret.
+frontend:
+  enabled: true
+  image:
+    repository: ghcr.io/teamanoryx/anoryx-sentinel-frontend
+    tag: ""                    # Defaults to {AppVersion}. Override for local images.
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 3000
+  resources:
+    requests: { cpu: 100m, memory: 192Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+# --- Demo seed Job (ADR-0027 D4) -------------------------------------------- #
+# Idempotent demo tenant/team/project/virtual-key (deploy/seed/seed.py via a
+# ConfigMap). The minted key surfaces in the Job logs. Disable for non-demo installs.
+seed:
+  enabled: true
 
 # --- OpenTelemetry Collector (bundled interop; logging exporter only) -------- #
 otelCollector:
