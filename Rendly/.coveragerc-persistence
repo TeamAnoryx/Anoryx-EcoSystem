@@ -1,0 +1,13 @@
+# Coverage config for the R-004 persistence DB lane (rendly-db, persistence-floor step).
+# The default pyproject coverage config OMITS the persistence package (it needs a live
+# Postgres, so the no-DB contracts lane cannot measure it). This config is used ONLY by the
+# DB lane's persistence-floor step (pytest --cov=rendly.persistence --cov-config=...), which
+# DOES have a database, to gate the persistence package itself at >=90%. Migrations are DDL
+# executed via the alembic subprocess and are not unit-measured.
+[run]
+branch = True
+omit =
+    */persistence/migrations/*
+
+[report]
+show_missing = True
