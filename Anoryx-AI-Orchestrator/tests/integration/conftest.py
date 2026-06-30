@@ -128,7 +128,11 @@ def _ensure_db_ready() -> None:
         return  # Postgres unreachable / env unset -> DB tests skip via db_ready
     result = _run_alembic("upgrade", "head")
     if result.returncode != 0:
-        pytest.fail(f"_ensure_db_ready: alembic upgrade head failed:\n{result.stderr}")
+        heads = _run_alembic("heads")
+        pytest.fail(
+            "_ensure_db_ready: alembic upgrade head failed:\n"
+            f"{result.stderr}\n--- alembic heads ---\n{heads.stdout}\n{heads.stderr}"
+        )
     _provision_app_role()
 
 
@@ -360,6 +364,11 @@ def sentinel_signing(tmp_path_factory):
     it must be stable across the session). Keys are generated in-memory at runtime — no PEM
     literal ever appears in source.
     """
+    # The contract CI lane checks out Sentinel's source (so `policy` is importable via the
+    # module-level sys.path insert) but does NOT install Sentinel's deps — `policy.crypto`
+    # imports the `cryptography` package. Skip cleanly there instead of erroring at setup;
+    # the integration lane installs Sentinel and runs this for real.
+    pytest.importorskip("cryptography")
     from policy import crypto
 
     private_key, public_key = crypto.generate_keypair()
