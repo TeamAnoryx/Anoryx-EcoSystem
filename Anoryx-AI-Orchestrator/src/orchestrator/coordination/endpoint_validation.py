@@ -16,6 +16,8 @@ allowlist may change and a name may rebind to a private address between registra
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import ipaddress
 import socket
 from urllib.parse import urlsplit
@@ -142,3 +144,18 @@ def validate_endpoint(url: str, *, allowlist: frozenset[str], allow_http: bool) 
             )
 
     return raw
+
+
+async def validate_endpoint_async(url: str, *, allowlist: frozenset[str], allow_http: bool) -> str:
+    """Async wrapper around validate_endpoint that offloads the blocking getaddrinfo.
+
+    validate_endpoint() resolves hostnames with a synchronous socket.getaddrinfo, which would
+    block the event loop. Async callers (registry CRUD, the health cycle) use this wrapper so the
+    DNS resolution runs in the default thread-pool executor instead. The synchronous
+    validate_endpoint() is kept for pure/unit use. Raises EndpointValidationError on rejection.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        functools.partial(validate_endpoint, url, allowlist=allowlist, allow_http=allow_http),
+    )

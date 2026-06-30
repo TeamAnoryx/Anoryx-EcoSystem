@@ -17,6 +17,7 @@ import pytest
 from orchestrator.coordination.endpoint_validation import (
     EndpointValidationError,
     validate_endpoint,
+    validate_endpoint_async,
 )
 
 _EMPTY: frozenset[str] = frozenset()
@@ -190,4 +191,20 @@ def test_localhost_resolves_to_loopback_and_is_rejected() -> None:
     # Real resolution (deterministic on every platform): localhost → loopback → blocked.
     with pytest.raises(EndpointValidationError) as exc:
         validate_endpoint("https://localhost:8443", allowlist=_EMPTY, allow_http=False)
+    assert exc.value.reason == "blocked_private_ip"
+
+
+# --------------------------------------------------------------------------- #
+# Async wrapper (offloads the blocking getaddrinfo to the thread pool).
+# --------------------------------------------------------------------------- #
+
+
+async def test_async_wrapper_accepts_public() -> None:
+    out = await validate_endpoint_async("https://8.8.8.8", allowlist=_EMPTY, allow_http=False)
+    assert out == "https://8.8.8.8"
+
+
+async def test_async_wrapper_rejects_blocked() -> None:
+    with pytest.raises(EndpointValidationError) as exc:
+        await validate_endpoint_async("https://10.0.0.9", allowlist=_EMPTY, allow_http=False)
     assert exc.value.reason == "blocked_private_ip"

@@ -44,6 +44,9 @@ from orchestrator.schema_validation import policy_schema_errors
 router = APIRouter()
 
 _BEARER_PREFIX = "Bearer "
+# Fail-safe cap on the operator request body (generous for any legitimate registry op) so a
+# huge payload cannot be buffered + parsed before the NUL/schema guards fire.
+_MAX_BODY_BYTES = 65536
 _ALLOWED_REGISTER_KEYS = frozenset({"sentinel_id", "endpoint", "capabilities", "peer_auth_ref"})
 _ALLOWED_MODIFY_KEYS = frozenset({"endpoint", "capabilities", "peer_auth_ref", "enabled"})
 _ALLOWED_COORDINATE_KEYS = frozenset({"policy"})
@@ -107,8 +110,12 @@ def _serialize_sentinel(row: dict[str, Any]) -> dict[str, Any]:
 async def _parse_object_body(
     request: Request, request_id: str
 ) -> tuple[dict | None, JSONResponse | None]:
-    """Parse a JSON-object body with a NUL guard. Returns (body, None) or (None, error)."""
+    """Parse a size-capped, NUL-guarded JSON-object body. Returns (body, None) or (None, error)."""
     raw_body = await request.body()
+    if len(raw_body) > _MAX_BODY_BYTES:
+        return None, _error(
+            413, "request_too_large", "request body exceeds the maximum allowed size", request_id
+        )
     try:
         body = json.loads(raw_body)
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -226,7 +233,7 @@ async def deregister(sentinel_id: str, request: Request) -> JSONResponse:
     if auth_error is not None:
         return auth_error
     try:
-        await registry.deregister_sentinel(sentinel_id, settings=settings)
+        await registry.deregister_sentinel(sentinel_id)
     except SentinelNotFoundError as exc:
         return _map_registry_error(exc, request_id)
     return JSONResponse(

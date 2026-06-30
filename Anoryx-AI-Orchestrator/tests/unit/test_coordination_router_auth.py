@@ -122,6 +122,18 @@ async def test_register_bad_capabilities_is_422(app):
     assert resp.json()["error"]["code"] == "invalid_capabilities"
 
 
+async def test_oversized_body_is_413(app):
+    big = {
+        "sentinel_id": "s",
+        "endpoint": "https://8.8.8.8",
+        "capabilities": ["model_allowlist"],
+        "pad": "x" * 70000,  # > 64 KiB cap
+    }
+    resp = await _request(app, "POST", "/v1/registry/sentinels", headers=_bearer(), json=big)
+    assert resp.status_code == 413
+    assert resp.json()["error"]["code"] == "request_too_large"
+
+
 async def test_coordinate_non_object_policy_is_422(app):
     resp = await _request(
         app, "POST", "/v1/policies/coordinate", headers=_bearer(), json={"policy": "nope"}

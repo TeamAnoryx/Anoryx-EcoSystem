@@ -25,7 +25,7 @@ from typing import Any
 from orchestrator.config import CoordinationSettings
 from orchestrator.coordination.endpoint_validation import (
     EndpointValidationError,
-    validate_endpoint,
+    validate_endpoint_async,
 )
 from orchestrator.coordination.registry import fetch_sentinels
 from orchestrator.persistence import repositories as repo
@@ -77,7 +77,7 @@ async def _probe_one(
     endpoint = sentinel["endpoint"]
 
     try:
-        validated = validate_endpoint(
+        validated = await validate_endpoint_async(
             endpoint, allowlist=settings.endpoint_allowlist, allow_http=settings.allow_http
         )
     except EndpointValidationError as exc:

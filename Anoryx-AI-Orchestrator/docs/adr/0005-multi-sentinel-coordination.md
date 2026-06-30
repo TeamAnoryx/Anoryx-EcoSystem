@@ -187,12 +187,33 @@ fail-loud guard so a non-bypass role cannot vacuously "pass" over a hidden chain
 | Threat | Mitigation |
 |--------|------------|
 | Malicious registry entry → policy pushed to an attacker-controlled Sentinel | SSRF validation + allowlist at register AND re-validation at push/health; a rejected registration is recorded in the tamper-evident chain |
-| SSRF via the health endpoint | the same validation gates health probes; private/loopback/link-local/metadata-IP rejected unless allowlisted; DNS-rebind mitigated by re-resolve + re-validate on every outbound use |
+| SSRF via the health endpoint | the same validation gates health probes; private/loopback/link-local/metadata-IP rejected unless allowlisted; re-validation before every outbound use closes the steady-state DNS-rebind case (see residual risk below for the connect-time TOCTOU) |
 | Capability spoofing → silent non-enforcement | capabilities are operator-declared (operator-trusted), not peer-supplied; `reachable ≠ enforcing` is surfaced, not hidden; a `policy_type` mismatch is skipped + surfaced |
 | Stale-health distribution | staleness TTL demotes stale `healthy` targets; the healthy-only filter excludes them; health is read at push time |
 | Authz bypass | registry CRUD + coordinate + health-check are gated by the fail-closed `ORCH_ADMIN_TOKEN`, constant-time, distinct from the peer `ORCH_SERVICE_TOKEN` |
 | Fan-out amplification | targets bounded by the operator-controlled registry + the per-target O-004 retry ceiling (`max_attempts`); unhealthy targets are excluded so the fan-out never hammers them; the allowlist bounds destinations |
 | Audit tampering | the registry-mutation chain is append-only (deny-triggers) and validated with the BYPASSRLS fail-loud guard; the opt-in-when-present rule keeps nullable columns backward-compatible and tamper-evident when set |
+
+### Residual risk (known, deferred)
+
+- **DNS-rebinding connect-time TOCTOU.** `validate_endpoint` resolves + checks every address, but
+  it returns the *hostname* URL and the outbound `httpx` client re-resolves the host at connect
+  time, so the validated IP is not pinned to the connection. A hostname whose DNS flips
+  public→internal between validation and connect could bypass the block (and, on the distribution
+  path, leak the `SENTINEL_ADMIN_TOKEN` bearer to the rebind target). Re-validation before each
+  use closes the steady-state case; the connect-time race is **not** fully closed here. Mitigated
+  operationally (registration is operator-gated; the production default allowlist is empty so only
+  public https hosts register; it requires DNS control over an operator-chosen host plus a
+  sub-second race). **Full fix (resolve-once + connect to the pinned IP) is deferred to O-008**,
+  which owns outbound transport security (mTLS) — and the distribution POST itself lives in
+  O-004's `engine.py`, which O-005 consumes UNCHANGED. Operators should prefer IP-literal
+  endpoints, which carry no rebind window.
+- **O-004 static-targets path (`ORCH_DISTRIBUTION_TARGETS`) is not routed through
+  `validate_endpoint`** (pre-existing O-004 behavior, operator-config-controlled). Now that the
+  validator exists, that seam should adopt it → O-006/O-008.
+- **Append-only audit assumes the runtime DB role is BYPASSRLS-but-not-SUPERUSER** (a superuser
+  could disable the deny-triggers). Consistent with the existing ingest/distribution chains;
+  enforced at deploy → O-008.
 
 ## Configuration
 

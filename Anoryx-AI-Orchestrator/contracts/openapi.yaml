@@ -139,6 +139,20 @@ tags:
       O-002 ecosystem event-bus seams: bounded replay, dead-letter (DLQ) metadata, and
       schema-version negotiation. CONTRACT-ONLY — the replay/DLQ machinery is O-003. The
       replay seam acknowledges a request; the read seams return metadata only.
+  - name: registry
+    description: |
+      O-005 multi-Sentinel registry (operator-scoped). Operators register, list, read,
+      modify, deregister, and health-check the Sentinel instances this Orchestrator
+      coordinates. Gated by the operator bearer token (env ORCH_ADMIN_TOKEN), DISTINCT
+      from the peer service token. HONESTY: the registry is OPERATOR-SCOPED — per-tenant
+      authorization of its contents is DEFERRED to O-006; a declared capability is
+      RECORDED, not probed against the live Sentinel.
+  - name: coordination
+    description: |
+      O-005 coordinated policy distribution: a single operator push fanned out across the
+      registered, enabled, healthy Sentinels whose declared capabilities cover the policy.
+      Best-effort per target (a per-target failure does not roll back the others); mTLS
+      provisioning to the targets is DEFERRED to O-008.
 
 paths:
   /v1/ingest/events:
@@ -542,6 +556,374 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /v1/registry/sentinels:
+    post:
+      operationId: registerSentinel
+      tags: [registry]
+      summary: Register a Sentinel instance in the coordination registry
+      description: |
+        Registers a Sentinel deployment the Orchestrator will coordinate. The
+        `capabilities` array DECLARES which policy facets the instance claims to enforce
+        (budget_limit, model_allowlist, model_approval, model_denylist, code_scan,
+        data_lock); these are RECORDED as declared, NOT probed against the live Sentinel
+        (honesty: capability is declared, not verified). `endpoint` is the Sentinel intake
+        base URL; the runtime validates it (SSRF defense — non-https / private / loopback
+        targets are rejected with 422). `peer_auth_ref` is a NON-SECRET reference label
+        pointing at the credential held elsewhere (Vault / deploy tooling) — never the
+        secret itself.
+
+        OPERATOR-SCOPED: gated by the operator bearer token (env ORCH_ADMIN_TOKEN),
+        DISTINCT from the peer service token. Per-tenant authorization of registry
+        contents is DEFERRED to O-006.
+
+        Auth: mTLS (operator host) AND an operator bearer token.
+      security:
+        - mutualTLS: []
+          operatorBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SentinelRegistrationRequest'
+            examples:
+              register:
+                summary: Register a Sentinel that declares budget + model-approval enforcement
+                value:
+                  sentinel_id: "sentinel-prod-eu-1"
+                  endpoint: "https://sentinel-eu-1.internal.anoryx.io"
+                  capabilities: [budget_limit, model_approval]
+                  peer_auth_ref: "vault://orchestrator/peers/sentinel-prod-eu-1"
+      responses:
+        '201':
+          description: The Sentinel was registered. Returns the stored registry entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SentinelRegistryEntry'
+              examples:
+                registered:
+                  value:
+                    sentinel_id: "sentinel-prod-eu-1"
+                    endpoint: "https://sentinel-eu-1.internal.anoryx.io"
+                    peer_auth_ref: "vault://orchestrator/peers/sentinel-prod-eu-1"
+                    capabilities: [budget_limit, model_approval]
+                    health_status: unknown
+                    consecutive_failures: 0
+                    last_checked_at: null
+                    last_healthy_at: null
+                    enabled: true
+                    created_at: "2026-06-30T12:00:00Z"
+                    updated_at: "2026-06-30T12:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    get:
+      operationId: listSentinels
+      tags: [registry]
+      summary: List registered Sentinel instances (operator-scoped)
+      description: |
+        Returns every registered Sentinel entry. OPERATOR-SCOPED: per-tenant
+        authorization of registry contents is DEFERRED to O-006 — a token holder reads
+        registry entries across tenants.
+
+        Auth: mTLS (operator host) AND an operator bearer token.
+      security:
+        - mutualTLS: []
+          operatorBearer: []
+      responses:
+        '200':
+          description: The list of registered Sentinel entries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SentinelRegistryList'
+              examples:
+                list:
+                  value:
+                    sentinels:
+                      - sentinel_id: "sentinel-prod-eu-1"
+                        endpoint: "https://sentinel-eu-1.internal.anoryx.io"
+                        peer_auth_ref: "vault://orchestrator/peers/sentinel-prod-eu-1"
+                        capabilities: [budget_limit, model_approval]
+                        health_status: healthy
+                        consecutive_failures: 0
+                        last_checked_at: "2026-06-30T12:05:00Z"
+                        last_healthy_at: "2026-06-30T12:05:00Z"
+                        enabled: true
+                        created_at: "2026-06-30T12:00:00Z"
+                        updated_at: "2026-06-30T12:05:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/registry/sentinels/{sentinel_id}:
+    get:
+      operationId: getSentinel
+      tags: [registry]
+      summary: Read one registered Sentinel instance (operator-scoped)
+      description: |
+        Returns a single registry entry by sentinel_id. OPERATOR-SCOPED: per-tenant
+        authorization is DEFERRED to O-006.
+
+        Auth: mTLS (operator host) AND an operator bearer token.
+      security:
+        - mutualTLS: []
+          operatorBearer: []
+      parameters:
+        - $ref: '#/components/parameters/SentinelIdPath'
+      responses:
+        '200':
+          description: The requested Sentinel registry entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SentinelRegistryEntry'
+              examples:
+                entry:
+                  value:
+                    sentinel_id: "sentinel-prod-eu-1"
+                    endpoint: "https://sentinel-eu-1.internal.anoryx.io"
+                    peer_auth_ref: "vault://orchestrator/peers/sentinel-prod-eu-1"
+                    capabilities: [budget_limit, model_approval]
+                    health_status: healthy
+                    consecutive_failures: 0
+                    last_checked_at: "2026-06-30T12:05:00Z"
+                    last_healthy_at: "2026-06-30T12:05:00Z"
+                    enabled: true
+                    created_at: "2026-06-30T12:00:00Z"
+                    updated_at: "2026-06-30T12:05:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateSentinel
+      tags: [registry]
+      summary: Modify a registered Sentinel instance (operator-scoped)
+      description: |
+        Updates a subset of a registry entry's mutable fields (endpoint, capabilities,
+        peer_auth_ref, enabled). Disabling (`enabled: false`) removes the instance from
+        coordinated pushes and health cycles without deregistering it. As at registration,
+        `endpoint` is SSRF-validated and `capabilities` are RECORDED as declared, NOT
+        probed. OPERATOR-SCOPED: per-tenant authorization is DEFERRED to O-006.
+
+        Auth: mTLS (operator host) AND an operator bearer token.
+      security:
+        - mutualTLS: []
+          operatorBearer: []
+      parameters:
+        - $ref: '#/components/parameters/SentinelIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SentinelUpdateRequest'
+            examples:
+              disable:
+                summary: Take a Sentinel out of coordinated pushes
+                value:
+                  enabled: false
+              recapability:
+                summary: Update endpoint and declared capabilities
+                value:
+                  endpoint: "https://sentinel-eu-1b.internal.anoryx.io"
+                  capabilities: [budget_limit, model_approval, model_denylist]
+      responses:
+        '200':
+          description: The updated Sentinel registry entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SentinelRegistryEntry'
+              examples:
+                updated:
+                  value:
+                    sentinel_id: "sentinel-prod-eu-1"
+                    endpoint: "https://sentinel-eu-1b.internal.anoryx.io"
+                    peer_auth_ref: "vault://orchestrator/peers/sentinel-prod-eu-1"
+                    capabilities: [budget_limit, model_approval, model_denylist]
+                    health_status: healthy
+                    consecutive_failures: 0
+                    last_checked_at: "2026-06-30T12:05:00Z"
+                    last_healthy_at: "2026-06-30T12:05:00Z"
+                    enabled: false
+                    created_at: "2026-06-30T12:00:00Z"
+                    updated_at: "2026-06-30T12:10:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      operationId: deregisterSentinel
+      tags: [registry]
+      summary: Deregister a Sentinel instance (operator-scoped)
+      description: |
+        Removes a Sentinel from the coordination registry. After deregistration the
+        instance no longer participates in coordinated pushes or health cycles.
+        OPERATOR-SCOPED: per-tenant authorization is DEFERRED to O-006.
+
+        Auth: mTLS (operator host) AND an operator bearer token.
+      security:
+        - mutualTLS: []
+          operatorBearer: []
+      parameters:
+        - $ref: '#/components/parameters/SentinelIdPath'
+      responses:
+        '200':
+          description: The Sentinel was deregistered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SentinelDeregistered'
+              examples:
+                deregistered:
+                  value:
+                    sentinel_id: "sentinel-prod-eu-1"
+                    deregistered: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/registry/health-check:
+    post:
+      operationId: runRegistryHealthCheck
+      tags: [registry]
+      summary: Run a health cycle across the registered Sentinels (operator-scoped)
+      description: |
+        Runs one health cycle over the registered, enabled Sentinels and returns the
+        per-instance status transition. HONESTY: `healthy` means the instance was
+        REACHABLE per the documented health contract — it is NOT a verification that the
+        Sentinel is actually enforcing any policy or capability. `degraded` / `unreachable`
+        reflect reachability / contract failures only; `consecutive_failures` is the streak
+        backing the status. OPERATOR-SCOPED: per-tenant authorization is DEFERRED to O-006.
+
+        Takes no request body.
+
+        Auth: mTLS (operator host) AND an operator bearer token.
+      security:
+        - mutualTLS: []
+          operatorBearer: []
+      responses:
+        '200':
+          description: Per-instance health transitions for this cycle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheckResult'
+              examples:
+                cycle:
+                  value:
+                    results:
+                      - sentinel_id: "sentinel-prod-eu-1"
+                        previous_status: unknown
+                        status: healthy
+                        consecutive_failures: 0
+                      - sentinel_id: "sentinel-prod-us-1"
+                        previous_status: healthy
+                        status: unreachable
+                        consecutive_failures: 1
+                        reason: connection_timeout
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/policies/coordinate:
+    post:
+      operationId: coordinatePolicyDistribution
+      tags: [coordination]
+      summary: Coordinate a policy push across the registered Sentinels (operator-scoped)
+      description: |
+        Distributes one already-signed policy to the registered, enabled, healthy
+        Sentinels whose declared capabilities cover the policy. The `policy` member
+        conforms to the locked Anoryx-Sentinel/contracts/policy.schema.json ($id
+        `sentinel:policy:v1`, frozen at F-008 a9e2344) UNMODIFIED and carries its own
+        embedded compact-JWS signature; as on the distribution seam this is PASS-THROUGH
+        (the Orchestrator does NOT sign on the submitter's behalf).
+
+        HONESTY: the coordinated push is BEST-EFFORT PER TARGET — a per-target failure
+        does NOT roll back the targets that succeeded; the result reports each target's
+        outcome and the targets skipped (e.g. disabled, unhealthy, or capability not
+        declared). A capability skip is based on the DECLARED capability set, which is
+        recorded, not probed. mTLS provisioning to the targets is DEFERRED to O-008.
+        OPERATOR-SCOPED: per-tenant authorization is DEFERRED to O-006.
+
+        Auth: mTLS (operator host) AND an operator bearer token.
+      security:
+        - mutualTLS: []
+          operatorBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CoordinatedPolicyRequest'
+            examples:
+              coordinate:
+                summary: Coordinate a budget_limit policy across capable Sentinels
+                value:
+                  policy:
+                    policy_type: budget_limit
+                    tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+                    team_id: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
+                    project_id: "b3c4d5e6-abcd-1234-ef01-234567890abc"
+                    agent_id: "delta-budget"
+                    policy_id: "e5f6a7b8-0123-4cde-9f01-23456789abcd"
+                    policy_version: 1
+                    effective_from: "2026-06-26T00:00:00Z"
+                    signature: "eyJhbGciOiJFUzI1NiJ9.eyJ0ZW5hbnRfaWQiOiIyYTRmOGMxZSJ9.MEUCIQDexampleSignatureSegmentAAAA"
+                    period: monthly
+                    scope: team
+                    max_cost_cents_per_period: 500000
+      responses:
+        '202':
+          description: |
+            The coordinated push was accepted and fanned out best-effort. The aggregate
+            `state` plus per-target outcomes and skips are reported; acceptance is NOT a
+            guarantee that every target enforced the policy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoordinatedDistributionResult'
+              examples:
+                partial:
+                  value:
+                    distribution_id: "a7b8c9d0-1234-4ef0-9abc-def012345678"
+                    policy_id: "e5f6a7b8-0123-4cde-9f01-23456789abcd"
+                    state: partial
+                    targets:
+                      - sentinel_id: "sentinel-prod-eu-1"
+                        state: distributed
+                      - sentinel_id: "sentinel-prod-us-1"
+                        state: failed
+                        reason: upstream_5xx
+                    skipped:
+                      - sentinel_id: "sentinel-prod-ap-1"
+                        reason: capability_not_declared
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
 components:
 
   securitySchemes:
@@ -579,6 +961,21 @@ components:
         Bearer-only: it authorizes the caller but does NOT sign request bodies (the
         embedded policy compact-JWS does that for distribution). Issued/rotated by
         deploy tooling; provisioning details are out of scope for O-001.
+
+    operatorBearer:
+      type: http
+      scheme: bearer
+      description: |
+        O-005 OPERATOR bearer token (env ORCH_ADMIN_TOKEN) authorizing the privileged
+        multi-Sentinel coordination operations: registry CRUD, the registry health-check
+        cycle, and the coordinated policy push. DISTINCT from the peer `serviceToken`
+        (env ORCH_SERVICE_TOKEN) used on the distribution + query seams — that is a
+        peer-PRODUCT credential, this is an OPERATOR credential, and the two are NOT
+        interchangeable. Bearer-only: it authorizes the operator caller but does NOT sign
+        request bodies. The registry is OPERATOR-SCOPED — per-tenant authorization of its
+        contents is DEFERRED to O-006, so a token holder operates across tenants; treat
+        the token accordingly until O-006 lands. Issued/rotated by deploy tooling;
+        provisioning details are out of scope here.
 
   parameters:
     IngestTimestamp:
@@ -707,6 +1104,19 @@ components:
       description: Filter dead-letter entries to a single emitting product.
       schema:
         $ref: '#/components/schemas/SourceProduct'
+
+    SentinelIdPath:
+      name: sentinel_id
+      in: path
+      required: true
+      description: |
+        Opaque Sentinel deployment id (registry key). Mirrors the sentinel_id shape used
+        across the distribution targets and the O-005 registry.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9._-]{1,128}$'
+        maxLength: 128
+      example: "sentinel-prod-eu-1"
 
   schemas:
 
@@ -1156,6 +1566,308 @@ components:
           maxLength: 64
           description: The $id of the envelope schema this contract version pins.
 
+    # ----------------------------------------------------------------------- #
+    # O-005 multi-Sentinel coordination: registry, health, coordinated push
+    # ----------------------------------------------------------------------- #
+
+    SentinelCapability:
+      type: string
+      enum:
+        - budget_limit
+        - model_allowlist
+        - model_approval
+        - model_denylist
+        - code_scan
+        - data_lock
+      description: |
+        A policy facet a Sentinel instance DECLARES it can enforce. Closed set. DECLARED,
+        not probed — registration records the claim; it does NOT verify the live Sentinel
+        actually enforces the facet.
+
+    HealthStatus:
+      type: string
+      enum: [unknown, healthy, degraded, unreachable]
+      description: |
+        Registry health status of a Sentinel instance. `healthy` = REACHABLE per the
+        documented health contract, NOT a verification the instance is enforcing policy.
+        `unknown` = never health-checked; `degraded` / `unreachable` = contract /
+        reachability failure.
+
+    SentinelRegistryEntry:
+      type: object
+      additionalProperties: false
+      required:
+        - sentinel_id
+        - endpoint
+        - capabilities
+        - health_status
+        - consecutive_failures
+        - enabled
+        - created_at
+        - updated_at
+      description: |
+        A registered Sentinel instance the Orchestrator coordinates. health_status,
+        consecutive_failures, last_checked_at, and last_healthy_at are maintained by the
+        registry health cycle; created_at / updated_at are registry bookkeeping.
+      properties:
+        sentinel_id:
+          type: string
+          pattern: '^[A-Za-z0-9._-]{1,128}$'
+          maxLength: 128
+          description: Opaque Sentinel deployment id (registry key).
+        endpoint:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: Sentinel intake base URL (SSRF-validated by the runtime at write time).
+        peer_auth_ref:
+          type: string
+          maxLength: 512
+          description: |
+            NON-SECRET reference LABEL for the peer credential held elsewhere (e.g. a Vault
+            path or deploy-tooling key id). NEVER the secret itself — the secret is never
+            stored in or returned by the registry.
+        capabilities:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/SentinelCapability'
+          description: Declared (not probed) policy facets this instance claims to enforce.
+        health_status:
+          $ref: '#/components/schemas/HealthStatus'
+        consecutive_failures:
+          type: integer
+          minimum: 0
+          maximum: 1000000
+          description: Consecutive failed health cycles backing the current health_status.
+        last_checked_at:
+          type: [string, "null"]
+          format: date-time
+          maxLength: 64
+          description: Timestamp of the last health cycle (RFC 3339, UTC), or null if never checked.
+        last_healthy_at:
+          type: [string, "null"]
+          format: date-time
+          maxLength: 64
+          description: Timestamp the instance was last observed healthy (RFC 3339, UTC), or null.
+        enabled:
+          type: boolean
+          description: When false the instance is excluded from coordinated pushes and health cycles.
+        created_at:
+          type: string
+          format: date-time
+          maxLength: 64
+        updated_at:
+          type: string
+          format: date-time
+          maxLength: 64
+
+    SentinelRegistrationRequest:
+      type: object
+      additionalProperties: false
+      required: [sentinel_id, endpoint, capabilities]
+      description: |
+        A request to register a Sentinel instance. `capabilities` are DECLARED, not
+        probed; `endpoint` is SSRF-validated by the runtime; `peer_auth_ref`, when
+        present, is a NON-SECRET reference label (never the secret).
+      properties:
+        sentinel_id:
+          type: string
+          pattern: '^[A-Za-z0-9._-]{1,128}$'
+          maxLength: 128
+        endpoint:
+          type: string
+          format: uri
+          maxLength: 2048
+        capabilities:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/SentinelCapability'
+        peer_auth_ref:
+          type: string
+          maxLength: 512
+          description: NON-SECRET reference label for the peer credential (never the secret).
+
+    SentinelUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: |
+        A partial update to a registry entry — any subset of the mutable fields. At least
+        one field MUST be present. `endpoint` is SSRF-validated and `capabilities` are
+        DECLARED (not probed) exactly as at registration; `peer_auth_ref` is a NON-SECRET
+        reference label (never the secret).
+      properties:
+        endpoint:
+          type: string
+          format: uri
+          maxLength: 2048
+        capabilities:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/SentinelCapability'
+        peer_auth_ref:
+          type: string
+          maxLength: 512
+          description: NON-SECRET reference label for the peer credential (never the secret).
+        enabled:
+          type: boolean
+          description: Toggle participation in coordinated pushes and health cycles.
+
+    SentinelRegistryList:
+      type: object
+      additionalProperties: false
+      required: [sentinels]
+      description: The full list of registered Sentinel entries (operator-scoped).
+      properties:
+        sentinels:
+          type: array
+          maxItems: 4096
+          items:
+            $ref: '#/components/schemas/SentinelRegistryEntry'
+
+    SentinelDeregistered:
+      type: object
+      additionalProperties: false
+      required: [sentinel_id, deregistered]
+      description: Acknowledgement that a Sentinel was removed from the registry.
+      properties:
+        sentinel_id:
+          type: string
+          pattern: '^[A-Za-z0-9._-]{1,128}$'
+          maxLength: 128
+        deregistered:
+          type: boolean
+          const: true
+          description: Always true on success.
+
+    HealthCheckItem:
+      type: object
+      additionalProperties: false
+      required: [sentinel_id, previous_status, status, consecutive_failures]
+      description: |
+        One Sentinel's health transition for a cycle. `status` = REACHABLE per the
+        documented health contract, NOT verified-enforcing. `reason` (optional) is a
+        PII-free, machine-readable cause for a non-healthy status.
+      properties:
+        sentinel_id:
+          type: string
+          pattern: '^[A-Za-z0-9._-]{1,128}$'
+          maxLength: 128
+        previous_status:
+          type: string
+          maxLength: 64
+          description: The health_status before this cycle (free-form to allow unknown prior values).
+        status:
+          $ref: '#/components/schemas/HealthStatus'
+        consecutive_failures:
+          type: integer
+          minimum: 0
+          maximum: 1000000
+        reason:
+          type: string
+          maxLength: 512
+          description: Optional PII-free cause for a non-healthy status.
+
+    HealthCheckResult:
+      type: object
+      additionalProperties: false
+      required: [results]
+      description: Per-instance health transitions produced by one health cycle.
+      properties:
+        results:
+          type: array
+          maxItems: 4096
+          items:
+            $ref: '#/components/schemas/HealthCheckItem'
+
+    CoordinatedPolicyRequest:
+      type: object
+      additionalProperties: false
+      required: [policy]
+      description: |
+        A coordinated-push submission. `policy` is an already-signed policy record that
+        validates against the LOCKED policy.schema.json UNMODIFIED (the same locked schema
+        the distribution seam references). Targets are NOT supplied here — the registry
+        resolves the registered, enabled, healthy, capability-matching Sentinels.
+      properties:
+        policy:
+          $ref: "../../Anoryx-Sentinel/contracts/policy.schema.json"
+
+    CoordinatedTargetResult:
+      type: object
+      additionalProperties: false
+      required: [sentinel_id, state]
+      description: Per-target outcome of a coordinated push (best-effort; no rollback across targets).
+      properties:
+        sentinel_id:
+          type: string
+          pattern: '^[A-Za-z0-9._-]{1,128}$'
+          maxLength: 128
+        state:
+          type: string
+          enum: [distributed, failed, skipped]
+          description: Outcome for this target. No upstream error bodies are exposed here.
+        reason:
+          type: string
+          maxLength: 512
+          description: Optional PII-free cause for a failed or skipped target.
+
+    CoordinatedSkippedTarget:
+      type: object
+      additionalProperties: false
+      required: [sentinel_id, reason]
+      description: |
+        A registered Sentinel deliberately NOT pushed to this cycle (e.g. disabled,
+        unhealthy, or its declared capabilities do not cover the policy).
+      properties:
+        sentinel_id:
+          type: string
+          pattern: '^[A-Za-z0-9._-]{1,128}$'
+          maxLength: 128
+        reason:
+          type: string
+          maxLength: 512
+          description: PII-free cause for the skip (e.g. capability_not_declared, disabled, unhealthy).
+
+    CoordinatedDistributionResult:
+      type: object
+      additionalProperties: false
+      required: [distribution_id, policy_id, state, targets, skipped]
+      description: |
+        The result of a coordinated push. Aggregate `state` plus per-target outcomes and
+        the targets skipped. BEST-EFFORT: a per-target failure does not roll back the
+        others, and `state: partial` means some targets succeeded while others failed.
+      properties:
+        distribution_id:
+          type: string
+          format: uuid
+          maxLength: 64
+        policy_id:
+          type: string
+          format: uuid
+          maxLength: 64
+          description: Echo of the submitted policy's policy_id.
+        state:
+          type: string
+          enum: [pending, distributed, partial, failed]
+          description: Aggregate outcome across all coordinated targets.
+        targets:
+          type: array
+          maxItems: 4096
+          items:
+            $ref: '#/components/schemas/CoordinatedTargetResult'
+        skipped:
+          type: array
+          maxItems: 4096
+          items:
+            $ref: '#/components/schemas/CoordinatedSkippedTarget'
+
   responses:
     Unauthorized:
       description: |
@@ -1216,3 +1928,18 @@ components:
                   code: schema_invalid
                   message: request body failed schema validation
                   request_id: "req-o001-ingest-example-01"
+    Conflict:
+      description: |
+        The request conflicts with existing state — e.g. registering a sentinel_id that is
+        already registered. Reuses the standard Error envelope (no new error shape).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            alreadyRegistered:
+              value:
+                error:
+                  code: already_registered
+                  message: sentinel_id already registered
+                  request_id: "req-o005-registry-example-01"

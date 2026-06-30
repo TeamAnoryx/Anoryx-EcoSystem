@@ -18,6 +18,8 @@ this module trusts `signed_policy` is a validated, byte-identical signed record.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import hashlib
 import json
 import uuid
@@ -91,7 +93,13 @@ async def coordinate_push(
     policy_version = signed_policy["policy_version"]
 
     sentinels = await fetch_sentinels()
-    selected, skipped = _select_targets(sentinels, policy_type=policy_type, settings=settings)
+    # Offload selection to a thread: it calls the blocking getaddrinfo (via validate_endpoint)
+    # for every candidate, which would otherwise block the event loop on hostname endpoints.
+    loop = asyncio.get_running_loop()
+    selected, skipped = await loop.run_in_executor(
+        None,
+        functools.partial(_select_targets, sentinels, policy_type=policy_type, settings=settings),
+    )
 
     # Build the distribution settings the engine consumes UNCHANGED, with .targets resolved from
     # the registry for the selected set (the registry IS the dynamic resolver O-004 reserved).

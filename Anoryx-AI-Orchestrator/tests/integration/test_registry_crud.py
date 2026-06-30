@@ -155,7 +155,7 @@ async def test_deregister_removes_row_and_audits(db_conn) -> None:
         capabilities=["model_allowlist"],
         settings=_settings(),
     )
-    await registry.deregister_sentinel(sid, settings=_settings())
+    await registry.deregister_sentinel(sid)
     assert await registry.fetch_sentinel(sid) is None
     rows = await _audit_rows(db_conn, sid)
     assert rows[-1]["action"] == "deregister"
@@ -165,7 +165,7 @@ async def test_deregister_removes_row_and_audits(db_conn) -> None:
 
 async def test_deregister_unknown_is_not_found(db_ready) -> None:
     with pytest.raises(SentinelNotFoundError):
-        await registry.deregister_sentinel(_sid("ghost"), settings=_settings())
+        await registry.deregister_sentinel(_sid("ghost"))
 
 
 async def test_ssrf_blocked_registration_is_recorded_and_no_row(db_conn) -> None:

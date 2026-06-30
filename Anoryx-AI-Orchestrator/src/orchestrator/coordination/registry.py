@@ -21,7 +21,7 @@ from typing import Any
 from orchestrator.config import CoordinationSettings
 from orchestrator.coordination.endpoint_validation import (
     EndpointValidationError,
-    validate_endpoint,
+    validate_endpoint_async,
 )
 from orchestrator.persistence import repositories as repo
 from orchestrator.persistence.database import get_privileged_session
@@ -149,7 +149,7 @@ async def register_sentinel(
         raise RegistryValidationError("invalid_endpoint", "endpoint must be a string")
 
     try:
-        normalized_endpoint = validate_endpoint(
+        normalized_endpoint = await validate_endpoint_async(
             endpoint, allowlist=settings.endpoint_allowlist, allow_http=settings.allow_http
         )
     except EndpointValidationError as exc:
@@ -187,7 +187,8 @@ async def register_sentinel(
                 capabilities=_canon_capabilities(caps),
             )
     created = await fetch_sentinel(sid)
-    assert created is not None  # noqa: S101 - just committed it in the same process
+    if created is None:  # -O-safe: a concurrent delete between commit and re-fetch (rare).
+        raise RuntimeError("sentinel row vanished immediately after register (concurrent delete)")
     return created
 
 
@@ -213,7 +214,7 @@ async def modify_sentinel(
         if not isinstance(endpoint, str):
             raise RegistryValidationError("invalid_endpoint", "endpoint must be a string")
         try:
-            normalized = validate_endpoint(
+            normalized = await validate_endpoint_async(
                 endpoint, allowlist=settings.endpoint_allowlist, allow_http=settings.allow_http
             )
         except EndpointValidationError as exc:
@@ -258,12 +259,17 @@ async def modify_sentinel(
                 capabilities=_canon_capabilities(audit_caps) if audit_caps is not None else None,
             )
     updated = await fetch_sentinel(sentinel_id)
-    assert updated is not None  # noqa: S101 - just updated it
+    if updated is None:  # -O-safe: a concurrent delete between commit and re-fetch (rare).
+        raise RuntimeError("sentinel row vanished immediately after modify (concurrent delete)")
     return updated
 
 
-async def deregister_sentinel(sentinel_id: str, *, settings: CoordinationSettings) -> None:
-    """Deregister (delete) a Sentinel instance + audit `deregister`. 404 on unknown id."""
+async def deregister_sentinel(sentinel_id: str) -> None:
+    """Deregister (delete) a Sentinel instance + audit `deregister`. 404 on unknown id.
+
+    Takes no settings: deregistration makes no outbound call, so there is no endpoint to
+    SSRF-validate here (register/modify validate before any future outbound use).
+    """
     async with get_privileged_session() as psession:
         async with psession.begin():
             existing = await repo.get_sentinel(psession, sentinel_id)
