@@ -5,11 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rendly"
 version = "1.0.0"
-description = "Rendly core platform API contract (R-001) + internal domain model (R-002) + self-contained OAuth2/JWT auth (R-003: ES256 issue/verify/refresh, in-memory user-store seam — no DB/DDL)."
+description = "Rendly core platform API contract (R-001) + internal domain model (R-002) + self-contained OAuth2/JWT auth (R-003) + Postgres identity persistence with RLS (R-004: DB-backed UserStore/RefreshTokenStore, own `rendly` schema + Alembic)."
 requires-python = ">=3.12"
 # R-002 added the FIRST Rendly Python package: the internal domain model (Pydantic v2).
 # R-003 adds the self-contained OAuth2 + JWT auth service over those types: real ES256 token
-# mint/verify + rotating refresh, served by FastAPI. Persistence (the real UserStore) is R-004.
+# mint/verify + rotating refresh, served by FastAPI. R-004 adds the FIRST Rendly persistence
+# layer: a `rendly` Postgres schema with RLS, the DB-backed UserStore + RefreshTokenStore, and
+# an Alembic migration chain — making R-003's two in-memory seams real on Postgres.
 dependencies = [
   "pydantic>=2.7,<3",
   # R-003 auth surface + crypto:
@@ -17,6 +19,11 @@ dependencies = [
   "pyjwt[crypto]>=2.8,<3",        # ES256 JWT mint/verify (vetted lib; no hand-rolled JWT).
   "cryptography>=42,<50",         # ES256 P-256 key loading (matches the Sentinel pin).
   "argon2-cffi>=23,<25",          # Argon2id credential hashing (OWASP; matches Sentinel).
+  # R-004 persistence (SYNC stack — matches R-003's sync seams; NOT asyncpg):
+  "sqlalchemy>=2,<3",             # sync Session + ORM models for the identity tables.
+  "psycopg[binary]>=3.1,<4",      # the sync Postgres driver (postgresql+psycopg://).
+  "alembic>=1.13,<2",             # the `rendly`-schema migration chain.
+  "python-dotenv>=1,<2",          # env loading for the Alembic migration environment.
 ]
 
 # The contract suite (R-001), domain suite (R-002), and auth suite (R-003) share one dev extra.
@@ -47,12 +54,19 @@ target-version = "py312"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
-# Coverage is scoped to the domain package. The CI lane runs `--cov=rendly`, so a
-# domain suite that did not actually execute would leave rendly uncovered and FAIL
-# the gate below — proving the lane runs the domain tests (not skips them).
+# Default coverage scope = the NON-DB surface (contracts/domain/auth). The contracts CI
+# lane runs `--cov=rendly` with NO database, so a suite that did not execute would leave its
+# package uncovered and FAIL the gate below — proving the lane runs those tests, not skips
+# them. The `persistence/*` package requires a live Postgres and is therefore measured in
+# its OWN DB lane (rendly-db, persistence-floor step, via .coveragerc-persistence) rather
+# than here; omitting it keeps this gate honest for the no-DB surface. Migrations are DDL
+# run through the alembic subprocess and are never unit-measured.
 [tool.coverage.run]
 source = ["src"]
 branch = true
+omit = [
+  "*/persistence/*",
+]
 
 [tool.coverage.report]
 fail_under = 90
