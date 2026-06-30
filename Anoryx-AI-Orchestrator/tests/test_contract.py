@@ -195,12 +195,17 @@ def test_distribution_policy_example_validates_against_policy_schema():
 def test_mutualtls_scheme_declared():
     schemes = _load_spec()["components"]["securitySchemes"]
     assert schemes["mutualTLS"]["type"] == "mutualTLS"
-    # The two second factors are present too.
+    # The app-layer second factors are present too.
     assert schemes["hmacIngest"]["type"] == "apiKey"
     assert schemes["serviceToken"]["scheme"] == "bearer"
+    # O-005 adds a dedicated OPERATOR bearer (ORCH_ADMIN_TOKEN), distinct from the peer
+    # serviceToken, gating the registry + coordinate seams.
+    assert schemes["operatorBearer"]["scheme"] == "bearer"
 
 
-_SECOND_FACTORS = {"hmacIngest", "serviceToken"}
+# Recognised app-layer second factors paired with mutualTLS: hmacIngest (O-003 ingest),
+# serviceToken (O-004 peer distribution), operatorBearer (O-005 operator registry/coordinate).
+_SECOND_FACTORS = {"hmacIngest", "serviceToken", "operatorBearer"}
 
 
 def test_mutualtls_applied_to_every_operation():
@@ -226,7 +231,7 @@ def test_mutualtls_applied_to_every_operation():
                 # default) fails this gate instead of shipping inert auth.
                 assert _SECOND_FACTORS & set(requirement), (
                     f"{method.upper()} {path} requirement has no second factor "
-                    f"(hmacIngest/serviceToken): {requirement}"
+                    f"(hmacIngest/serviceToken/operatorBearer): {requirement}"
                 )
     assert operations >= 7, "expected at least seven operations: four O-001 + three O-002 bus seams"
 
