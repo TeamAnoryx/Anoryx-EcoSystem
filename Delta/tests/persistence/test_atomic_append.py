@@ -44,7 +44,7 @@ async def test_orphan_entry_rejected(tenant_db, tenant_id):
     )
 
 
-async def test_failed_commit_persists_nothing(tenant_db, tenant_id):
+async def test_failed_commit_persists_nothing(tenant_db, tenant_id, debit_account_id):
     """A rejected (unbalanced) write rolls back the txn row too — all-or-nothing."""
     txn_id = str(uuid.uuid4())
     async with tenant_db() as s:
@@ -58,7 +58,7 @@ async def test_failed_commit_persists_nothing(tenant_db, tenant_id):
                 entry_id=str(uuid.uuid4()),
                 txn_id=txn_id,
                 tenant_id=tenant_id,
-                account_id=str(uuid.uuid4()),
+                account_id=debit_account_id,  # a real, seeded same-tenant account (FK)
                 direction="debit",
                 amount_minor_units=100,  # single leg → unbalanced
                 currency="USD",

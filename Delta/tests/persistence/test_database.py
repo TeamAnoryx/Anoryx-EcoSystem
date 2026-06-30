@@ -7,6 +7,7 @@ import re
 import uuid
 
 import pytest
+from account_seed import ensure_accounts, builder_account_id
 from sqlalchemy import func, select, text
 
 from delta.persistence.database import (
@@ -57,6 +58,11 @@ async def test_get_tenant_session_scopes_to_tenant(make_balanced_txn):
     try:
         tid = str(uuid.uuid4())
         async with get_tenant_session(tid) as s:
+            # Production path (not the conftest opener) — seed the builder accounts so
+            # the same-tenant FK is satisfied in the same posting transaction.
+            await ensure_accounts(
+                s, tid, builder_account_id(tid, "debit"), builder_account_id(tid, "credit")
+            )
             await append_transaction(s, make_balanced_txn(tenant_id=tid))
 
         # A fresh tenant session sees only this tenant's rows.

@@ -30,14 +30,22 @@ import subprocess
 import sys
 import uuid
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from account_seed import ensure_accounts, builder_account_id
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from delta.ledger import LedgerEntry
+from delta.money import Money
+
 _DELTA_ROOT = Path(__file__).resolve().parent.parent.parent  # .../Delta
+
+# Shared fixed instant for the persistence-layer builders (matches tests/conftest.py).
+_FIXED_NOW = datetime(2026, 6, 26, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _require(name: str) -> str:
@@ -206,6 +214,20 @@ def open_tenant_session(engine, tenant_id: str):
                 text("SELECT set_config('app.current_tenant_id', :tid, true)"),
                 {"tid": tenant_id},
             )
+            # D-004: seed the two deterministic builder accounts so the same-tenant FK
+            # on ledger_entries is satisfied for any make_entry/make_balanced_txn post.
+            # Idempotent (ON CONFLICT DO NOTHING); uncommitted here, committed with the
+            # test's own write (or harmlessly discarded on a read-only session).
+            # Skip for an empty/whitespace tenant — that is the fail-closed empty-GUC
+            # case (tests assert RLS returns zero rows), where an account INSERT would
+            # be (correctly) rejected by the WITH CHECK predicate.
+            if tenant_id and tenant_id.strip():
+                await ensure_accounts(
+                    sess,
+                    tenant_id,
+                    builder_account_id(tenant_id, "debit"),
+                    builder_account_id(tenant_id, "credit"),
+                )
             return sess
 
         async def __aexit__(self, *exc) -> None:
@@ -239,3 +261,52 @@ def tenant_db_for(app_engine):
     second tenant's session and assert cross-tenant invisibility.
     """
     return lambda tid: open_tenant_session(app_engine, tid)
+
+
+@pytest.fixture
+def make_entry():
+    """DB-layer override of the parent make_entry (D-004).
+
+    Identical to ``tests/conftest.py`` except the ``account_id`` is DETERMINISTIC per
+    (tenant, direction) instead of random, so it matches the two accounts the session
+    opener seeds — satisfying the new same-tenant FK on ledger_entries. The parent
+    (pure-Pydantic D-001) suite is unaffected; this override only applies under
+    ``tests/persistence/``. ``make_balanced_txn`` (parent) depends on this fixture and
+    so inherits the deterministic accounts.
+    """
+
+    def _make(
+        *,
+        tenant_id: str,
+        direction,
+        cents: int,
+        currency: str = "USD",
+        timestamp: datetime | None = None,
+        **over: object,
+    ) -> LedgerEntry:
+        fields: dict[str, object] = {
+            "entry_id": str(uuid.uuid4()),
+            "tenant_id": tenant_id,
+            "account_id": builder_account_id(tenant_id, direction.value),
+            "direction": direction,
+            "amount": Money(minor_units=cents, currency=currency),
+            "team_id": str(uuid.uuid4()),
+            "project_id": str(uuid.uuid4()),
+            "agent_id": "gateway-core",
+            "timestamp": timestamp or _FIXED_NOW,
+        }
+        fields.update(over)
+        return LedgerEntry(**fields)
+
+    return _make
+
+
+@pytest.fixture
+def debit_account_id(tenant_id: str) -> str:
+    """The deterministic debit account the session opener seeds for the test's tenant.
+
+    Used by the raw-insert negative tests so their single-leg insert references a real,
+    same-tenant account (the FK is then satisfied and the COMMIT-time balance trigger
+    is what rejects the write — preserving the original test intent).
+    """
+    return builder_account_id(tenant_id, "debit")

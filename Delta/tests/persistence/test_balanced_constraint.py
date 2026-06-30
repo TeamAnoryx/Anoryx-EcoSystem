@@ -34,7 +34,7 @@ async def test_balanced_transaction_commits(tenant_db, tenant_id, make_balanced_
     assert len(rows) == 2
 
 
-async def test_single_unbalanced_insert_rejected_at_commit(tenant_db, tenant_id):
+async def test_single_unbalanced_insert_rejected_at_commit(tenant_db, tenant_id, debit_account_id):
     """A direct single-leg INSERT (count < 2) must be REJECTED at COMMIT."""
     txn_id = str(uuid.uuid4())
     async with tenant_db() as s:
@@ -48,7 +48,7 @@ async def test_single_unbalanced_insert_rejected_at_commit(tenant_db, tenant_id)
                 entry_id=str(uuid.uuid4()),
                 txn_id=txn_id,
                 tenant_id=tenant_id,
-                account_id=str(uuid.uuid4()),
+                account_id=debit_account_id,  # seeded same-tenant account (FK satisfied)
                 direction="debit",
                 amount_minor_units=5000,
                 currency="USD",
