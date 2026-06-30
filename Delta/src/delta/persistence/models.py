@@ -9,6 +9,7 @@ describe the columns the query layer references and are kept in lock-step with i
 from __future__ import annotations
 
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 from . import DELTA_SCHEMA
 
@@ -50,4 +51,21 @@ ledger_entries = sa.Table(
     sa.Column("project_id", sa.String(64), nullable=False),
     sa.Column("agent_id", sa.String(64), nullable=False),
     sa.Column("timestamp", sa.DateTime(timezone=True), nullable=False),
+)
+
+# D-004 event-ingest dead-letter sink (migration 0002). Unmappable events land here
+# rather than being dropped. tenant_id is NULL for unknown-tenant rows (written via
+# the privileged session, RLS-invisible to delta_app). INSERT-only at the grant layer.
+ingest_dead_letter = sa.Table(
+    "ingest_dead_letter",
+    metadata,
+    sa.Column("dlq_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=True),
+    sa.Column("source_event_id", sa.String(64), nullable=True),
+    sa.Column("event_type", sa.String(64), nullable=True),
+    sa.Column("reason", sa.String(32), nullable=False),
+    sa.Column("original_payload", postgresql.JSONB, nullable=False),
+    sa.Column("attempt_count", sa.Integer, nullable=False),
+    sa.Column("first_failed_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("last_failed_at", sa.DateTime(timezone=True), nullable=False),
 )

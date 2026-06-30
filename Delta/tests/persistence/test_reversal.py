@@ -7,6 +7,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
+from account_seed import ensure_accounts
 from sqlalchemy import func, select
 
 from delta.ledger import EntryDirection, LedgerEntry, Transaction
@@ -46,6 +47,7 @@ async def test_reversal_balances_and_leaves_original(tenant_db, tenant_id):
         description="original",
     )
     async with tenant_db() as s:
+        await ensure_accounts(s, tenant_id, acct_x, acct_y)
         await append_transaction(s, original)
 
     rev_id = str(uuid.uuid4())

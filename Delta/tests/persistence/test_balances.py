@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from account_seed import ensure_accounts
 
 from delta.ledger import EntryDirection, LedgerEntry, Transaction
 from delta.money import Money
@@ -55,8 +56,10 @@ async def _seed_two_txns(tenant_db, tenant_id, acct_x, acct_y):
         description="t2",
     )
     async with tenant_db() as s:
+        await ensure_accounts(s, tenant_id, acct_x, acct_y)
         await append_transaction(s, t1)
     async with tenant_db() as s:
+        await ensure_accounts(s, tenant_id, acct_x, acct_y)
         await append_transaction(s, t2)
 
 
