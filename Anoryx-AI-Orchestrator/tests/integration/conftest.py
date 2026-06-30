@@ -670,3 +670,132 @@ def seed_distribution():
                 )
 
     return _seed
+
+
+# =========================================================================== #
+# O-005 multi-Sentinel coordination harness. APPENDED to the O-003/O-004 harness above
+# (no edits to it). Adds: a coordination gate that FAILS (not skips) under
+# ORCH_REQUIRE_COORDINATION_E2E=1 so the non-stubbed e2e provably EXECUTES on CI; a
+# multi-shim factory that spawns N independent real-loopback Sentinel shims (each with the
+# intake POST + a GET /healthz) on distinct ephemeral ports so health transitions across
+# >=2 instances are real; and a CoordinationSettings the e2e drives the registry with.
+# =========================================================================== #
+
+
+@pytest_asyncio.fixture
+async def clean_registry(db_ready) -> AsyncIterator[None]:
+    """Empty sentinel_registry before the test so the GLOBAL registry's health cycle is not
+    polluted by other tests' instances. Only sentinel_registry is cleared (no triggers); the
+    append-only audit log is left intact (the chain stays valid; tests query by unique id)."""
+    async with _open_privileged_conn() as conn:
+        await conn.execute("DELETE FROM sentinel_registry")
+    yield
+
+
+@pytest.fixture
+def coordination_ready() -> None:
+    """Gate the coordination e2e. Skips when DBs are unreachable — UNLESS
+    ORCH_REQUIRE_COORDINATION_E2E=1, in which case an unreachable DB FAILS the run (so a silent
+    skip can never masquerade as a green gate on CI)."""
+    require = os.environ.get("ORCH_REQUIRE_COORDINATION_E2E") == "1"
+    if not _pg_reachable():
+        if require:
+            pytest.fail(
+                "ORCH_REQUIRE_COORDINATION_E2E=1 but the Orchestrator Postgres is unreachable"
+            )
+        pytest.skip("Orchestrator Postgres not reachable — coordination e2e")
+    if not _sentinel_pg_reachable():
+        if require:
+            pytest.fail("ORCH_REQUIRE_COORDINATION_E2E=1 but the Sentinel DB is unreachable")
+        pytest.skip("Sentinel DB (DATABASE_URL/APP_DATABASE_URL) not reachable — coordination e2e")
+
+
+class _ShimHandle:
+    """A running TEST Sentinel shim on a real loopback port. .stop() makes it unreachable."""
+
+    def __init__(self, server: object, thread: object, base_url: str) -> None:
+        self._server = server
+        self._thread = thread
+        self.base_url = base_url
+        self._stopped = False
+
+    def stop(self) -> None:
+        if self._stopped:
+            return
+        self._stopped = True
+        self._server.should_exit = True  # type: ignore[attr-defined]
+        self._thread.join(timeout=5)  # type: ignore[attr-defined]
+
+
+def _spawn_shim() -> _ShimHandle:
+    """Start one TEST Sentinel shim (intake + /healthz) on an ephemeral loopback port."""
+    import uvicorn
+    from _sentinel_shim import create_shim_app
+
+    app = create_shim_app(SENTINEL_INTAKE_PATH)
+    config = uvicorn.Config(
+        app, host="127.0.0.1", port=0, log_level="warning", lifespan="off", http="h11", ws="none"
+    )
+    server = uvicorn.Server(config)
+    thread = _threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = _time.time() + 30
+    while not server.started and _time.time() < deadline:
+        _time.sleep(0.05)
+    if not server.started:
+        server.should_exit = True
+        thread.join(timeout=5)
+        pytest.fail("a Sentinel shim server did not start within 30s")
+    port = server.servers[0].sockets[0].getsockname()[1]
+    return _ShimHandle(server, thread, f"http://127.0.0.1:{port}")
+
+
+@pytest.fixture
+def spawn_sentinel_shim(sentinel_signing, _ensure_sentinel_db_ready):
+    """Factory → a fresh real-loopback Sentinel shim (intake + /healthz). All are torn down.
+
+    Depends on sentinel_signing (so intake verifies against the test key) and the Sentinel DB
+    being provisioned. Call it once per instance the test needs; stop one to simulate an
+    unreachable target.
+    """
+    handles: list[_ShimHandle] = []
+
+    def _make() -> _ShimHandle:
+        handle = _spawn_shim()
+        handles.append(handle)
+        return handle
+
+    yield _make
+    for handle in handles:
+        with contextlib.suppress(Exception):
+            handle.stop()
+
+
+@pytest.fixture
+def coordination_settings():
+    """A CoordinationSettings for the e2e: loopback allowlisted, http allowed, fast thresholds.
+
+    unreachable_threshold=1 so a single failed probe → `unreachable` (deterministic). The
+    embedded distribution settings carry the shared SENTINEL_ADMIN_TOKEN so the engine's outbound
+    call authenticates to the shim (which checks the same env token).
+    """
+    from orchestrator.config import CoordinationSettings, DistributionSettings
+
+    return CoordinationSettings(
+        admin_token="o005-operator-token",  # noqa: S106 - test fake
+        endpoint_allowlist=frozenset({"127.0.0.1"}),
+        allow_http=True,
+        health_path="/healthz",
+        health_timeout_seconds=10.0,
+        staleness_seconds=300,
+        unreachable_threshold=1,
+        distribution=DistributionSettings(
+            service_token=None,
+            sentinel_admin_token=SENTINEL_ADMIN_TOKEN,
+            targets={},
+            intake_path=SENTINEL_INTAKE_PATH,
+            max_attempts=2,
+            backoff_seconds=0.0,
+            http_timeout_seconds=10.0,
+        ),
+    )

@@ -139,6 +139,11 @@ def _env_float(name: str, default: float, *, minimum: float) -> float:
     return value
 
 
+def _env_bool(name: str) -> bool:
+    """Read a boolean flag from the environment (1/true/on/yes → True; else False)."""
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "on", "yes")
+
+
 def _distribution_targets() -> dict[str, str]:
     """Parse ORCH_DISTRIBUTION_TARGETS (a JSON object: sentinel_id -> base URL).
 
@@ -194,4 +199,101 @@ def get_distribution_settings() -> DistributionSettings:
         http_timeout_seconds=_env_float(
             "ORCH_DISTRIBUTION_HTTP_TIMEOUT", DEFAULT_DISTRIBUTION_HTTP_TIMEOUT_SECONDS, minimum=0.0
         ),
+    )
+
+
+# =========================================================================== #
+# Multi-Sentinel coordination configuration (O-005, ADR-0005) — ADDITIVE, parallel to the
+# distribution settings above. Resolved NON-FATALLY at app construction (mere absence is not
+# fatal — an ingest/distribution-only deployment must not be forced to configure the registry).
+# The inbound operator token (ORCH_ADMIN_TOKEN) is a NEW dedicated token distinct from the
+# peer ORCH_SERVICE_TOKEN: the registry is operator-fleet infra, not a peer-ingest seam. It
+# defaults to None and the request boundary enforces it fail-closed. SSRF endpoint validation
+# is mandatory: the allowlist defaults EMPTY so only public https endpoints pass — a loopback
+# / private endpoint must be explicitly allowlisted (the e2e opts 127.0.0.1 in). Tokens are
+# never logged.
+# =========================================================================== #
+
+#: Default Sentinel health-probe path (a conventional readiness path; the shipped Sentinel-side
+#: HTTP route does not yet exist — ADR-0005 honesty boundary E1, separate Sentinel task).
+DEFAULT_SENTINEL_HEALTH_PATH: str = "/healthz"
+
+#: Default per-attempt outbound HTTP timeout (seconds) for a health probe.
+DEFAULT_HEALTH_HTTP_TIMEOUT_SECONDS: float = 10.0
+
+#: Default staleness window (seconds): a healthy target last checked longer ago than this is
+#: demoted, so a never-re-checked target is not trusted as healthy indefinitely.
+DEFAULT_HEALTH_STALENESS_SECONDS: int = 300
+
+#: Default consecutive-failure count at which a target transitions to `unreachable`
+#: (below it → `degraded`).
+DEFAULT_HEALTH_UNREACHABLE_THRESHOLD: int = 3
+
+
+@dataclass(frozen=True, slots=True)
+class CoordinationSettings:
+    """Resolved multi-Sentinel coordination configuration (O-005, ADR-0005).
+
+    admin_token may be None (absence is not fatal); the registry request boundary enforces
+    presence fail-closed. endpoint_allowlist is the SSRF host/host:port allowlist (empty ⇒ only
+    public https passes). distribution is the embedded O-004 distribution settings the
+    coordinated push consumes unchanged (its `.targets` is overridden per-push from the
+    registry). admin_token is never logged.
+    """
+
+    admin_token: str | None
+    endpoint_allowlist: frozenset[str]
+    allow_http: bool
+    health_path: str
+    health_timeout_seconds: float
+    staleness_seconds: int
+    unreachable_threshold: int
+    distribution: DistributionSettings
+
+
+def _endpoint_allowlist() -> frozenset[str]:
+    """Parse ORCH_REGISTRY_ENDPOINT_ALLOWLIST (comma-separated host / host:port entries).
+
+    Empty/unset → empty frozenset (fail-closed: only public https endpoints then pass). Entries
+    are stripped, lowercased (hosts are case-insensitive), and empties dropped.
+    """
+    raw = os.environ.get("ORCH_REGISTRY_ENDPOINT_ALLOWLIST", "")
+    return frozenset(entry.strip().lower() for entry in raw.split(",") if entry.strip())
+
+
+def get_coordination_settings() -> CoordinationSettings:
+    """Resolve coordination settings from the environment (NON-FATAL on absence).
+
+    Env vars:
+      ORCH_ADMIN_TOKEN                   inbound operator bearer for registry CRUD + coordinate
+                                         (None if unset → fail-closed at the boundary).
+      ORCH_REGISTRY_ENDPOINT_ALLOWLIST   comma-separated host / host:port allowlist ("" if unset).
+      ORCH_REGISTRY_ALLOW_HTTP           allow http scheme for allowlisted hosts (default false).
+      ORCH_SENTINEL_HEALTH_PATH          health-probe path (default "/healthz").
+      ORCH_HEALTH_HTTP_TIMEOUT           per-probe HTTP timeout seconds (default 10.0).
+      ORCH_HEALTH_STALENESS_SECONDS      staleness window seconds (default 300, >= 0).
+      ORCH_HEALTH_UNREACHABLE_THRESHOLD  consecutive failures → unreachable (default 3, >= 1).
+
+    Tokens are never logged.
+    """
+    health_path = os.environ.get("ORCH_SENTINEL_HEALTH_PATH", "").strip() or (
+        DEFAULT_SENTINEL_HEALTH_PATH
+    )
+    if not health_path.startswith("/"):
+        health_path = "/" + health_path
+    return CoordinationSettings(
+        admin_token=_optional_token("ORCH_ADMIN_TOKEN"),
+        endpoint_allowlist=_endpoint_allowlist(),
+        allow_http=_env_bool("ORCH_REGISTRY_ALLOW_HTTP"),
+        health_path=health_path,
+        health_timeout_seconds=_env_float(
+            "ORCH_HEALTH_HTTP_TIMEOUT", DEFAULT_HEALTH_HTTP_TIMEOUT_SECONDS, minimum=0.0
+        ),
+        staleness_seconds=_env_int(
+            "ORCH_HEALTH_STALENESS_SECONDS", DEFAULT_HEALTH_STALENESS_SECONDS, minimum=0
+        ),
+        unreachable_threshold=_env_int(
+            "ORCH_HEALTH_UNREACHABLE_THRESHOLD", DEFAULT_HEALTH_UNREACHABLE_THRESHOLD, minimum=1
+        ),
+        distribution=get_distribution_settings(),
     )

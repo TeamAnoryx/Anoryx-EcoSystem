@@ -426,3 +426,224 @@ async def validate_distribution_chain(session: AsyncSession) -> bool:
             return False
         expected_prev = row.row_hash
     return True
+
+
+# =========================================================================== #
+# Sentinel-registry persistence (O-005, ADR-0005) — ADDITIVE, parallel to the ingest
+# and distribution blocks above. The registry is OPERATOR-GLOBAL infra (no tenant
+# dimension, no RLS): every function runs on the PRIVILEGED session the caller owns
+# (coordination.registry opens it). The new model classes are imported inside each
+# function so this whole block is purely appended (the shipped O-003/O-004 body above is
+# byte-identical, so the ingest + distribution chains still hash identically). The
+# registry-mutation chain has its OWN advisory-lock key + genesis + field set.
+# =========================================================================== #
+
+# Distinct transaction-scoped advisory-lock key for the registry-chain append (a stable
+# bigint from a domain label, distinct from the ingest + distribution keys).
+_REGISTRY_CHAIN_LOCK_KEY = int.from_bytes(
+    hashlib.sha256(b"anoryx-orchestrator:registry-audit-chain").digest()[:8],
+    "big",
+    signed=True,
+)
+
+
+# --------------------------------------------------------------------------- #
+# Registry data access (privileged session — operator-global, no RLS)
+# --------------------------------------------------------------------------- #
+
+
+async def insert_sentinel(session: AsyncSession, row: dict[str, Any]) -> None:
+    """INSERT one sentinel_registry row (privileged session). Caller commits."""
+    from orchestrator.persistence.models.sentinel_registry import SentinelRegistry
+
+    await session.execute(insert(SentinelRegistry).values(**row))
+
+
+async def update_sentinel(
+    session: AsyncSession, *, sentinel_id: str, values: dict[str, Any]
+) -> int:
+    """UPDATE a sentinel_registry row's mutable fields (privileged session). Returns rowcount.
+
+    `updated_at` is always stamped. Caller commits. A rowcount of 0 means the id is unknown.
+    """
+    from sqlalchemy import update
+
+    from orchestrator.persistence.models.sentinel_registry import SentinelRegistry
+
+    to_set = {**values, "updated_at": datetime.now(timezone.utc)}
+    result = await session.execute(
+        update(SentinelRegistry).where(SentinelRegistry.sentinel_id == sentinel_id).values(**to_set)
+    )
+    return result.rowcount
+
+
+async def update_sentinel_health(
+    session: AsyncSession,
+    *,
+    sentinel_id: str,
+    health_status: str,
+    consecutive_failures: int,
+    last_checked_at: object,
+    last_healthy_at: object | None = None,
+) -> None:
+    """UPDATE one sentinel's health fields after a probe (privileged session). Caller commits.
+
+    last_healthy_at is only written when provided (a successful probe); on a failed probe it is
+    omitted so the row keeps the timestamp of the last success.
+    """
+    from sqlalchemy import update
+
+    from orchestrator.persistence.models.sentinel_registry import SentinelRegistry
+
+    values: dict[str, Any] = {
+        "health_status": health_status,
+        "consecutive_failures": consecutive_failures,
+        "last_checked_at": last_checked_at,
+        "updated_at": datetime.now(timezone.utc),
+    }
+    if last_healthy_at is not None:
+        values["last_healthy_at"] = last_healthy_at
+    await session.execute(
+        update(SentinelRegistry).where(SentinelRegistry.sentinel_id == sentinel_id).values(**values)
+    )
+
+
+async def delete_sentinel(session: AsyncSession, sentinel_id: str) -> int:
+    """DELETE one sentinel_registry row (privileged session). Returns rowcount. Caller commits."""
+    from sqlalchemy import delete
+
+    from orchestrator.persistence.models.sentinel_registry import SentinelRegistry
+
+    result = await session.execute(
+        delete(SentinelRegistry).where(SentinelRegistry.sentinel_id == sentinel_id)
+    )
+    return result.rowcount
+
+
+async def get_sentinel(session: AsyncSession, sentinel_id: str) -> dict[str, Any] | None:
+    """Return one sentinel_registry row as a dict, or None (privileged session)."""
+    from orchestrator.persistence.models.sentinel_registry import SentinelRegistry
+
+    result = await session.execute(
+        select(SentinelRegistry).where(SentinelRegistry.sentinel_id == sentinel_id)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    return {c.name: getattr(row, c.name) for c in SentinelRegistry.__table__.columns}
+
+
+async def list_sentinels(session: AsyncSession) -> list[dict[str, Any]]:
+    """Return every sentinel_registry row as dicts, ordered by sentinel_id (privileged session)."""
+    from orchestrator.persistence.models.sentinel_registry import SentinelRegistry
+
+    result = await session.execute(
+        select(SentinelRegistry).order_by(SentinelRegistry.sentinel_id.asc())
+    )
+    return [
+        {c.name: getattr(row, c.name) for c in SentinelRegistry.__table__.columns}
+        for row in result.scalars()
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# Registry-mutation audit chain (privileged session)
+# --------------------------------------------------------------------------- #
+
+
+async def registry_chain_tip_hash(session: AsyncSession) -> str:
+    """Return the most-recent sentinel_registry_audit_log row_hash, or REGISTRY_GENESIS_HASH."""
+    result = await session.execute(
+        text(
+            "SELECT row_hash FROM sentinel_registry_audit_log "
+            "ORDER BY sequence_number DESC LIMIT 1"
+        )
+    )
+    tip = result.scalar_one_or_none()
+    return tip if tip is not None else hash_chain.REGISTRY_GENESIS_HASH
+
+
+async def append_registry_audit_link(
+    session: AsyncSession,
+    *,
+    sentinel_id: str,
+    action: str,
+    disposition: str,
+    endpoint: str | None = None,
+    capabilities: str | None = None,
+    error_reason: str | None = None,
+) -> str:
+    """Append one hash-chained sentinel_registry_audit_log link (privileged session).
+
+    Caller opens the privileged transaction (`async with session.begin()`). A
+    transaction-scoped advisory lock (own key) serialises concurrent appends so prev_hash
+    always references the true tip. Returns the new row_hash. endpoint/capabilities/error_reason
+    follow the opt-in-when-present hash rule (capabilities is a canonical JSON STRING, hashed
+    iff not None). A `rejected` disposition records an SSRF-blocked attempt tamper-evidently.
+    """
+    from orchestrator.persistence.models.sentinel_registry_audit_log import (
+        SentinelRegistryAuditLog,
+    )
+
+    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _REGISTRY_CHAIN_LOCK_KEY})
+    prev_hash = await registry_chain_tip_hash(session)
+    row = {
+        "sentinel_id": sentinel_id,
+        "action": action,
+        "disposition": disposition,
+        "endpoint": endpoint,
+        "capabilities": capabilities,
+        "error_reason": error_reason,
+        "prev_hash": prev_hash,
+    }
+    row["row_hash"] = hash_chain.compute_registry_row_hash(row)
+    await session.execute(insert(SentinelRegistryAuditLog).values(**row))
+    return row["row_hash"]
+
+
+async def validate_registry_chain(session: AsyncSession) -> bool:
+    """Re-validate the full registry-mutation chain in order: each row_hash recomputes + links.
+
+    Returns True iff every link verifies. O(n) — privileged session (the chain is global).
+
+    FAIL-LOUD (mirrors validate_distribution_chain, audit L-2): the registry tables carry no
+    RLS, but a non-BYPASSRLS role lacks even SELECT here, so assert the role bypasses RLS first
+    (a privileged session) rather than risk a vacuous pass over an empty/denied read.
+    """
+    from orchestrator.persistence.models.sentinel_registry_audit_log import (
+        SentinelRegistryAuditLog,
+    )
+
+    bypass = (
+        await session.execute(
+            text(
+                "SELECT bool_or(rolbypassrls OR rolsuper) FROM pg_roles "
+                "WHERE rolname = current_user"
+            )
+        )
+    ).scalar()
+    if not bypass:
+        raise RuntimeError(
+            "validate_registry_chain requires a BYPASSRLS/superuser privileged session; a "
+            "non-bypass role sees a denied/empty read and would falsely report integrity."
+        )
+    result = await session.execute(
+        select(SentinelRegistryAuditLog).order_by(SentinelRegistryAuditLog.sequence_number.asc())
+    )
+    expected_prev = hash_chain.REGISTRY_GENESIS_HASH
+    for row in result.scalars():
+        if row.prev_hash != expected_prev:
+            return False
+        row_data = {
+            "sentinel_id": row.sentinel_id,
+            "action": row.action,
+            "disposition": row.disposition,
+            "endpoint": row.endpoint,
+            "capabilities": row.capabilities,
+            "error_reason": row.error_reason,
+            "prev_hash": row.prev_hash,
+        }
+        if not hash_chain.verify_registry_row_hash(row_data, row.row_hash):
+            return False
+        expected_prev = row.row_hash
+    return True

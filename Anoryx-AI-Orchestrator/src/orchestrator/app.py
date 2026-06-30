@@ -6,9 +6,11 @@ exception handler that BLOCKs (5xx) on any unhandled error — an ingest that co
 durably recorded must never return a 202.
 
 SCOPE: this app exposes the ingest seam (POST /v1/ingest/events), the policy-distribution
-seams (POST + GET /v1/policies/distributions — implemented here, O-004, ADR-0004), plus a
-health probe. The GET query/bus read seams (/v1/events, /v1/bus/dlq,
-/v1/bus/schema-versions) are O-006. mTLS termination is O-008.
+seams (POST + GET /v1/policies/distributions — O-004, ADR-0004), the multi-Sentinel
+coordination seams (registry CRUD /v1/registry/sentinels, /v1/registry/health-check, and the
+coordinated push /v1/policies/coordinate — O-005, ADR-0005), plus a health probe. The GET
+query/bus read seams (/v1/events, /v1/bus/dlq, /v1/bus/schema-versions) are O-006. mTLS
+termination is O-008.
 """
 
 from __future__ import annotations
@@ -18,7 +20,12 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from orchestrator.config import get_distribution_settings, get_ingest_settings
+from orchestrator.config import (
+    get_coordination_settings,
+    get_distribution_settings,
+    get_ingest_settings,
+)
+from orchestrator.coordination.router import router as coordination_router
 from orchestrator.distribution.router import router as distribution_router
 from orchestrator.ingest.router import router as ingest_router
 
@@ -41,6 +48,9 @@ def create_app() -> FastAPI:
     # ingest-only deployment must not be forced to configure the distribution seam. The
     # request boundary enforces token presence fail-closed, not construction.
     app.state.distribution_settings = get_distribution_settings()
+    # Coordination (O-005) settings also resolve NON-FATALLY; the registry request boundary
+    # enforces the operator token (ORCH_ADMIN_TOKEN) fail-closed, not construction.
+    app.state.coordination_settings = get_coordination_settings()
 
     @app.exception_handler(Exception)
     async def _fail_safe_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -73,4 +83,5 @@ def create_app() -> FastAPI:
 
     app.include_router(ingest_router)
     app.include_router(distribution_router)
+    app.include_router(coordination_router)
     return app
