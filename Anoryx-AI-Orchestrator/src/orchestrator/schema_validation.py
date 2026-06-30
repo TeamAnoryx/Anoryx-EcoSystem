@@ -31,6 +31,9 @@ _ORCH_ROOT = _HERE.parents[2]  # .../Anoryx-AI-Orchestrator
 _REPO_ROOT = _HERE.parents[3]  # repo root
 _ENVELOPE_SCHEMA_PATH = _ORCH_ROOT / "contracts" / "event-envelope.schema.json"
 _EVENTS_SCHEMA_PATH = _REPO_ROOT / "Anoryx-Sentinel" / "contracts" / "events.schema.json"
+# The LOCKED policy intake schema (sentinel:policy:v1) the O-004 distribution seam validates
+# a submitted policy against, UNMODIFIED. Same library + dialect as the event validators.
+_POLICY_SCHEMA_PATH = _REPO_ROOT / "Anoryx-Sentinel" / "contracts" / "policy.schema.json"
 
 
 def _load_json(path: pathlib.Path) -> dict:
@@ -72,3 +75,20 @@ def payload_errors(payload: object) -> list[str]:
     Empty list = valid. A non-empty result → reject-to-DLQ (payload_schema_invalid).
     """
     return [e.message for e in _events_validator().iter_errors(payload)]
+
+
+@functools.lru_cache(maxsize=1)
+def _policy_validator() -> Draft202012Validator:
+    schema = _load_json(_POLICY_SCHEMA_PATH)
+    return Draft202012Validator(schema, format_checker=_D.FORMAT_CHECKER)
+
+
+def policy_schema_errors(policy: object) -> list[str]:
+    """Return validation errors for *policy* vs the LOCKED policy.schema.json (O-004).
+
+    Empty list = valid. A non-empty result → the distribution receiver returns 422
+    (policy_schema_invalid). The schema (sentinel:policy:v1) is used UNMODIFIED. This is a
+    STRUCTURAL guard, not a trust decision: the Orchestrator does NOT cryptographically
+    re-verify the embedded JWS — Sentinel's intake is the verifying authority (ADR-0004).
+    """
+    return [e.message for e in _policy_validator().iter_errors(policy)]

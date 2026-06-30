@@ -5,9 +5,10 @@ settings fail-loud at construction, registers routers, and installs a fail-safe
 exception handler that BLOCKs (5xx) on any unhandled error — an ingest that could not be
 durably recorded must never return a 202.
 
-SCOPE: this app exposes ONLY the ingest seam (POST /v1/ingest/events) plus a health
-probe. The GET query/bus read seams (/v1/events, /v1/bus/dlq, /v1/bus/schema-versions)
-are O-006. The distribution seams are O-004. mTLS termination is O-008.
+SCOPE: this app exposes the ingest seam (POST /v1/ingest/events), the policy-distribution
+seams (POST + GET /v1/policies/distributions — implemented here, O-004, ADR-0004), plus a
+health probe. The GET query/bus read seams (/v1/events, /v1/bus/dlq,
+/v1/bus/schema-versions) are O-006. mTLS termination is O-008.
 """
 
 from __future__ import annotations
@@ -17,7 +18,8 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from orchestrator.config import get_ingest_settings
+from orchestrator.config import get_distribution_settings, get_ingest_settings
+from orchestrator.distribution.router import router as distribution_router
 from orchestrator.ingest.router import router as ingest_router
 
 
@@ -35,6 +37,10 @@ def create_app() -> FastAPI:
         redoc_url=None,
     )
     app.state.ingest_settings = ingest_settings
+    # Distribution settings resolve NON-FATALLY (unlike the fail-loud ingest secret): an
+    # ingest-only deployment must not be forced to configure the distribution seam. The
+    # request boundary enforces token presence fail-closed, not construction.
+    app.state.distribution_settings = get_distribution_settings()
 
     @app.exception_handler(Exception)
     async def _fail_safe_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -63,4 +69,5 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     app.include_router(ingest_router)
+    app.include_router(distribution_router)
     return app
