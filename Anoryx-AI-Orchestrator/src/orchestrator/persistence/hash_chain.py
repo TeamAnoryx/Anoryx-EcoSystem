@@ -89,3 +89,63 @@ def compute_row_hash(data: dict[str, Any]) -> str:
 def verify_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
     """Recompute and compare the row_hash for a single row. True iff it matches."""
     return compute_row_hash(row_data) == stored_hash
+
+
+# =========================================================================== #
+# Distribution audit chain (O-004, ADR-0004) — ADDITIVE, parallel to the ingest
+# chain above. Same canonicalization discipline over a distinct field set and a
+# domain-separated genesis so the ingest and distribution chains can never be
+# confused. The ingest constants/functions above are untouched (byte-identical).
+# =========================================================================== #
+
+# Domain-separated genesis constant, distinct from GENESIS_HASH and Sentinel's genesis.
+DISTRIBUTION_GENESIS_HASH = hashlib.sha256(
+    b"anoryx-orchestrator:distribution-audit:genesis:v1"
+).hexdigest()
+
+# Fields folded into the canonical hash content, in a fixed documented order.
+# prev_hash MUST be last to surface ordering issues clearly.
+DISTRIBUTION_CANONICAL_FIELDS = [
+    "distribution_id",
+    "policy_id",
+    "tenant_id",
+    "policy_type",
+    "disposition",
+    # Chain field — last.
+    "prev_hash",
+]
+
+# Folded in ONLY when non-None (opt-in-when-present). Never add these to
+# DISTRIBUTION_CANONICAL_FIELDS — that would inject "<field>":null into every link
+# and break verification over historical data.
+_DISTRIBUTION_OPTIONAL_FIELDS = ("sentinel_id", "error_reason")
+
+
+def canonical_distribution_json(data: dict[str, Any]) -> bytes:
+    """Serialize distribution row data to canonical JSON: sorted keys, no whitespace, UTF-8.
+
+    Only DISTRIBUTION_CANONICAL_FIELDS are included (missing → None, to prevent omission
+    attacks). Each _DISTRIBUTION_OPTIONAL_FIELDS member is appended ONLY when not None.
+    """
+    filtered: dict[str, Any] = {k: data.get(k) for k in DISTRIBUTION_CANONICAL_FIELDS}
+    for field in _DISTRIBUTION_OPTIONAL_FIELDS:
+        if data.get(field) is not None:
+            filtered[field] = data[field]
+    return json.dumps(filtered, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+
+
+def compute_distribution_row_hash(data: dict[str, Any]) -> str:
+    """Return the 64-char lowercase SHA-256 hex digest of the canonical JSON of *data*.
+
+    *data* MUST include 'prev_hash'.
+    """
+    if "prev_hash" not in data:
+        raise ValueError("row data must include 'prev_hash' to compute row_hash")
+    return hashlib.sha256(canonical_distribution_json(data)).hexdigest()
+
+
+def verify_distribution_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
+    """Recompute and compare the distribution row_hash for a single row. True iff it matches."""
+    return compute_distribution_row_hash(row_data) == stored_hash

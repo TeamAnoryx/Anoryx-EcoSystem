@@ -3,9 +3,12 @@ name: Anoryx-AI-Orchestrator CI
 # Two lanes:
 #   orchestrator-contract    — O-001/O-002 contract validation (OpenAPI 3.1 + locked
 #                              F-002 schemas). No DB.
-#   orchestrator-integration — O-003 ingest pipeline + the first Alembic migration, on a
-#                              fresh Postgres. Runs the NON-STUBBED e2e. CI on a fresh DB
-#                              is the authority of record (local green can mask drift).
+#   orchestrator-integration — O-003 ingest pipeline + O-004 policy distribution, on a
+#                              fresh Postgres. Runs the NON-STUBBED e2e (incl. the O-004
+#                              allow/deny distribution e2e, which drives Sentinel's REAL
+#                              intake_policy + enforcement via a test shim — ADR-0004 F1).
+#                              CI on a fresh DB is the authority of record (local green can
+#                              mask drift).
 # Triggers on the Orchestrator tree AND on the Sentinel contracts it references by $ref.
 on:
   push:
@@ -37,7 +40,7 @@ jobs:
         run: pytest Anoryx-AI-Orchestrator/tests --tb=short -q
 
   orchestrator-integration:
-    name: Integration (ingest pipeline + first migration on Postgres)
+    name: Integration (ingest + policy distribution; migrations 0001+0002 on Postgres)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -62,19 +65,40 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - name: Install (runtime + dev)
-        run: pip install -e ".[dev]"
-      # The conftest session fixture runs `alembic upgrade head` and provisions the
-      # orchestrator_app SCRAM password before the DB tests; the non-stubbed e2e then
-      # exercises the real HMAC receiver -> pipeline -> Postgres path.
+      - name: Install (Orchestrator + Sentinel, runtime + dev)
+        # Sentinel is installed so the O-004 distribution e2e can drive Sentinel's REAL
+        # intake_policy() + enforcement on the real path (ADR-0004 Fork F / F1). Sentinel is
+        # src-layout with top-level packages (policy, persistence, ...) — no collision with
+        # the orchestrator.* namespace. The shim makes a genuine loopback HTTP call; nothing
+        # is stubbed on the distribution path.
+        run: |
+          pip install -e ".[dev]"
+          pip install -e "../Anoryx-Sentinel[dev]"
+      - name: Create the sentinel_ci database (real Sentinel target for the e2e)
+        # A second database on the same Postgres service. The integration conftest runs
+        # Sentinel's `alembic upgrade head` into it and provisions the sentinel_app role
+        # before the distribution e2e (mirroring how it provisions orchestrator_app).
+        env:
+          PGPASSWORD: orchestrator_ci_only
+        run: psql -h localhost -p 5432 -U orchestrator -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE sentinel_ci;"
+      # The conftest session fixtures run `alembic upgrade head` (Orchestrator into
+      # orchestrator_ci, Sentinel into sentinel_ci) and provision the orchestrator_app /
+      # sentinel_app SCRAM passwords before the DB tests; the non-stubbed e2es then exercise
+      # the real receiver -> pipeline -> Postgres path and the real distribution -> Sentinel
+      # intake -> enforcement path.
       - name: Test (pytest — non-stubbed e2e on a fresh Postgres)
         env:
-          # Ephemeral CI service credentials (mirrors sentinel-ci's inline DB URLs). The
-          # per-event HMAC signing secret is NOT set here — every ingest test monkeypatches
-          # its own ORCH_INGEST_HMAC_SECRET, so no signing secret lives in this workflow.
+          # Ephemeral CI service credentials (mirrors sentinel-ci's inline DB URLs). No
+          # signing secret lives in this workflow: each ingest test monkeypatches its own
+          # ORCH_INGEST_HMAC_SECRET, and the distribution e2e generates its ES256 keypair at
+          # runtime (POLICY_SIGNING_PUBKEY_PATH is set by the fixture, never here).
           ORCH_DATABASE_URL: postgresql://orchestrator:orchestrator_ci_only@localhost:5432/orchestrator_ci
           ORCH_APP_DATABASE_URL: postgresql://orchestrator_app:orchestrator_ci_only@localhost:5432/orchestrator_ci
           ORCH_PROVISION_APP_ROLE: "1"
+          # Sentinel's own DB URLs (privileged owner + sentinel_app role) on the sentinel_ci
+          # database — consumed by the real intake_policy() + enforcement the e2e drives.
+          DATABASE_URL: postgresql://orchestrator:orchestrator_ci_only@localhost:5432/sentinel_ci
+          APP_DATABASE_URL: postgresql://sentinel_app:orchestrator_ci_only@localhost:5432/sentinel_ci
           # CI Postgres has TLS off; disable asyncpg's SSL probe (also avoids a Windows
           # ConnectionResetError when the same suite is run locally by the auditor).
           ORCH_DB_SSL: disable

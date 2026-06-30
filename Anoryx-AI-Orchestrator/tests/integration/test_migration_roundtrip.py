@@ -1,9 +1,10 @@
-"""Migration reversibility on a real Postgres (O-003, ADR-0003).
+"""Migration reversibility on a real Postgres (O-003 0001 + O-004 0002).
 
-The Orchestrator's first migration must apply clean to head AND reverse cleanly. Proves a
-non-stubbed round-trip: upgrade head → tables present → downgrade base → tables gone →
-upgrade head → tables present again. Re-provisions the orchestrator_app password after the
-final upgrade (downgrade base drops the passwordless role) so later tests still connect.
+The Orchestrator's migrations must apply clean to head AND reverse cleanly. Proves a
+non-stubbed round-trip across BOTH migrations (head = 0002): upgrade head → tables present →
+downgrade base → tables gone → upgrade head → tables present again. Re-provisions the
+orchestrator_app password after the final upgrade (downgrade base drops the passwordless
+role) so later tests still connect.
 """
 
 from __future__ import annotations
@@ -12,7 +13,16 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-_TABLES = ("ingest_events", "ingest_audit_log", "dead_letter_queue", "forward_outbox")
+# 0001 (O-003 ingest baseline) + 0002 (O-004 policy distribution) tables.
+_TABLES = (
+    "ingest_events",
+    "ingest_audit_log",
+    "dead_letter_queue",
+    "forward_outbox",
+    "policy_distributions",
+    "policy_distribution_targets",
+    "distribution_audit_log",
+)
 
 
 async def _table_exists(conn, name: str) -> bool:

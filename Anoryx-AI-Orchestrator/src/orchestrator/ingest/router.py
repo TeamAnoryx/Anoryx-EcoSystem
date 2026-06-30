@@ -22,6 +22,7 @@ import uuid
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from orchestrator.boundary import contains_nul
 from orchestrator.config import IngestSettings
 from orchestrator.hmac_verify import HmacOutcome, verify_ingest_signature
 from orchestrator.pipeline.ingest_pipeline import process_envelope
@@ -35,25 +36,6 @@ _TS_HEADER = "X-Sentinel-Timestamp"
 
 def _request_id() -> str:
     return "req-orch-" + uuid.uuid4().hex[:24]
-
-
-def _contains_nul(obj: object) -> bool:
-    """Recursively detect a NUL (\\x00) in any string within *obj*.
-
-    Postgres `text` and JSONB both categorically reject \\x00, so a NUL anywhere in the
-    envelope (notably an un-schema-validated payload string) would crash the persist /
-    reject-to-DLQ insert (a non-IntegrityError → 503), leaving the event neither accepted
-    nor dead-lettered — an un-DLQ'able-poison + retry-storm class (audit M-2). Such a body
-    cannot be stored OR dead-lettered, so it is rejected at the boundary as malformed (422),
-    a deterministic terminal disposition that does not loop.
-    """
-    if isinstance(obj, str):
-        return "\x00" in obj
-    if isinstance(obj, dict):
-        return any(_contains_nul(k) or _contains_nul(v) for k, v in obj.items())
-    if isinstance(obj, list):
-        return any(_contains_nul(item) for item in obj)
-    return False
 
 
 def _error(status: int, code: str, message: str, request_id: str) -> JSONResponse:
@@ -98,7 +80,7 @@ async def ingest_event(request: Request) -> JSONResponse:
         return _error(422, "schema_invalid", "envelope failed structural validation", request_id)
     # A NUL char cannot be stored in Postgres text/JSONB, so it can be neither persisted
     # NOR dead-lettered — reject as malformed at the boundary (audit M-2), never a 503.
-    if _contains_nul(envelope):
+    if contains_nul(envelope):
         return _error(
             422, "schema_invalid", "envelope contains a forbidden NUL character", request_id
         )

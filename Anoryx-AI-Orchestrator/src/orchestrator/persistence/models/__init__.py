@@ -10,9 +10,12 @@ from __future__ import annotations
 
 from orchestrator.persistence.models.base import Base
 from orchestrator.persistence.models.dead_letter import DeadLetterEntry
+from orchestrator.persistence.models.distribution_audit_log import DistributionAuditLog
 from orchestrator.persistence.models.forward_outbox import ForwardOutbox
 from orchestrator.persistence.models.ingest_audit_log import IngestAuditLog
 from orchestrator.persistence.models.ingest_event import IngestEvent
+from orchestrator.persistence.models.policy_distribution import PolicyDistribution
+from orchestrator.persistence.models.policy_distribution_target import PolicyDistributionTarget
 
 __all__ = [
     "Base",
@@ -20,4 +23,8 @@ __all__ = [
     "IngestAuditLog",
     "DeadLetterEntry",
     "ForwardOutbox",
+    # O-004 policy distribution (ADR-0004).
+    "PolicyDistribution",
+    "PolicyDistributionTarget",
+    "DistributionAuditLog",
 ]
