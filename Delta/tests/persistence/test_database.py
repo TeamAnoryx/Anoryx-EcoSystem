@@ -7,7 +7,7 @@ import re
 import uuid
 
 import pytest
-from account_seed import ensure_accounts, builder_account_id
+from account_seed import builder_account_id, ensure_accounts
 from sqlalchemy import func, select, text
 
 from delta.persistence.database import (

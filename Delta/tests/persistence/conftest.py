@@ -35,7 +35,7 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from account_seed import ensure_accounts, builder_account_id
+from account_seed import builder_account_id, ensure_accounts
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
