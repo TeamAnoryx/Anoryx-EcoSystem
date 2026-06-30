@@ -1,0 +1,72 @@
+# docker-compose.yml — Rendly identity-persistence local-dev / fresh-compose-up stack (R-004).
+#
+# Topology (Fork A — OWNED schema): Rendly runs its OWN Postgres for local/CI here. Production
+# can point Rendly at a shared instance's `rendly` schema with no code change. The host port is
+# 5546 (Sentinel uses 5432/5433, Delta uses 5544) so the bundled stacks never collide.
+#
+# Local-dev passwords use ${VAR:-default} substitution. NEVER commit real creds; production
+# injects them from Vault/KMS. The bundled stack shares the password across both roles — RLS is
+# enforced by the role privilege (rendly_app is NOBYPASSRLS), not by the password.
+#
+# QUICK START:
+#   docker compose up -d --build      # postgres + one-shot migrate/provision
+#   # rendly-migrate exits 0 once the schema + rendly_app password are in place.
+# Teardown + clean volume:  docker compose down -v
+#
+# Matching connection strings for a local test run (or export them and run pytest directly):
+#   DATABASE_URL=postgresql://rendly:rendly@localhost:5546/rendly_dev          (privileged owner)
+#   APP_DATABASE_URL=postgresql://rendly_app:rendly@localhost:5546/rendly_dev  (rendly_app)
+#   RENDLY_PROVISION_APP_ROLE=1
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: rendly-postgres
+    ports:
+      - "5546:5432"            # host 5546 avoids clashes with Sentinel (5432/5433) + Delta (5544)
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rendly}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rendly}
+      POSTGRES_DB: ${POSTGRES_DB:-rendly_dev}
+    volumes:
+      - rendly-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rendly} -d ${POSTGRES_DB:-rendly_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 90s        # initdb is slow on Docker Desktop bind I/O
+    restart: unless-stopped
+    networks:
+      - rendly-net
+
+  # One-shot: runs `alembic upgrade head` then provisions the rendly_app SCRAM password
+  # (RUN_MIGRATIONS=1, RENDLY_PROVISION_APP_ROLE=1 baked into the image). Exits 0 when the
+  # fresh DB is migrated AND a rendly_app login is possible.
+  rendly-migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: anoryx-rendly:1.0.0
+    container_name: rendly-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-rendly}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rendly}
+      POSTGRES_DB: ${POSTGRES_DB:-rendly_dev}
+      RUN_MIGRATIONS: "1"
+      RENDLY_PROVISION_APP_ROLE: "1"
+    restart: "no"
+    networks:
+      - rendly-net
+
+networks:
+  rendly-net:
+    driver: bridge
+
+volumes:
+  rendly-postgres-data:

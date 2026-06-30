@@ -11,6 +11,7 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 
+from account_seed import ensure_accounts
 from sqlalchemy import func, select
 
 from delta.ledger import EntryDirection, LedgerEntry, Transaction
@@ -60,6 +61,12 @@ def _txn(tenant_id, acct_x, acct_y):
 async def test_concurrent_writers_keep_ledger_balanced(tenant_db_for, tenant_id):
     acct_x = str(uuid.uuid4())
     acct_y = str(uuid.uuid4())
+
+    # Seed the two custom accounts once (committed) so every concurrent writer's
+    # entries satisfy the same-tenant FK.
+    async with tenant_db_for(tenant_id) as s:
+        await ensure_accounts(s, tenant_id, acct_x, acct_y)
+        await s.commit()
 
     async def writer() -> None:
         async with tenant_db_for(tenant_id) as s:
