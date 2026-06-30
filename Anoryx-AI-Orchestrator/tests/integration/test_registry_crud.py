@@ -142,7 +142,7 @@ async def test_modify_only_enabled_audits_as_disable(db_conn) -> None:
     assert rows[-1]["action"] == "disable"
 
 
-async def test_modify_unknown_is_not_found() -> None:
+async def test_modify_unknown_is_not_found(db_ready) -> None:
     with pytest.raises(SentinelNotFoundError):
         await registry.modify_sentinel(_sid("ghost"), enabled=False, settings=_settings())
 
@@ -163,7 +163,7 @@ async def test_deregister_removes_row_and_audits(db_conn) -> None:
         assert await validate_registry_chain(ps) is True
 
 
-async def test_deregister_unknown_is_not_found() -> None:
+async def test_deregister_unknown_is_not_found(db_ready) -> None:
     with pytest.raises(SentinelNotFoundError):
         await registry.deregister_sentinel(_sid("ghost"), settings=_settings())
 
