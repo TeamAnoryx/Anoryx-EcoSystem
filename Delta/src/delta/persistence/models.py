@@ -69,3 +69,61 @@ ingest_dead_letter = sa.Table(
     sa.Column("first_failed_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("last_failed_at", sa.DateTime(timezone=True), nullable=False),
 )
+
+# --- D-005 budget engine (migration 0003) -----------------------------------------
+# The caps to evaluate. Mirrors delta.budget.BudgetConcept (the locked budget_limit
+# shape): four stable IDs + scope + period + integer-cent / token limits.
+budget_definitions = sa.Table(
+    "budget_definitions",
+    metadata,
+    sa.Column("budget_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("scope", sa.String(8), nullable=False),
+    sa.Column("team_id", sa.String(64), nullable=False),
+    sa.Column("project_id", sa.String(64), nullable=False),
+    sa.Column("agent_id", sa.String(64), nullable=False),
+    sa.Column("period", sa.String(8), nullable=False),
+    sa.Column("limit_tokens", sa.BigInteger, nullable=True),
+    sa.Column("limit_cost_cents", sa.BigInteger, nullable=True),
+    sa.Column("currency", sa.String(3), nullable=False),
+    sa.Column("policy_id", sa.String(64), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# Per (budget, period window) edge state for idempotent, edge-triggered publishing. The
+# conditional transition UPDATE ... WHERE state='under' gates the publish so concurrent
+# appends crossing the cap publish exactly once.
+budget_enforcement_state = sa.Table(
+    "budget_enforcement_state",
+    metadata,
+    sa.Column("state_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("budget_id", sa.String(64), nullable=False),
+    sa.Column("period_bucket", sa.String(32), nullable=False),
+    sa.Column("state", sa.String(16), nullable=False),
+    sa.Column("enforced_policy_version", sa.BigInteger, nullable=True),
+    sa.Column("last_published_version", sa.BigInteger, nullable=False),
+    sa.Column("last_warned_pct", sa.Integer, nullable=True),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# The durable enforcement DECISION + delivery status. The signed policy is committed
+# here in the SAME transaction as the state flip, BEFORE any network call, so a decision
+# is never lost. The 'failed' state is the dead-letter.
+budget_publish_outbox = sa.Table(
+    "budget_publish_outbox",
+    metadata,
+    sa.Column("outbox_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("budget_id", sa.String(64), nullable=False),
+    sa.Column("policy_id", sa.String(64), nullable=False),
+    sa.Column("policy_version", sa.BigInteger, nullable=False),
+    sa.Column("transition", sa.String(16), nullable=False),
+    sa.Column("policy_payload", postgresql.JSONB, nullable=False),
+    sa.Column("distribution_id", sa.String(64), nullable=True),
+    sa.Column("state", sa.String(16), nullable=False),
+    sa.Column("attempts", sa.Integer, nullable=False),
+    sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("last_error", sa.String(512), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)

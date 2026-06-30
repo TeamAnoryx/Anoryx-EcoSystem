@@ -13,6 +13,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from ..budget_engine.config import load_settings as load_budget_engine_settings
 from .config import load_settings
 from .router import router
 
@@ -27,6 +28,10 @@ def create_app() -> FastAPI:
     )
     # Fail-loud: no app without the consume-seam secret (fail-closed auth).
     app.state.ingest_settings = load_settings()
+    # Fail-loud: when the D-005 budget engine is enabled, its O-004 distribution URL +
+    # service token must be set (a misconfigured enforcement path is a deployment error,
+    # not a silent degrade). Disabled => an inert no-op (the engine never evaluates).
+    app.state.budget_engine_settings = load_budget_engine_settings()
 
     @app.get("/health", include_in_schema=False)
     async def health() -> dict[str, str]:
