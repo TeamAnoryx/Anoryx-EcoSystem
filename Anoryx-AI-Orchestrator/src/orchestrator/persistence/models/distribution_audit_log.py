@@ -25,7 +25,9 @@ class DistributionAuditLog(Base):
     # Attribution (always present — recorded after structural validation).
     distribution_id: Mapped[str] = mapped_column(String(64), nullable=False)
     policy_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    # NULL — the chain is GLOBAL; RLS scopes SELECT only. The hash folds None when absent.
+    # Nullable column (the chain is a single GLOBAL chain — the column does not constrain
+    # inserts), but the append path RECORDS the real tenant_id (always folded into the hash);
+    # RLS scopes SELECT to per-tenant audit rows.
     tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     policy_type: Mapped[str] = mapped_column(String(32), nullable=False)
     # submitted | distributed | partial | failed

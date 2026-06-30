@@ -8,6 +8,7 @@ the tenant-session persist — so no Postgres is needed: fail-closed bearer auth
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 
 import httpx
@@ -128,3 +129,51 @@ async def test_nul_in_policy_is_422(app):
     assert resp.status_code == 422
     assert resp.json()["error"]["code"] == "schema_invalid"
     assert "NUL" in resp.json()["error"]["message"]
+
+
+# --------------------------------------------------------------------------- #
+# GET /v1/policies/distributions/{distribution_id} — auth + not-found (no DB).
+# 401/403 decide at the auth boundary before any read; the 404 case mocks the
+# repository boundary (and a fake privileged session) so no Postgres is touched.
+# --------------------------------------------------------------------------- #
+
+
+async def _get(app, distribution_id: str, *, headers=None) -> httpx.Response:
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://orch") as client:
+        return await client.get(
+            f"/v1/policies/distributions/{distribution_id}", headers=headers or {}
+        )
+
+
+async def test_get_missing_authorization_is_401(app):
+    resp = await _get(app, str(uuid.uuid4()))
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "unauthorized"
+
+
+async def test_get_wrong_bearer_is_403(app):
+    resp = await _get(app, str(uuid.uuid4()), headers={"Authorization": "Bearer not-the-token"})
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "forbidden"
+
+
+async def test_get_unknown_distribution_is_404(app, monkeypatch):
+    # Mock at the repository boundary so this stays a no-DB unit test: a fake privileged
+    # session context manager (never opens a real connection) + a get_distribution that
+    # resolves nothing → the handler returns 404 before any tenant read.
+    from orchestrator.distribution import router as dist_router
+
+    @contextlib.asynccontextmanager
+    async def _fake_privileged_session():
+        yield object()
+
+    async def _no_distribution(_session, _distribution_id):
+        return None
+
+    monkeypatch.setattr(dist_router, "get_privileged_session", _fake_privileged_session)
+    monkeypatch.setattr(dist_router, "get_distribution", _no_distribution)
+
+    resp = await _get(app, str(uuid.uuid4()), headers=_auth())
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "not_found"

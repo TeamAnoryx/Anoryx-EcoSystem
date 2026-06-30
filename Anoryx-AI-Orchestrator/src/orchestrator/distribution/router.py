@@ -26,6 +26,7 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 
+from orchestrator.boundary import contains_nul
 from orchestrator.config import DistributionSettings
 from orchestrator.distribution.engine import drive_distribution
 from orchestrator.persistence.database import get_privileged_session, get_tenant_session
@@ -48,22 +49,6 @@ _ALLOWED_REQUEST_KEYS = frozenset({"policy", "targets", "sign_on_behalf"})
 
 def _request_id() -> str:
     return "req-orch-" + uuid.uuid4().hex[:24]
-
-
-def _contains_nul(obj: object) -> bool:
-    """Recursively detect a NUL (\\x00) in any string within *obj* (reused from the ingest
-    boundary). Postgres `text` and JSONB both reject \\x00, so a NUL anywhere in the policy
-    record would crash the persist insert (a non-IntegrityError → 503), leaving the
-    distribution neither recorded nor rejected (retry storm). Such a record is rejected at the
-    boundary as malformed (422), a deterministic terminal disposition (O-003 audit M-2 class).
-    """
-    if isinstance(obj, str):
-        return "\x00" in obj
-    if isinstance(obj, dict):
-        return any(_contains_nul(k) or _contains_nul(v) for k, v in obj.items())
-    if isinstance(obj, list):
-        return any(_contains_nul(item) for item in obj)
-    return False
 
 
 def _error(status: int, code: str, message: str, request_id: str) -> JSONResponse:
@@ -163,8 +148,10 @@ def _distribution_status_body(
     Fields match openapi.yaml DistributionStatus / DistributionTargetStatus EXACTLY: parent
     {distribution_id, policy_id, state, created_at, targets[]}; each target {sentinel_id, state,
     last_attempt_at?}. Per-target last_error / attempt_count are deliberately NOT surfaced ("No
-    error bodies are exposed here", contract). last_attempt_at maps from distributed_at when
-    present (the only per-attempt timestamp recorded).
+    error bodies are exposed here", contract). last_attempt_at ("if any", contract) is
+    distributed_at on success, else the row's updated_at once an attempt has been recorded
+    (attempt_count > 0 or state moved off 'pending'); it is omitted while the target is still
+    the untouched insert-time row (pending, attempt_count 0 — no attempt yet).
     """
     target_bodies: list[dict[str, Any]] = []
     for target in targets:
@@ -172,6 +159,10 @@ def _distribution_status_body(
         distributed_at = target.get("distributed_at")
         if distributed_at is not None:
             entry["last_attempt_at"] = _isoformat(distributed_at)
+        elif target.get("attempt_count", 0) > 0 or target.get("state") != "pending":
+            updated_at = target.get("updated_at")
+            if updated_at is not None:
+                entry["last_attempt_at"] = _isoformat(updated_at)
         target_bodies.append(entry)
     return {
         "distribution_id": dist["distribution_id"],
@@ -214,7 +205,7 @@ async def submit_distribution(request: Request, background: BackgroundTasks) -> 
         return _error(422, "policy_schema_invalid", "policy failed schema validation", request_id)
 
     # 5. NUL guard — a \x00 cannot be stored, so it can be neither persisted nor recorded.
-    if _contains_nul(policy):
+    if contains_nul(policy):
         return _error(
             422, "schema_invalid", "policy contains a forbidden NUL character", request_id
         )
@@ -227,7 +218,8 @@ async def submit_distribution(request: Request, background: BackgroundTasks) -> 
     policy_type = policy["policy_type"]
 
     # 7. Identity + content hash of the byte-identical signed record (canonical JSON).
-    distribution_id = uuid.uuid4().hex
+    #    distribution_id is an RFC-4122 hyphenated UUID (contract `format: uuid`).
+    distribution_id = str(uuid.uuid4())
     content_hash = hashlib.sha256(
         json.dumps(policy, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -254,7 +246,7 @@ async def submit_distribution(request: Request, background: BackgroundTasks) -> 
             await insert_distribution_target(
                 session,
                 {
-                    "target_id": uuid.uuid4().hex,
+                    "target_id": str(uuid.uuid4()),
                     "distribution_id": distribution_id,
                     "tenant_id": tenant_id,
                     "sentinel_id": sentinel_id,
@@ -292,14 +284,15 @@ async def submit_distribution(request: Request, background: BackgroundTasks) -> 
 async def get_distribution_status(distribution_id: str, request: Request) -> JSONResponse:
     """Return DistributionStatus for *distribution_id* (COARSE-GRAINED read).
 
-    The inbound service token is coarse-grained (a single shared bearer, not per-tenant — O-001
-    honesty boundary d); per-tenant authorization is O-006. The path id carries no tenant and
-    RLS needs the GUC set before a tenant read, so we first resolve the row's tenant_id under a
-    PRIVILEGED (BYPASSRLS) session, then RE-READ the distribution + its targets under
-    get_tenant_session(tenant_id) so the response is RLS-confirmed (the app role only sees the
-    row if RLS admits it). A 404 is returned when the distribution is not visible under that
-    tenant session. Honest scope: this is a coarse-grained read pending the per-tenant authz of
-    O-006.
+    The inbound bearer is a SINGLE shared service token, not a per-caller/per-tenant credential
+    (O-001 honesty boundary d), so any token holder can look up any distribution by id — there
+    is no per-caller isolation here. The path id carries no tenant and RLS needs the GUC set
+    before a tenant read, so we resolve the row's owning tenant_id under a PRIVILEGED (BYPASSRLS)
+    session, then RE-READ the distribution + its targets under get_tenant_session(tenant_id).
+    That re-read confirms structural RLS consistency for the resolved tenant (the app role only
+    sees the row if RLS admits it) and yields a 404 when the row is not visible — it is NOT
+    per-caller authorization. Honest scope: per-tenant caller binding (so a caller may read only
+    its OWN tenant's distributions) is deferred to O-006.
     """
     settings: DistributionSettings = request.app.state.distribution_settings
     request_id = _request_id()

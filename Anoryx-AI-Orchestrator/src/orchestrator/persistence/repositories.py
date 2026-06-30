@@ -10,6 +10,7 @@ advisory lock so concurrent appends produce one contiguous chain.
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import insert, select, text
@@ -261,6 +262,9 @@ async def update_target_state(
 
     Only the provided fields are written; a None argument is omitted from the SET clause so
     a caller can advance `state` without clobbering attempt_count/last_error/timestamps.
+    `updated_at` is stamped (tz-aware UTC now) on EVERY transition so the row records when its
+    last attempt/state-change happened — the GET status read surfaces it as last_attempt_at for
+    a failed (or pending-after-attempt) target that has no distributed_at.
     """
     from sqlalchemy import update
 
@@ -268,7 +272,7 @@ async def update_target_state(
         PolicyDistributionTarget,
     )
 
-    values: dict[str, Any] = {"state": state}
+    values: dict[str, Any] = {"state": state, "updated_at": datetime.now(timezone.utc)}
     if attempt_count is not None:
         values["attempt_count"] = attempt_count
     if last_error is not None:

@@ -140,9 +140,9 @@ For each target row of a distribution (per-target independent — Fork C):
    full-record content hash (`Anoryx-Sentinel/src/policy/crypto.py:206`, `…/intake.py`).
 3. **2xx** → target `distributed`, `distributed_at` set, audit link `distributed`.
 4. **Transient failure** (connection error, timeout, 5xx, 429): increment `attempt_count`;
-   if `attempt_count < max_attempts` schedule a retry after exponential backoff; else move to
-   `failed`, set `last_error`, emit an alert (structured log + metric counter), append a
-   `failed` audit link.
+   if `attempt_count < max_attempts` retry in a bounded in-process loop with exponential
+   backoff; else move to `failed`, set `last_error`, emit an alert (structured log + metric
+   counter), append a `failed` audit link.
 5. **Permanent rejection** (4xx other than 429, e.g. Sentinel rejected the signature): target
    `failed` immediately (no retry — retrying a rejected signature is pointless amplification),
    `last_error`, alert, audit link.

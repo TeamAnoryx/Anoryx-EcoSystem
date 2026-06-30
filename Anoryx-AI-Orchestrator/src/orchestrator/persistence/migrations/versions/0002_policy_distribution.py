@@ -139,8 +139,9 @@ def upgrade() -> None:
         sa.Column("sequence_number", sa.BigInteger, primary_key=True, autoincrement=True),
         sa.Column("distribution_id", sa.String(64), nullable=False),
         sa.Column("policy_id", sa.String(64), nullable=False),
-        # tenant_id NULL — the chain is GLOBAL; RLS scopes SELECT only (mirrors
-        # ingest_audit_log). A single chain across tenants cannot fork per tenant.
+        # tenant_id is NULLABLE (the column does not constrain inserts so the chain stays a
+        # single GLOBAL chain that cannot fork per tenant), but the append path RECORDS the
+        # real tenant_id; RLS scopes SELECT to per-tenant audit rows (mirrors ingest_audit_log).
         sa.Column("tenant_id", sa.String(64), nullable=True),
         sa.Column("policy_type", sa.String(32), nullable=False),
         sa.Column("disposition", sa.String(16), nullable=False),
