@@ -5,10 +5,14 @@ on:
     branches: [main]
     paths:
       - "Delta/**"
+      - "Anoryx-AI-Orchestrator/**"
+      - "Anoryx-Sentinel/contracts/**"
       - ".github/workflows/delta-ci.yml"
   pull_request:
     paths:
       - "Delta/**"
+      - "Anoryx-AI-Orchestrator/**"
+      - "Anoryx-Sentinel/contracts/**"
       - ".github/workflows/delta-ci.yml"
 
 jobs:
@@ -81,6 +85,19 @@ jobs:
             --cov-fail-under=90 \
             --cov-report=term-missing \
             tests/persistence
+      - name: Budget-engine core coverage floor (>=90%)
+        # The D-005 decision-core (spend derivation, decision, edge-state, evaluator,
+        # outbox, publisher, definitions, emit, warnings, config, periods, drainer) + the
+        # vendored signer. The non-stubbed real-O-004 e2e is excluded here (it runs in the
+        # delta-o004-integration lane); the stubbed DB-vector + unit tests hold the floor.
+        run: |
+          pytest -q \
+            --cov=delta.budget_engine \
+            --cov=delta.policy \
+            --cov-fail-under=90 \
+            --cov-report=term-missing \
+            --ignore=tests/budget_engine/test_o004_e2e.py \
+            tests/budget_engine
 
   # Migration reversibility: upgrade -> downgrade -> upgrade on a fresh DB, then a
   # full drop-schema rebuild (a true fresh build, not a downgrade-base reset).
@@ -121,3 +138,71 @@ jobs:
         run: |
           python -c "import os,psycopg; c=psycopg.connect(os.environ['DATABASE_URL']); c.autocommit=True; c.execute('DROP SCHEMA IF EXISTS delta CASCADE'); c.close()"
           alembic upgrade head
+
+  # Cross-product lane (D-005, ADR-0005): the NON-STUBBED Delta -> REAL O-004 distribution
+  # e2e. Delta's real budget engine signs a budget_limit policy and POSTs it over a real
+  # socket to the REAL O-004 app (orchestrator.app.create_app), whose real router validates +
+  # persists it (its own orch_dev DB / RLS) and whose real engine fans it out to a target
+  # until the Orchestrator distribution row reaches `distributed`. The Sentinel-block leg is
+  # X-003 (no Sentinel HTTP intake route exists yet), so the test stands up a trivial
+  # accepting shim for O-004's forward target — the Delta -> O-004 leg is fully real. CI on a
+  # fresh Postgres is the authority of record (local green can mask drift). Mirrors the
+  # ledger-db job + the Orchestrator's orchestrator-integration job.
+  delta-o004-integration:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Delta
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: delta
+          POSTGRES_PASSWORD: delta
+          POSTGRES_DB: delta_dev
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # Delta DB (delta_dev) + Orchestrator DB (a SEPARATE orch_dev on the same Postgres).
+      # No env collision: Delta uses DATABASE_URL/APP_DATABASE_URL; the Orchestrator uses
+      # ORCH_DATABASE_URL/ORCH_APP_DATABASE_URL. Both app roles are SCRAM-provisioned by the
+      # test/Delta fixtures (DELTA_/ORCH_PROVISION_APP_ROLE=1). No signing secret lives here:
+      # the Delta conftest generates the ES256 keypair at runtime, and the O-004 server
+      # fixture sets its own ingest/service tokens before create_app(). ORCH_DB_SSL=disable
+      # turns off asyncpg's SSL probe (CI Postgres has TLS off).
+      DATABASE_URL: postgresql://delta:delta@localhost:5432/delta_dev
+      APP_DATABASE_URL: postgresql://delta_app:delta@localhost:5432/delta_dev
+      DELTA_PROVISION_APP_ROLE: "1"
+      ORCH_DATABASE_URL: postgresql://delta:delta@localhost:5432/orch_dev
+      ORCH_APP_DATABASE_URL: postgresql://orchestrator_app:orchpw@localhost:5432/orch_dev
+      ORCH_PROVISION_APP_ROLE: "1"
+      ORCH_DB_SSL: disable
+    steps:
+      # Full-repo checkout so the Orchestrator package + the Sentinel contracts it validates
+      # the distributed policy against (policy.schema.json) are present.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (Delta + Orchestrator + signing dep)
+        # The Orchestrator [server] extra brings uvicorn so the e2e can run the REAL O-004 app
+        # on a loopback socket. cryptography backs the Delta ES256 signer + the conftest key
+        # generation (not a declared Delta dep, so installed explicitly here).
+        run: |
+          pip install -e ".[dev]"
+          pip install -e "../Anoryx-AI-Orchestrator[server]"
+          pip install cryptography
+      - name: Create the orch_dev database (real O-004 target for the e2e)
+        # A second database on the same Postgres service. The test's session fixture runs the
+        # Orchestrator's `alembic upgrade head` into it and provisions the orchestrator_app
+        # SCRAM password before the e2e (mirroring how the Delta conftest provisions delta_app).
+        env:
+          PGPASSWORD: delta
+        run: psql -h localhost -p 5432 -U delta -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE orch_dev;"
+      - name: Delta -> real O-004 distribution e2e (non-stubbed, fresh Postgres)
+        run: python -m pytest tests/budget_engine/test_o004_e2e.py --tb=short -rN -q

@@ -14,6 +14,7 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from ..budget_engine.evaluator import evaluate_after_post
 from .config import ATTEMPT_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER
 from .dlq import dead_letter
 from .errors import DeadLetterReason, PermanentIngestError, is_transient
@@ -135,6 +136,12 @@ async def ingest_usage(request: Request) -> JSONResponse:
             event_type="usage",
         )
         return await _dead_letter_or_503(perm, original_payload=dlq_payload, attempt=attempt)
+
+    # D-005 budget engine hook: evaluate the affected scope AFTER the debit is durable.
+    # This is a post-commit side effect — it NEVER alters this response (the ledger is the
+    # authority; enforcement is downstream). evaluate_after_post classifies and absorbs all
+    # of its own failures (it never raises), so a successful debit always returns 200.
+    await evaluate_after_post(record, request.app.state.budget_engine_settings)
 
     return JSONResponse(
         status_code=200,

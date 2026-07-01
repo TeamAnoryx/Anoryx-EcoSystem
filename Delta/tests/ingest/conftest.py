@@ -205,8 +205,21 @@ def hmac_secret() -> bytes:
 
 
 @pytest.fixture
-def app(hmac_secret: bytes):
-    """The real Delta ingest app (POST /v1/ingest/usage + /health)."""
+def app(hmac_secret: bytes, monkeypatch: pytest.MonkeyPatch):
+    """The real Delta ingest app (POST /v1/ingest/usage + /health).
+
+    These tests exercise ONLY the D-004 consume/posting/DLQ path — never the D-005
+    enforcement seam (that is covered by tests/budget_engine with the engine enabled). The
+    budget engine defaults to enabled and, when enabled, requires an O-004 distribution URL
+    at construction (fail-loud; budget_engine.config). So when no O-004 target is configured
+    (the normal ingest-lane env — see delta-ci.yml) set the engine inert here so create_app()
+    builds without a distribution URL it does not need; evaluate_after_post is then a no-op.
+    If a URL IS configured, the engine is left enabled. This sets only the TEST environment
+    (monkeypatch, auto-reverted, scoped to this fixture) — the production fail-loud guard in
+    budget_engine.config is unchanged.
+    """
+    if not os.environ.get("DELTA_ORCH_DISTRIBUTION_URL"):
+        monkeypatch.setenv("DELTA_BUDGET_ENGINE_ENABLED", "0")
     return create_app()
 
 
