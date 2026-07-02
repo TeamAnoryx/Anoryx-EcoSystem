@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from rendly.realtime.inspector import InspectionOutcome, MessageInspector
+from rendly.realtime.resolver import MembershipResolution, TeamMembershipResolver
 
 # Frame types that may interleave ahead of the one a test is waiting for (presence/typing/welcome).
 _TRANSIENT = {"session.welcome", "presence.update", "typing.update"}
@@ -89,3 +90,24 @@ class RaisingInspector(MessageInspector):
 
     async def inspect(self, **_: object) -> InspectionOutcome:
         raise RuntimeError("inspection backend exploded")
+
+
+# --- team-membership resolver seam (R-006) stubs — exercise the fail-closed authz wiring ---------
+
+
+class UnresolvableResolver(TeamMembershipResolver):
+    """Always returns ``unresolvable`` — the seam cannot map the channel to a membership set. The
+    single authz decision point MUST fail closed (DENY) on this, so that even a real owner is denied
+    read/post/manage (no phantom members, no open access). The resolver analog of
+    ``UnavailableInspector``."""
+
+    async def resolve_role(self, session: object, **_: object) -> MembershipResolution:
+        return MembershipResolution.unresolvable()
+
+
+class RaisingResolver(TeamMembershipResolver):
+    """Raises — a resolver that errors must be converted to a fail-closed DENY, never a silent allow.
+    The resolver analog of ``RaisingInspector``."""
+
+    async def resolve_role(self, session: object, **_: object) -> MembershipResolution:
+        raise RuntimeError("team membership backend exploded")

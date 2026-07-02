@@ -22,6 +22,7 @@ from ..persistence.identity_app import create_db_app
 from .inspector import MessageInspector, NoOpMessageInspector
 from .pipeline import RuntimeContext
 from .registry import ConnectionRegistry
+from .resolver import ManualResolver, TeamMembershipResolver
 from .rest import router as chat_rest_router
 from .ws import realtime_endpoint
 
@@ -32,17 +33,21 @@ def create_chat_app(
     config: AuthConfig | None = None,
     clock: Clock | None = None,
     inspector: MessageInspector | None = None,
+    resolver: TeamMembershipResolver | None = None,
 ) -> FastAPI:
     """Build the Rendly chat app: the DB-backed auth app + the WebSocket/chat REST layer.
 
     ``key`` is the ES256 verify/sign material. The async chat engine reads ``DATABASE_URL`` /
     ``APP_DATABASE_URL`` lazily on first use — no URL is passed through or logged here. The
-    ``inspector`` defaults to the fail-closed no-op seam (R-008 swaps in real inspection).
+    ``inspector`` defaults to the fail-closed no-op content seam (R-008 swaps in real inspection);
+    the ``resolver`` defaults to the manual team-membership resolver (R-006 FORK C — admin-managed
+    membership, ``external_ref`` opaque; a future D-016 Delta-event impl plugs in here unchanged).
     """
     app = create_db_app(key=key, config=config, clock=clock)
     app.state.realtime_ctx = RuntimeContext(
         registry=ConnectionRegistry(),
         inspector=inspector or NoOpMessageInspector(),
+        resolver=resolver or ManualResolver(),
     )
     app.add_api_websocket_route("/v1/realtime", realtime_endpoint)
     app.include_router(chat_rest_router)

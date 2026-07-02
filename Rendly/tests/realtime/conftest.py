@@ -265,14 +265,19 @@ def seed_user() -> Callable[..., tuple[str, str]]:
 
 @pytest.fixture
 def make_client(key: "object") -> Callable[..., "object"]:
-    """Build a TestClient over the real chat app, optionally with a custom inspection seam."""
+    """Build a TestClient over the real chat app, optionally with a custom inspection seam and/or a
+    custom team-membership resolver (R-006 — seam tests pass an unresolvable/raising resolver)."""
     from starlette.testclient import TestClient
 
     from rendly.realtime.app import create_chat_app
     from rendly.realtime.inspector import MessageInspector
+    from rendly.realtime.resolver import TeamMembershipResolver
 
-    def _make(inspector: MessageInspector | None = None) -> "object":
-        app = create_chat_app(key=key, inspector=inspector)
+    def _make(
+        inspector: MessageInspector | None = None,
+        resolver: TeamMembershipResolver | None = None,
+    ) -> "object":
+        app = create_chat_app(key=key, inspector=inspector, resolver=resolver)
         return TestClient(app)
 
     return _make
