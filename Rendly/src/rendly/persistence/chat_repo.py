@@ -16,11 +16,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..channel import Channel
-from ..enums import ChannelSource, ChannelType
+from ..enums import ChannelRole, ChannelSource, ChannelType
 from ..membership import Membership
 from ..realtime.message import Message
 from ..user import User
@@ -79,6 +79,35 @@ async def insert_channel(session: AsyncSession, channel: Channel) -> None:
             next_seq=0,
         )
     )
+
+
+async def map_channel_to_team(
+    session: AsyncSession, *, tenant_id: str, channel_id: str, external_ref: str
+) -> bool:
+    """Map a channel to a team label: set ``source='delta_team'`` + ``external_ref`` (R-006).
+
+    FORK A (reuse the R-001 ``source``/``external_ref`` columns): a Core UPDATE flips ``source`` to
+    ``delta_team`` and stores the opaque tenant-scoped ``external_ref`` label. Runs under a TENANT
+    session, so RLS's ``USING`` + ``WITH CHECK`` bind the write to the GUC tenant — a caller can
+    never map another tenant's channel. Setting both columns together satisfies the biconditional
+    ``ck_channels_external_ref_seam`` CHECK (``(source='delta_team') = (external_ref IS NOT NULL)``).
+    Returns True iff an in-tenant channel row was updated (RLS-scoped). The caller commits and owns
+    the response shape (a Core UPDATE is used, not an ORM load+mutate, so a channel row loaded
+    earlier in this session for the authz decision is not re-read stale from the identity map).
+
+    HONESTY BOUNDARY: this is the MANUAL writer only. ``delta_team`` names the reserved Delta-team
+    seam; the automatic Delta-event writer is NOT built (D-016 + an Orchestrator team-event contract
+    are required and not shipped). ``external_ref`` is an OPAQUE label — it is never dereferenced to
+    resolve membership (see ``realtime.resolver.ManualResolver``), so it cannot become an access
+    vector, cross-tenant or otherwise.
+    """
+    result = await session.execute(
+        update(ChannelRow)
+        .where(ChannelRow.tenant_id == tenant_id, ChannelRow.channel_id == channel_id)
+        .values(source=ChannelSource.DELTA_TEAM.value, external_ref=external_ref)
+    )
+    await session.flush()  # surface the biconditional CHECK before the caller commits
+    return result.rowcount > 0
 
 
 async def insert_membership(session: AsyncSession, membership: Membership) -> None:
@@ -174,6 +203,29 @@ async def is_member(
         )
     ).first()
     return row is not None
+
+
+async def member_role(
+    session: AsyncSession, *, tenant_id: str, channel_id: str, user_id: str
+) -> ChannelRole | None:
+    """The caller's per-channel ``ChannelRole``, or None if not a member (RLS-scoped, LIVE).
+
+    The role counterpart to :func:`is_member`: R-006's channel-authz decision point reads the
+    per-channel role (which R-005 persisted but never consulted) to gate role-differentiated
+    actions. Returns None for a non-member — or for a channel/tenant not visible under the session's
+    RLS scope — which the authz layer treats as a fail-closed DENY (a forged tenant's GUC collapses
+    the RLS predicate to zero rows, so this returns None, never another tenant's role).
+    """
+    row = (
+        await session.execute(
+            select(MembershipRow.role).where(
+                MembershipRow.tenant_id == tenant_id,
+                MembershipRow.channel_id == channel_id,
+                MembershipRow.user_id == user_id,
+            )
+        )
+    ).first()
+    return ChannelRole(row[0]) if row is not None else None
 
 
 # --- message write (seq under a per-channel row lock) ----------------------------------

@@ -39,9 +39,11 @@ from .frames import (
     valid_content_type,
     valid_uuid,
 )
+from .authz import AuthzPrincipal, ChannelAction, authorize
 from .inspector import InspectionOutcome, MessageInspector
 from .message import new_message_id
 from .registry import Connection, ConnectionRegistry
+from .resolver import TeamMembershipResolver
 
 # The closed key set of an inbound chat.send (contracts/messages.schema.json ChatSend).
 _CHAT_SEND_KEYS = {"msg_type", "client_msg_id", "channel_id", "content", "content_type"}
@@ -65,6 +67,7 @@ class RuntimeContext:
 
     registry: ConnectionRegistry
     inspector: MessageInspector
+    resolver: TeamMembershipResolver
 
 
 # --- chat.send (the FORK D pipeline) ---------------------------------------------------
@@ -102,16 +105,26 @@ async def handle_chat_send(conn: Connection, data: dict, ctx: RuntimeContext) ->
         return
     content_type = data.get("content_type") or "text"
 
-    # 2. Authorize: per-frame chat:write scope + LIVE DB membership (never a cached set).
-    if "chat:write" not in conn.scopes:
-        await conn.send(build_error(error_code="unauthorized", request_id=new_request_id()))
-        return
+    # 2. Authorize via the ONE channel-authz decision point (the SAME point the REST layer calls):
+    #    coarse chat:write scope + LIVE per-channel role from the resolver seam, fail-closed. A
+    #    non-member, a role without post rights (a guest), a missing scope, a mismatched tenant, or
+    #    an unresolvable source ALL deny with a generic `unauthorized` (no existence/role oracle).
+    principal = AuthzPrincipal(tenant_id=tenant_id, user_id=conn.user_id, scopes=conn.scopes)
     async with get_tenant_session(tenant_id) as session:
-        member = await chat_repo.is_member(
-            session, tenant_id=tenant_id, channel_id=channel_id, user_id=conn.user_id
+        channel = await chat_repo.load_channel(session, tenant_id=tenant_id, channel_id=channel_id)
+        allowed = (
+            channel is not None
+            and (
+                await authorize(
+                    session,
+                    principal=principal,
+                    channel=channel,
+                    action=ChannelAction.POST,
+                    resolver=ctx.resolver,
+                )
+            ).allowed
         )
-    if not member:
-        # Not a member (or no such channel in-tenant): unauthorized, with no existence oracle.
+    if not allowed:
         await conn.send(build_error(error_code="unauthorized", request_id=new_request_id()))
         return
 
@@ -142,13 +155,24 @@ async def handle_chat_send(conn: Connection, data: dict, ctx: RuntimeContext) ->
     message_id = new_message_id()
     created_at = datetime.now(timezone.utc)
     async with get_tenant_session(tenant_id) as session:
-        # Re-check membership in the SAME transaction as the insert to close the check->persist
-        # TOCTOU: a membership revoked DURING the (potentially slow, R-008) inspection must not let
-        # one last message through. The pre-inspection check above is the early authz reject; this
-        # is the authoritative atomic gate.
-        if not await chat_repo.is_member(
-            session, tenant_id=tenant_id, channel_id=channel_id, user_id=conn.user_id
-        ):
+        # Re-authorize in the SAME transaction as the insert to close the check->persist TOCTOU: a
+        # membership/role revoked DURING the (potentially slow, R-008) inspection must not let one
+        # last message through. Step 2 was the early reject; this is the authoritative atomic gate,
+        # routed through the SAME decision point (not a parallel inline check).
+        channel = await chat_repo.load_channel(session, tenant_id=tenant_id, channel_id=channel_id)
+        allowed = (
+            channel is not None
+            and (
+                await authorize(
+                    session,
+                    principal=principal,
+                    channel=channel,
+                    action=ChannelAction.POST,
+                    resolver=ctx.resolver,
+                )
+            ).allowed
+        )
+        if not allowed:
             await conn.send(build_error(error_code="unauthorized", request_id=new_request_id()))
             return
         message = await chat_repo.insert_message(
