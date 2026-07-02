@@ -799,3 +799,53 @@ def coordination_settings():
             http_timeout_seconds=10.0,
         ),
     )
+
+
+# =========================================================================== #
+# O-006 per-tenant authz / read-seam harness. APPENDED to the O-003/O-004/O-005 harness above
+# (no edits to it). Adds: an authz gate that FAILS (not skips) under ORCH_REQUIRE_AUTHZ_E2E=1 so
+# the non-stubbed cross-tenant-isolation e2e provably EXECUTES on CI (mirrors coordination_ready);
+# and a per-tenant query-token seeder (privileged insert into query_service_tokens, returning the
+# PLAINTEXT secret to present as a Bearer — only its SHA-256 hash is stored).
+# =========================================================================== #
+
+
+@pytest.fixture
+def authz_ready() -> None:
+    """Gate the O-006 authz/read-seam e2e. Skips when the Orchestrator Postgres is unreachable —
+    UNLESS ORCH_REQUIRE_AUTHZ_E2E=1, in which case an unreachable DB FAILS the run (a silent skip
+    can never masquerade as a green cross-tenant-isolation gate on CI)."""
+    require = os.environ.get("ORCH_REQUIRE_AUTHZ_E2E") == "1"
+    if not _pg_reachable():
+        if require:
+            pytest.fail("ORCH_REQUIRE_AUTHZ_E2E=1 but the Orchestrator Postgres is unreachable")
+        pytest.skip("Orchestrator Postgres not reachable — authz/read-seam e2e")
+
+
+@pytest.fixture
+def seed_query_token(db_ready):
+    """Return an async callable that seeds a per-tenant query_service_tokens row (privileged).
+
+    Inserts (token_id, tenant_id, sha256(secret), label, enabled) via the privileged owner conn
+    and returns the PLAINTEXT secret the caller presents as `Authorization: Bearer <secret>`. Only
+    the SHA-256 hash is stored (the plaintext is never persisted). Pass enabled=False to seed a
+    revoked token (which must resolve to no tenant → 401).
+    """
+
+    async def _seed(tenant_id: str, *, enabled: bool = True, label: str = "authz-e2e") -> str:
+        secret = "qtok-" + _uuid.uuid4().hex
+        token_sha256 = hashlib.sha256(secret.encode("utf-8")).hexdigest()
+        async with _open_privileged_conn() as conn:
+            await conn.execute(
+                "INSERT INTO query_service_tokens "
+                "(token_id, tenant_id, token_sha256, label, enabled) "
+                "VALUES ($1, $2, $3, $4, $5)",
+                _uuid.uuid4().hex,
+                tenant_id,
+                token_sha256,
+                label,
+                enabled,
+            )
+        return secret
+
+    return _seed

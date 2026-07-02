@@ -16,6 +16,7 @@ from orchestrator.persistence.models.ingest_audit_log import IngestAuditLog
 from orchestrator.persistence.models.ingest_event import IngestEvent
 from orchestrator.persistence.models.policy_distribution import PolicyDistribution
 from orchestrator.persistence.models.policy_distribution_target import PolicyDistributionTarget
+from orchestrator.persistence.models.query_service_token import QueryServiceToken
 from orchestrator.persistence.models.sentinel_registry import SentinelRegistry
 from orchestrator.persistence.models.sentinel_registry_audit_log import SentinelRegistryAuditLog
 
@@ -32,4 +33,6 @@ __all__ = [
     # O-005 multi-Sentinel coordination (ADR-0005).
     "SentinelRegistry",
     "SentinelRegistryAuditLog",
+    # O-006 per-tenant query principal (ADR-0006).
+    "QueryServiceToken",
 ]

@@ -66,20 +66,24 @@ def dist_app(sentinel_db_ready, sentinel_shim_server, monkeypatch):
     return create_app()
 
 
-def _bearer(token: str = ORCH_SERVICE_TOKEN) -> dict[str, str]:
+def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-async def _get_status(app, distribution_id: str) -> httpx.Response:
+async def _get_status(app, distribution_id: str, token: str) -> httpx.Response:
+    # O-006: the seam is now per-tenant — the GET runs under the token's tenant RLS session.
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://orch") as client:
-        return await client.get(f"/v1/policies/distributions/{distribution_id}", headers=_bearer())
+        return await client.get(
+            f"/v1/policies/distributions/{distribution_id}", headers=_bearer(token)
+        )
 
 
 async def test_allow_policy_distributes_then_enforces_allow_and_deny(
     dist_app,
     db_conn,
     seed_sentinel_tenant,
+    seed_query_token,
     make_signed_policy,
     seed_distribution,
     sentinel_enforce,
@@ -92,6 +96,7 @@ async def test_allow_policy_distributes_then_enforces_allow_and_deny(
     """
     tenant = str(uuid.uuid4())
     await seed_sentinel_tenant(tenant)
+    token = await seed_query_token(tenant)  # O-006: per-tenant token for the GET status read
     signed = make_signed_policy(
         "model_allowlist", tenant_id=tenant, allowed_model_ids=[_ALLOWED_MODEL]
     )
@@ -117,8 +122,8 @@ async def test_allow_policy_distributes_then_enforces_allow_and_deny(
     assert target_state == "distributed", target_state
     assert parent_state == "distributed", parent_state
 
-    # GET status reflects it (re-read under the tenant session, RLS-confirmed).
-    status = await _get_status(dist_app, distribution_id)
+    # GET status reflects it (re-read under the token's tenant session, RLS-confirmed).
+    status = await _get_status(dist_app, distribution_id, token)
     assert status.status_code == 200, status.text
     body = status.json()
     assert body["state"] == "distributed"
@@ -183,6 +188,7 @@ async def test_submit_endpoint_drives_real_distribution_and_enforces(
     dist_app,
     db_conn,
     seed_sentinel_tenant,
+    seed_query_token,
     make_signed_policy,
     sentinel_enforce,
 ):
@@ -191,15 +197,17 @@ async def test_submit_endpoint_drives_real_distribution_and_enforces(
     httpx ASGITransport runs the FastAPI BackgroundTask synchronously, so on POST return the
     distribution is already settled. Proves the orchestrator's OWN submit→distribute path
     end-to-end with nothing stubbed, then Sentinel really enforces the distributed allow-list.
+    O-006: the POST is authorized by a per-tenant token whose tenant matches the signed body.
     """
     tenant = str(uuid.uuid4())
     await seed_sentinel_tenant(tenant)
+    token = await seed_query_token(tenant)
     signed = make_signed_policy("model_allowlist", tenant_id=tenant, allowed_model_ids=["gpt-4o"])
 
     transport = httpx.ASGITransport(app=dist_app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://orch") as client:
         resp = await client.post(
-            "/v1/policies/distributions", json={"policy": signed}, headers=_bearer()
+            "/v1/policies/distributions", json={"policy": signed}, headers=_bearer(token)
         )
     assert resp.status_code == 202, resp.text
     distribution_id = resp.json()["distribution_id"]
@@ -211,7 +219,7 @@ async def test_submit_endpoint_drives_real_distribution_and_enforces(
     )
     assert parent_state == "distributed", parent_state
 
-    status = await _get_status(dist_app, distribution_id)
+    status = await _get_status(dist_app, distribution_id, token)
     assert status.status_code == 200, status.text
     assert status.json()["state"] == "distributed"
     assert status.json()["targets"][0]["state"] == "distributed"
