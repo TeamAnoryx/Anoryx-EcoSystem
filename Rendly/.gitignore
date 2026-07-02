@@ -2,3 +2,6 @@
 __pycache__/
 .pytest_cache/
 *.egg-info/
+# coverage data (incl. parallel-mode .coverage.<host>.<pid>.* files written by the DB lanes)
+.coverage
+.coverage.*

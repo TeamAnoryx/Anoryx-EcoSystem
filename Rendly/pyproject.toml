@@ -24,6 +24,10 @@ dependencies = [
   "psycopg[binary]>=3.1,<4",      # the sync Postgres driver (postgresql+psycopg://).
   "alembic>=1.13,<2",             # the `rendly`-schema migration chain.
   "python-dotenv>=1,<2",          # env loading for the Alembic migration environment.
+  # R-005 chat runtime (ASYNC stack — the WebSocket/chat layer, ADR-0004 Fork D forward
+  # boundary; runs ALONGSIDE the sync stack, does not replace it):
+  "asyncpg>=0.29,<0.31",          # the async Postgres driver (postgresql+asyncpg://) for chat.
+  "greenlet>=3,<4",               # required by SQLAlchemy's async engine (explicit so CI is safe).
 ]
 
 # The contract suite (R-001), domain suite (R-002), and auth suite (R-003) share one dev extra.
@@ -66,6 +70,11 @@ source = ["src"]
 branch = true
 omit = [
   "*/persistence/*",
+  # The realtime chat runtime (R-005) requires a live Postgres + an in-process ASGI
+  # WebSocket, so — like persistence/* — it is measured in its OWN DB lane (rendly-db) with
+  # .coveragerc-realtime, not in the no-DB contracts lane. Omitting it keeps the no-DB gate
+  # honest (a DB-only package can't be covered without a DB).
+  "*/realtime/*",
 ]
 
 [tool.coverage.report]

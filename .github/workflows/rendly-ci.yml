@@ -65,23 +65,34 @@ jobs:
       DATABASE_URL: postgresql://rendly:rendly@localhost:5432/rendly_dev
       APP_DATABASE_URL: postgresql://rendly_app:rendly@localhost:5432/rendly_dev
       RENDLY_PROVISION_APP_ROLE: "1"
+      # R-005 async chat layer (asyncpg) against plaintext CI Postgres: no SSL probe. The realtime
+      # conftest also setdefaults this + NULLPOOL, but setting it here is explicit (banked rule 4).
+      RENDLY_DB_SSL: "disable"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - name: Install deps
         run: pip install -e ".[dev]"
-      - name: Persistence + RLS + auth-DB tests (whole tree, DB up)
-        # Runs the full suite with the DB present (the persistence suite is now collected). The
-        # pyproject gate measures the NON-DB surface here too; persistence is gated separately
-        # below so it never rides on the auth suite's coverage.
+      - name: Persistence + RLS + auth-DB + realtime-chat tests (whole tree, DB up)
+        # Runs the full suite with the DB present — the persistence suite AND the R-005 realtime
+        # chat suite (tests/realtime: real WS round-trip + cross-tenant deny + fail-closed seam +
+        # bind_membership DB deny + token-in-URL reject, on real Postgres + a real in-process ASGI
+        # WebSocket) are both collected. The pyproject gate measures the NON-DB surface here too;
+        # persistence and realtime are gated separately below so neither rides on another suite.
         run: pytest --tb=short -q --cov=rendly --cov-report=term-missing
-      - name: Persistence coverage floor (>=90%)
-        # The persistence package is omitted from the default config, so it is measured here with
-        # its own config (migrations excluded — DDL run via the alembic subprocess, not unit-cov).
+      - name: Persistence + realtime coverage floor (>=90%)
+        # Both DB packages are omitted from the default (no-DB) config and measured here. Note the
+        # coupling: rendly.persistence is exercised by BOTH tests/persistence (identity) AND
+        # tests/realtime (the chat repo + async session layer), while rendly.realtime is exercised
+        # by tests/realtime — so both suites must run to measure both packages. One step over both
+        # suites measuring both packages keeps the gate honest (migrations excluded — DDL via the
+        # alembic subprocess, not unit-cov). Proves both DB lanes EXECUTE (rule 11): a suite that
+        # did not run leaves its package uncovered and FAILS this gate.
         run: |
-          pytest tests/persistence \
+          pytest tests/persistence tests/realtime \
             --cov=rendly.persistence \
+            --cov=rendly.realtime \
             --cov-config=.coveragerc-persistence \
             --cov-report=term-missing \
             --cov-fail-under=90

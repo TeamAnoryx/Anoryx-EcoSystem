@@ -1,0 +1,271 @@
+"""Async row <-> frozen-domain mapping + chat write/read primitives (R-005).
+
+The async analog of ``identity_repo.py`` for the chat schema (migration 0002): free functions
+that take an explicit ``AsyncSession`` (opened by the caller via
+``async_database.get_tenant_session`` so RLS scopes every statement to the GUC tenant), do the
+narrow work, and leave the commit to the caller. Reconstruction rebuilds the FROZEN domain types
+(``rendly.Channel`` / ``rendly.Membership`` / ``rendly.realtime.Message``) via their constructors
+— ids verbatim (NO canonicalization), timestamps tz-aware UTC, enums rebuilt from their text.
+
+ORDERING (FORK C): :func:`insert_message` assigns the per-channel ``seq`` under a ``SELECT ...
+FOR UPDATE`` row lock on the channel (mirrors ``refresh_store``'s FOR UPDATE rotation lock), so
+concurrent sends in one channel are serialized and seq is strictly monotonic with no gaps.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..channel import Channel
+from ..enums import ChannelSource, ChannelType
+from ..membership import Membership
+from ..realtime.message import Message
+from ..user import User
+from .chat_models import ChannelRow, MembershipRow, MessageRow
+from .identity_repo import user_from_row  # reuse the one row->User mapper (DRY)
+from .models import UserRow
+
+# --- row -> frozen domain --------------------------------------------------------------
+
+
+def channel_from_row(row: ChannelRow) -> Channel:
+    return Channel(
+        channel_id=row.channel_id,
+        tenant_id=row.tenant_id,
+        name=row.name,
+        type=ChannelType(row.type),
+        source=ChannelSource(row.source),
+        external_ref=row.external_ref,
+        created_by=row.created_by,
+        created_at=row.created_at,
+        archived=row.archived,
+    )
+
+
+def message_from_row(row: MessageRow) -> Message:
+    return Message(
+        message_id=row.message_id,
+        tenant_id=row.tenant_id,
+        channel_id=row.channel_id,
+        sender_user_id=row.sender_user_id,
+        content=row.content,
+        content_type=row.content_type,
+        seq=row.seq,
+        created_at=row.created_at,
+        inspection_status=row.inspection_status,
+        inspection_evaluated_at=row.inspection_evaluated_at,
+    )
+
+
+# --- channel + membership writes -------------------------------------------------------
+
+
+async def insert_channel(session: AsyncSession, channel: Channel) -> None:
+    """Insert a channel row under a TENANT session (RLS WITH CHECK binds it to the GUC tenant)."""
+    session.add(
+        ChannelRow(
+            tenant_id=channel.tenant_id,
+            channel_id=channel.channel_id,
+            name=channel.name,
+            type=channel.type.value,
+            source=channel.source.value,
+            external_ref=channel.external_ref,
+            created_by=channel.created_by,
+            created_at=channel.created_at,
+            archived=channel.archived,
+            next_seq=0,
+        )
+    )
+
+
+async def insert_membership(session: AsyncSession, membership: Membership) -> None:
+    """Insert a membership row under a TENANT session.
+
+    The caller MUST build ``membership`` via ``rendly.bind_membership`` (the cross-tenant
+    ``ValueError`` guard runs first); the composite same-tenant FKs + RLS are the next two layers.
+    """
+    session.add(
+        MembershipRow(
+            tenant_id=membership.tenant_id,
+            channel_id=membership.channel_id,
+            user_id=membership.user_id,
+            role=membership.role.value,
+            added_at=membership.added_at,
+        )
+    )
+
+
+async def delete_membership(
+    session: AsyncSession, *, tenant_id: str, channel_id: str, user_id: str
+) -> bool:
+    """Remove a member from a channel. Returns True iff a row was deleted (RLS-scoped).
+
+    Uses a Core DELETE (not an ORM ``session.delete`` of a loaded row): the role-change upsert
+    deletes-then-inserts the SAME primary key in one transaction, and loading the old row into the
+    identity map would make SQLAlchemy treat the colliding-PK insert as an UPDATE (which rendly_app
+    deliberately cannot do). A Core DELETE executes immediately and touches no identity map.
+    """
+    result = await session.execute(
+        delete(MembershipRow).where(
+            MembershipRow.tenant_id == tenant_id,
+            MembershipRow.channel_id == channel_id,
+            MembershipRow.user_id == user_id,
+        )
+    )
+    return result.rowcount > 0
+
+
+# --- channel + membership reads --------------------------------------------------------
+
+
+async def load_channel(session: AsyncSession, *, tenant_id: str, channel_id: str) -> Channel | None:
+    """Load a channel within the session's tenant scope (RLS applies)."""
+    row = (
+        await session.execute(
+            select(ChannelRow).where(
+                ChannelRow.tenant_id == tenant_id, ChannelRow.channel_id == channel_id
+            )
+        )
+    ).scalar_one_or_none()
+    return channel_from_row(row) if row is not None else None
+
+
+async def load_user(session: AsyncSession, *, tenant_id: str, user_id: str) -> User | None:
+    """Load a user within the session's tenant scope (RLS applies on a tenant session).
+
+    Used by the member-management REST path so ``bind_membership`` can run its cross-tenant
+    ``ValueError`` guard on a REAL ``User`` before insert; a user in another tenant is invisible
+    here (RLS -> None), so member-add can only ever target an in-tenant user.
+    """
+    row = (
+        await session.execute(
+            select(UserRow).where(UserRow.tenant_id == tenant_id, UserRow.user_id == user_id)
+        )
+    ).scalar_one_or_none()
+    return user_from_row(row) if row is not None else None
+
+
+async def channel_ids_for_user(session: AsyncSession, *, tenant_id: str, user_id: str) -> list[str]:
+    """The channel ids the user is a member of (the connect-time deliverable-channel set)."""
+    rows = (
+        await session.execute(
+            select(MembershipRow.channel_id).where(
+                MembershipRow.tenant_id == tenant_id, MembershipRow.user_id == user_id
+            )
+        )
+    ).all()
+    return [r[0] for r in rows]
+
+
+async def is_member(
+    session: AsyncSession, *, tenant_id: str, channel_id: str, user_id: str
+) -> bool:
+    """LIVE membership check (send authorization always re-checks the DB, never a cached set)."""
+    row = (
+        await session.execute(
+            select(MembershipRow.user_id).where(
+                MembershipRow.tenant_id == tenant_id,
+                MembershipRow.channel_id == channel_id,
+                MembershipRow.user_id == user_id,
+            )
+        )
+    ).first()
+    return row is not None
+
+
+# --- message write (seq under a per-channel row lock) ----------------------------------
+
+
+async def insert_message(
+    session: AsyncSession,
+    *,
+    message_id: str,
+    tenant_id: str,
+    channel_id: str,
+    sender_user_id: str,
+    content: str,
+    content_type: str,
+    created_at: datetime,
+    inspection_evaluated_at: datetime,
+) -> Message:
+    """Persist a chat message, assigning the per-channel ``seq`` under a row lock.
+
+    FORK C: locks the channel row (``SELECT ... FOR UPDATE``), reads ``next_seq``, writes the
+    message with that seq, and increments the counter — strictly monotonic, gap-free, and
+    serialized per channel. A persisted message has ALWAYS passed inspection
+    (``inspection_status='pass'``); the hash columns stay NULL (R-009). Returns the frozen
+    :class:`Message`. The caller commits.
+    """
+    channel = (
+        await session.execute(
+            select(ChannelRow)
+            .where(ChannelRow.tenant_id == tenant_id, ChannelRow.channel_id == channel_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if channel is None:  # pragma: no cover - defensive; authz already proved the channel exists
+        # Authorization (live is_member, re-checked in this same transaction) proves the sender is
+        # a member, which requires the channel to exist in-tenant — so this is unreachable on the
+        # live path; fail-closed if it ever isn't.
+        raise LookupError("channel not found for the tenant session (RLS-scoped)")
+
+    seq = channel.next_seq
+    session.add(
+        MessageRow(
+            tenant_id=tenant_id,
+            message_id=message_id,
+            channel_id=channel_id,
+            sender_user_id=sender_user_id,
+            content=content,
+            content_type=content_type,
+            seq=seq,
+            created_at=created_at,
+            prev_record_hash=None,  # RESERVED (R-009)
+            content_hash=None,  # RESERVED (R-009)
+            inspection_status="pass",
+            inspection_evaluated_at=inspection_evaluated_at,
+        )
+    )
+    channel.next_seq = seq + 1
+    await session.flush()  # surface FK/CHECK/unique violations before the caller commits
+    return Message(
+        message_id=message_id,
+        tenant_id=tenant_id,
+        channel_id=channel_id,
+        sender_user_id=sender_user_id,
+        content=content,
+        content_type=content_type,
+        seq=seq,
+        created_at=created_at,
+        inspection_status="pass",
+        inspection_evaluated_at=inspection_evaluated_at,
+    )
+
+
+# --- message history (keyset by seq, newest first) -------------------------------------
+
+
+async def load_message_history(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    channel_id: str,
+    limit: int,
+    before_seq: int | None = None,
+) -> list[Message]:
+    """Page a channel's messages newest-first, ordered by the archival ``seq`` (keyset).
+
+    ``before_seq`` is the exclusive upper bound from the previous page's cursor (omit for the
+    first page). Returns up to ``limit`` messages in DESC seq order. RLS scopes to the tenant.
+    """
+    query = select(MessageRow).where(
+        MessageRow.tenant_id == tenant_id, MessageRow.channel_id == channel_id
+    )
+    if before_seq is not None:
+        query = query.where(MessageRow.seq < before_seq)
+    query = query.order_by(MessageRow.seq.desc()).limit(limit)
+    rows = (await session.execute(query)).scalars().all()
+    return [message_from_row(row) for row in rows]
