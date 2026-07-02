@@ -407,6 +407,40 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /channels/{channel_id}/team:
+    parameters:
+      - { $ref: "#/components/parameters/ChannelIdPath" }
+    put:
+      tags: [channels]
+      summary: Map a channel to a team (manual).
+      description: >-
+        Maps the channel to an external team by setting `source` to `delta_team` and storing the
+        opaque tenant-scoped `external_ref` label (the reserved Delta-team seam, populated MANUALLY).
+        Authorized at the channel level: the caller must be an owner or admin of THIS channel, not
+        merely hold the `channels:admin` scope. A DM cannot be team-mapped. The AUTOMATIC Delta-event
+        mapping is not built (it requires Delta team data + an Orchestrator team-event contract that
+        are not shipped); this endpoint is the manual writer only.
+      operationId: mapChannelTeam
+      security: [{ oauth2: ["channels:admin"] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelTeamMap" }
+      responses:
+        "200":
+          description: The channel with its team mapping set.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Channel" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /channels/{channel_id}/messages:
     parameters:
       - { $ref: "#/components/parameters/ChannelIdPath" }
@@ -1001,6 +1035,20 @@ components:
       example:
         name: "eng-platform-archive"
         archived: true
+
+    ChannelTeamMap:
+      type: object
+      additionalProperties: false
+      required: [external_ref]
+      description: >-
+        Manual channel<->team mapping input (PUT /channels/{channel_id}/team). `external_ref` is an
+        opaque tenant-scoped team label; the server sets `source` to `delta_team`. Charset-bounded
+        as a log-injection defense on the reserved seam. The automatic Delta-event mapping is not
+        built — this is the manual writer only.
+      properties:
+        external_ref: { type: string, pattern: "^[A-Za-z0-9._:-]{1,64}$", maxLength: 64 }
+      example:
+        external_ref: "delta.team.eng-42"
 
     ChannelList:
       type: object

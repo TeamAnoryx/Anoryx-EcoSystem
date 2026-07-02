@@ -261,9 +261,13 @@ async def map_channel_team(
         )
         if not decision.allowed:
             raise AuthError(ErrorCode.NOT_FOUND)  # role/tenant/DM deny -> 404 (no oracle)
-        await chat_repo.map_channel_to_team(
+        updated = await chat_repo.map_channel_to_team(
             session, tenant_id=tenant_id, channel_id=channel_id, external_ref=body.external_ref
         )
+        if not updated:
+            # The RLS-scoped UPDATE matched no row (defensive: authorize just proved it exists
+            # in-tenant in this same txn, so this is unreachable on the live path). Fail closed.
+            raise AuthError(ErrorCode.NOT_FOUND)
         await session.commit()
     # Build the response from the pre-loaded channel + the new mapping fields (a Core UPDATE was
     # used, so we do not re-select a possibly-stale identity-map row); the (delta_team, external_ref)

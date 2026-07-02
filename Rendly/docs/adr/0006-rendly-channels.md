@@ -112,6 +112,16 @@ owner/admin member-remove. R-006 routes those existing `PUT`/`DELETE` member end
 `MANAGE_MEMBERS` decision; the matrix documents self-service join/leave semantics for a future task,
 but no new endpoint is added.
 
+### Contract surface (R-001 extension)
+R-001's `openapi.yaml` carried `Channel.source`/`external_ref` (readable) and the `PATCH
+/channels/{id}` (`updateChannel`, rename/archive) endpoint, but defined **no write surface for the
+team mapping** — a gap for the R-006 deliverable. R-006 adds `PUT /channels/{channel_id}/team`
+(`operationId: mapChannelTeam`, `channels:admin`, body `ChannelTeamMap`, responses 200 Channel /
+400 / 401 / 403 / 404 / 500) + the `ChannelTeamMap` schema (`external_ref`, charset-bounded), a
+dedicated single-responsibility mapping endpoint (chosen over overloading `updateChannel`, whose
+documented purpose is rename/archive and which R-005 left unimplemented). The contract remains the
+law — the implementation conforms to this added entry exactly. No other contract change.
+
 ## The single decision point
 
 `realtime/authz.py::authorize(session, *, principal, channel, action, resolver)` is the ONE gate,
@@ -141,6 +151,13 @@ denial is rendered non-oracle (WS `unauthorized` frame; REST tenant-scoped 404).
   can no longer manage a private channel they are not part of (intended — private-channel
   confidentiality). A `DELETE` member on a non-existent channel now resolves 404 (was 204) — a
   no-oracle improvement; re-removing an existing channel's member is still idempotent 204.
+- **DM participant seeding is NOT built (noted gap).** `POST /channels` seeds only the creator as
+  the sole `owner` (R-005, unchanged), and R-006's matrix denies `MANAGE_MEMBERS` on a DM for every
+  role — so a `dm` channel created through the API cannot reach its second participant via any
+  authorized path yet. Denying member management on a DM is the correct policy (a DM's roster is not
+  administrable), but the complementary "seed both participants at DM creation" flow is deferred to a
+  later task; until then a DM is effectively single-occupant. This is disclosed here rather than
+  papered over.
 - A future D-016 + Orchestrator team-event contract provides a Delta-driven `TeamMembershipResolver`
   that resolves `external_ref` → Delta team → member set, failing closed when the feed is
   unavailable. It replaces `ManualResolver` at the seam with no change to `authz.py` or the wire.

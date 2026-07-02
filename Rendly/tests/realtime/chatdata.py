@@ -111,3 +111,36 @@ class RaisingResolver(TeamMembershipResolver):
 
     async def resolve_role(self, session: object, **_: object) -> MembershipResolution:
         raise RuntimeError("team membership backend exploded")
+
+
+class RevokeMembershipDuringInspection(MessageInspector):
+    """Deletes the sender's membership DURING inspection (i.e. AFTER the pre-inspection authorize but
+    BEFORE the atomic in-txn re-check), then returns ``pass``. Proves the send pipeline's TOCTOU
+    close: a membership revoked mid-inspection must be caught by the step-4 re-authorize so the
+    message is NEVER persisted and NEVER delivered — the pass verdict alone must not let it through.
+    Uses a privileged sync session so the DELETE is committed + visible to the re-check's session.
+    """
+
+    async def inspect(
+        self,
+        *,
+        tenant_id: str,
+        channel_id: str,
+        sender_user_id: str,
+        content: str,
+        content_type: str,
+    ) -> InspectionOutcome:
+        from sqlalchemy import text
+
+        from rendly.persistence.database import get_privileged_session
+
+        with get_privileged_session() as session:
+            session.execute(
+                text(
+                    "DELETE FROM rendly.memberships "
+                    "WHERE tenant_id=:t AND channel_id=:c AND user_id=:u"
+                ),
+                {"t": tenant_id, "c": channel_id, "u": sender_user_id},
+            )
+            session.commit()
+        return InspectionOutcome(status="pass", evaluated_at=_now())

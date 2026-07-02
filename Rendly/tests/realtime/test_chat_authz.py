@@ -26,7 +26,12 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import text
 
-from chatdata import RaisingResolver, UnresolvableResolver, recv_until
+from chatdata import (
+    RaisingResolver,
+    RevokeMembershipDuringInspection,
+    UnresolvableResolver,
+    recv_until,
+)
 
 _FULL = "channels:write channels:admin chat:read chat:write"
 _REALTIME = "/v1/realtime"
@@ -478,3 +483,39 @@ def test_resolver_failure_fails_closed_even_for_the_owner(
             {"msg_type": "chat.send", "client_msg_id": "x1", "channel_id": cid, "content": "hi"}
         )
         assert recv_until(ws, "error")["error_code"] == "unauthorized"
+
+
+# --- the send pipeline's atomic re-authorize closes the check->persist TOCTOU ----------------------
+
+
+def test_membership_revoked_during_inspection_blocks_send(
+    make_client, seed_user, mint_token, new_uuid
+):
+    """A member whose membership is revoked DURING inspection (between the pre-inspection authorize
+    and the atomic in-txn re-check) must NOT get one last message through: the step-4 re-authorize
+    denies and nothing is persisted. Proves the headline TOCTOU close with an executable test."""
+    tenant, owner, member = new_uuid(), new_uuid(), new_uuid()
+    for user in (owner, member):
+        seed_user(tenant_id=tenant, user_id=user)
+    # The inspector deletes the sender's membership mid-send, then returns pass.
+    client = make_client(inspector=RevokeMembershipDuringInspection())
+    owner_tok = mint_token(user_id=owner, tenant_id=tenant, scope=_FULL)
+    cid = _create_channel(client, owner_tok)
+    _add_member(client, owner_tok, cid, member, "member")
+    member_tok = mint_token(user_id=member, tenant_id=tenant, scope="chat:read chat:write")
+    with client.websocket_connect(_REALTIME, headers=_auth(member_tok)) as ws:
+        assert ws.receive_json()["msg_type"] == "session.welcome"
+        ws.send_json(
+            {"msg_type": "chat.send", "client_msg_id": "t1", "channel_id": cid, "content": "hi"}
+        )
+        # The pre-inspection authorize passed (still a member), but the revoke landed before the
+        # atomic re-check -> unauthorized, never persisted.
+        assert recv_until(ws, "error")["error_code"] == "unauthorized"
+    from rendly.persistence.database import get_privileged_session
+
+    with get_privileged_session() as session:
+        count = session.execute(
+            text("SELECT count(*) FROM rendly.messages WHERE tenant_id=:t AND channel_id=:c"),
+            {"t": tenant, "c": cid},
+        ).scalar()
+    assert count == 0
