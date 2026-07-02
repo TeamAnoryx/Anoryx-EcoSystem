@@ -6,15 +6,19 @@ path), that a per-tenant service token cannot read another tenant's data:
   1. A-token GET /v1/policies/distributions/{A} → 200; B-token same id → 404 (O-004 LOW-1 closed).
   2. A-token GET /v1/bus/dlq → only A's rows; B-token → none of A's (O-002 DLQ prose closed).
   3. A-token GET /v1/events → A only; ?tenant_id=B → 403 (Fork C).
-  4. distribution POST, A-token, body tenant_id=B → 403 (O-004 LOW-2 closed).
-  5. Direct-DB RLS proof via the raw orchestrator_app (NOBYPASSRLS) conn: GUC→A sees the row,
+  4. Direct-DB RLS proof via the raw orchestrator_app (NOBYPASSRLS) conn: GUC→A sees the row,
      GUC→B sees 0 — the DB blocks a direct cross-tenant query (Windows-robust, mirrors
      test_ingest_e2e.py:208).
-  6. Linux-only: the same isolation through the EXACT runtime path — get_tenant_session (autobegin,
+  5. Linux-only: the same isolation through the EXACT runtime path — get_tenant_session (autobegin,
      no session.begin()) — not just the DB-level equivalent.
 
 Seeding is done on the privileged (BYPASSRLS owner) conn so both tenants' rows exist; the reads
 are the non-stubbed thing under test.
+
+Scope note: the distribution POST stays COARSE relay auth (ORCH_SERVICE_TOKEN) — its inbound
+tenant_id is server-resolved from the signed body, NOT validated against a per-tenant principal
+(O-004 LOW-2 carried forward, because the live Delta budget-engine consumer is a trusted
+multi-tenant relay). This suite therefore proves the READ isolation, not a POST tenant-binding.
 """
 
 from __future__ import annotations
@@ -47,29 +51,6 @@ async def _get(app, path: str, token: str) -> httpx.Response:
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://orch") as client:
         return await client.get(path, headers=_bearer(token))
-
-
-async def _post_distribution(app, body: dict, token: str) -> httpx.Response:
-    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
-    async with httpx.AsyncClient(transport=transport, base_url="http://orch") as client:
-        return await client.post("/v1/policies/distributions", json=body, headers=_bearer(token))
-
-
-def _valid_policy(tenant_id: str) -> dict:
-    """A schema-valid model_denylist policy (passes the locked policy.schema.json)."""
-    return {
-        "policy_type": "model_denylist",
-        "tenant_id": tenant_id,
-        "team_id": str(uuid.uuid4()),
-        "project_id": str(uuid.uuid4()),
-        "agent_id": "gateway-core",
-        "policy_id": str(uuid.uuid4()),
-        "policy_version": 1,
-        "effective_from": "2026-01-01T00:00:00Z",
-        "signature": "aaaaaa.bbbbbb.cccccc",
-        "denied_model_ids": ["gpt-3.5-turbo"],
-        "reason": "authz e2e policy",
-    }
 
 
 async def _seed_event(db_conn, tenant_id: str) -> str:
@@ -220,29 +201,7 @@ async def test_events_read_is_tenant_scoped_and_filter_rejects_cross_tenant(
 
 
 # --------------------------------------------------------------------------- #
-# 4. Distribution POST validates body tenant_id against the principal (O-004 LOW-2 closed).
-# --------------------------------------------------------------------------- #
-
-
-async def test_distribution_post_body_tenant_mismatch_is_403(
-    authz_ready, app, db_conn, seed_query_token
-):
-    tenant_a = str(uuid.uuid4())
-    tenant_b = str(uuid.uuid4())
-    tok_a = await seed_query_token(tenant_a)
-
-    # A-token, but the signed body claims tenant_id=B → 403 REJECTED, before any persist.
-    resp = await _post_distribution(app, {"policy": _valid_policy(tenant_b)}, tok_a)
-    assert resp.status_code == 403, resp.text
-    assert resp.json()["error"]["code"] == "forbidden"
-
-    # A-token with a matching body tenant is accepted (202) — the binding is validated, not a block.
-    ok = await _post_distribution(app, {"policy": _valid_policy(tenant_a)}, tok_a)
-    assert ok.status_code == 202, ok.text
-
-
-# --------------------------------------------------------------------------- #
-# 5. Direct-DB RLS proof via the raw orchestrator_app (NOBYPASSRLS) conn (Windows-robust).
+# 4. Direct-DB RLS proof via the raw orchestrator_app (NOBYPASSRLS) conn (Windows-robust).
 # --------------------------------------------------------------------------- #
 
 
@@ -271,7 +230,7 @@ async def test_direct_db_rls_blocks_cross_tenant(authz_ready, app_db_conn, db_co
 
 
 # --------------------------------------------------------------------------- #
-# 6. Linux/CI: the same isolation through the EXACT runtime path — get_tenant_session.
+# 5. Linux/CI: the same isolation through the EXACT runtime path — get_tenant_session.
 # --------------------------------------------------------------------------- #
 
 

@@ -197,17 +197,20 @@ async def test_submit_endpoint_drives_real_distribution_and_enforces(
     httpx ASGITransport runs the FastAPI BackgroundTask synchronously, so on POST return the
     distribution is already settled. Proves the orchestrator's OWN submit→distribute path
     end-to-end with nothing stubbed, then Sentinel really enforces the distributed allow-list.
-    O-006: the POST is authorized by a per-tenant token whose tenant matches the signed body.
+    O-006: the POST is authorized by the COARSE service token (trusted multi-tenant relay auth);
+    only the GET status read is per-tenant.
     """
     tenant = str(uuid.uuid4())
     await seed_sentinel_tenant(tenant)
-    token = await seed_query_token(tenant)
+    token = await seed_query_token(tenant)  # O-006: per-tenant token for the GET status read
     signed = make_signed_policy("model_allowlist", tenant_id=tenant, allowed_model_ids=["gpt-4o"])
 
     transport = httpx.ASGITransport(app=dist_app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://orch") as client:
         resp = await client.post(
-            "/v1/policies/distributions", json={"policy": signed}, headers=_bearer(token)
+            "/v1/policies/distributions",
+            json={"policy": signed},
+            headers=_bearer(ORCH_SERVICE_TOKEN),
         )
     assert resp.status_code == 202, resp.text
     distribution_id = resp.json()["distribution_id"]

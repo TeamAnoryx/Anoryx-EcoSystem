@@ -1,24 +1,31 @@
 """POST + GET /v1/policies/distributions — the O-001 distribution seam (O-004, ADR-0004).
 
 Mirrors the O-003 ingest router boundary discipline (src/orchestrator/ingest/router.py):
-fail-closed per-tenant auth, parse + structural validation, locked-schema policy validation,
+fail-closed peer auth, parse + structural validation, locked-schema policy validation,
 a NUL guard (a \\x00 cannot be stored in Postgres text/JSONB), then a durable tenant-scoped
 persist (the tenant session AUTOBEGINS — never a nested `session.begin()`; ADR-0026) plus a
 privileged hash-chained audit link, then the async engine is scheduled as a FastAPI
 BackgroundTask and the request returns 202. Any error below the auth boundary propagates to
 the app fail-safe handler (503) — a non-durably-recorded distribution is never 202'd.
 
-AUTH IS PER-TENANT (O-006, ADR-0006, retrofit): the seam now derives a per-tenant principal
-from the presented Bearer via `require_tenant_principal` (the coarse `ORCH_SERVICE_TOKEN` no
-longer grants these reads/writes). POST validates the signed body's `tenant_id` against the
-principal (mismatch → 403, closes O-004 LOW-2). GET status runs the read under the principal's
-RLS session — a cross-tenant lookup is a 404, not another tenant's row (closes O-004 LOW-1).
+AUTH IS SPLIT (O-006, ADR-0006):
+* POST (Delta → Orchestrator distribution WRITE) stays COARSE relay auth via the shared
+  `ORCH_SERVICE_TOKEN` (`_require_bearer`, constant-time compare, fail-closed 401/403). Its
+  `tenant_id` is server-resolved from the signed policy body, NOT validated against a
+  per-tenant principal — the live Delta budget-engine consumer is a trusted multi-tenant relay
+  (one shared credential distributes many tenants' policies), so a per-tenant POST gate would
+  401 the relay. O-004 LOW-2 (inbound tenant_id) is CARRIED FORWARD; closing it needs the Delta
+  consumer to become per-tenant (out of O-006 scope).
+* GET status (READ) is PER-TENANT: it derives a principal from the Bearer via
+  `require_tenant_principal` and runs the read under the principal's RLS session — a
+  cross-tenant lookup is a 404, not another tenant's row (closes O-004 LOW-1).
 The distribution engine + persistence are consumed UNCHANGED.
 """
 
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import re
 import uuid
@@ -44,6 +51,7 @@ from orchestrator.security import require_tenant_principal
 
 router = APIRouter()
 
+_BEARER_PREFIX = "Bearer "
 _MAX_TARGETS = 256
 _SENTINEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _ALLOWED_REQUEST_KEYS = frozenset({"policy", "targets", "sign_on_behalf"})
@@ -59,6 +67,29 @@ def _error(status: int, code: str, message: str, request_id: str) -> JSONRespons
         content={"error": {"code": code, "message": message, "request_id": request_id}},
         headers={"X-Request-Id": request_id},
     )
+
+
+def _require_bearer(
+    request: Request, settings: DistributionSettings, request_id: str
+) -> JSONResponse | None:
+    """Fail-closed bearer peer-auth. Returns an error JSONResponse, or None on success.
+
+    Missing / non-"Bearer " / empty Authorization → 401. If no inbound service token is
+    configured the seam can NEVER match → 401 (fail-closed; an ingest-only deployment is not
+    forced to configure distribution, but the request still requires the token). A present
+    token that mismatches → 403. The compare is constant-time.
+    """
+    header = request.headers.get("Authorization", "")
+    if not header.startswith(_BEARER_PREFIX):
+        return _error(401, "unauthorized", "peer authentication required", request_id)
+    presented = header[len(_BEARER_PREFIX) :]
+    if not presented:
+        return _error(401, "unauthorized", "peer authentication required", request_id)
+    if settings.service_token is None:
+        return _error(401, "unauthorized", "peer authentication required", request_id)
+    if not hmac.compare_digest(presented, settings.service_token):
+        return _error(403, "forbidden", "peer is not authorized", request_id)
+    return None
 
 
 def _request_structure_error(body: dict[str, Any]) -> tuple[str, str] | None:
@@ -153,15 +184,14 @@ def _distribution_status_body(
 
 
 @router.post("/v1/policies/distributions")
-async def submit_distribution(
-    request: Request,
-    background: BackgroundTasks,
-    principal: str = Depends(require_tenant_principal),
-) -> JSONResponse:
+async def submit_distribution(request: Request, background: BackgroundTasks) -> JSONResponse:
     settings: DistributionSettings = request.app.state.distribution_settings
     request_id = _request_id()
 
-    # 1. Per-tenant auth resolved by the require_tenant_principal dependency (fail-closed 401).
+    # 1. Peer auth (fail-closed).
+    auth_error = _require_bearer(request, settings, request_id)
+    if auth_error is not None:
+        return auth_error
 
     # 2. Parse JSON → 422 on malformed / non-object.
     raw_body = await request.body()
@@ -196,18 +226,6 @@ async def submit_distribution(
     policy_id = policy["policy_id"]
     policy_version = policy["policy_version"]
     policy_type = policy["policy_type"]
-
-    # 6b. Inbound tenant binding (O-006 Fork C, closes O-004 LOW-2): the signed body's tenant_id
-    #     is VALIDATED against the authenticated principal, not trusted. A mismatch is rejected
-    #     fail-closed (403) — a shared-token holder can no longer store a distribution under an
-    #     arbitrary tenant.
-    if tenant_id != principal:
-        return _error(
-            403,
-            "forbidden",
-            "policy tenant_id does not match the authenticated principal",
-            request_id,
-        )
 
     # 7. Identity + content hash of the byte-identical signed record (canonical JSON).
     #    distribution_id is an RFC-4122 hyphenated UUID (contract `format: uuid`).

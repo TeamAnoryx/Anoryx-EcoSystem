@@ -101,3 +101,31 @@ on the NOBYPASSRLS role, proven non-stubbed on a fresh DB by re-running the cros
 e2e and by independent direct-DB probes. The three Low items are conformance/robustness
 (L-1, L-2) and an informational hardening note (L-3); L-1/L-2 fixed post-audit, L-3
 documented and deferred. **CLEAN.**
+
+## Post-audit scope amendment
+
+The build this report audited **enforced per-tenant authorization on the distribution POST**
+(`POST /v1/policies/distributions`), and the auditor verified that path directly: probe #5
+("tenant_id spoof: A-token + body `policy.tenant_id=B` → 403 before any persist. PASS") and the
+gate test `test_distribution_post_body_tenant_mismatch_is_403` (A→200 / B→404 line).
+
+After the audit, per Affu, that POST validation was **reverted to coarse relay auth**
+(`ORCH_SERVICE_TOKEN`): the merged Delta budget-engine drainer publishes to the distribution
+POST with the coarse service token as a MULTI-TENANT RELAY (one shared credential distributes
+many tenants' policies), so the per-tenant POST enforcement returned 401 for the relay and broke
+6 Delta→O-004 integration e2e. The distribution POST now stays coarse relay auth — its
+`tenant_id` is server-resolved from the signed policy body, not validated against a per-tenant
+principal — and **O-004 LOW-2 (inbound `tenant_id`) is carried forward**, not closed. The
+`test_distribution_post_body_tenant_mismatch_is_403` assertion was removed accordingly.
+
+**Unaffected — the read-isolation findings and probes still hold.** Everything this report
+verified about the READ path is unchanged by the revert: RLS is structural on the NOBYPASSRLS
+`orchestrator_app` role (probe #1); the GET distribution-status is tenant-scoped, cross-tenant →
+404 with no existence oracle (gate + probe #4); the DLQ read is tenant-scoped, NULL-tenant rows
+operator-only (gate); `/v1/events` is tenant-scoped with `FilterTenantId=B` → 403 (gate); reads
+are metadata-only (probe #3); the three hash chains stay continuous across the migration (probe
+#6); the `query_service_tokens` auth bootstrap reads only under the privileged session and the
+app role is denied SELECT on it (probe #7). The Semgrep pass and the three Low findings (L-1
+cursor 422, L-2 nosemgrep, L-3 unsalted SHA-256) are also unaffected. The verdict on the READ
+seams — **CLEAN** — stands; the single change is that the distribution WRITE (POST) is a
+documented, carried-forward coarse-relay boundary rather than a per-tenant-enforced one.
