@@ -149,3 +149,59 @@ def compute_distribution_row_hash(data: dict[str, Any]) -> str:
 def verify_distribution_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
     """Recompute and compare the distribution row_hash for a single row. True iff it matches."""
     return compute_distribution_row_hash(row_data) == stored_hash
+
+
+# =========================================================================== #
+# Registry-mutation audit chain (O-005, ADR-0005) — ADDITIVE, parallel to the ingest
+# and distribution chains above. Same canonicalization discipline over a distinct field
+# set and a domain-separated genesis so the three chains can never be confused. The
+# ingest + distribution constants/functions above are untouched (byte-identical).
+# =========================================================================== #
+
+# Domain-separated genesis constant, distinct from the ingest + distribution genesis.
+REGISTRY_GENESIS_HASH = hashlib.sha256(b"anoryx-orchestrator:registry-audit:genesis:v1").hexdigest()
+
+# Fields folded into the canonical hash content, in a fixed documented order.
+# prev_hash MUST be last to surface ordering issues clearly.
+REGISTRY_CANONICAL_FIELDS = [
+    "sentinel_id",
+    "action",
+    "disposition",
+    # Chain field — last.
+    "prev_hash",
+]
+
+# Folded in ONLY when non-None (opt-in-when-present). Never add these to
+# REGISTRY_CANONICAL_FIELDS — that would inject "<field>":null into every link and break
+# verification over historical data.
+_REGISTRY_OPTIONAL_FIELDS = ("endpoint", "capabilities", "error_reason")
+
+
+def canonical_registry_json(data: dict[str, Any]) -> bytes:
+    """Serialize registry-mutation row data to canonical JSON: sorted keys, no whitespace, UTF-8.
+
+    Only REGISTRY_CANONICAL_FIELDS are included (missing → None, to prevent omission attacks).
+    Each _REGISTRY_OPTIONAL_FIELDS member is appended ONLY when not None.
+    """
+    filtered: dict[str, Any] = {k: data.get(k) for k in REGISTRY_CANONICAL_FIELDS}
+    for field in _REGISTRY_OPTIONAL_FIELDS:
+        if data.get(field) is not None:
+            filtered[field] = data[field]
+    return json.dumps(filtered, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+
+
+def compute_registry_row_hash(data: dict[str, Any]) -> str:
+    """Return the 64-char lowercase SHA-256 hex digest of the canonical JSON of *data*.
+
+    *data* MUST include 'prev_hash'.
+    """
+    if "prev_hash" not in data:
+        raise ValueError("row data must include 'prev_hash' to compute row_hash")
+    return hashlib.sha256(canonical_registry_json(data)).hexdigest()
+
+
+def verify_registry_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
+    """Recompute and compare the registry row_hash for a single row. True iff it matches."""
+    return compute_registry_row_hash(row_data) == stored_hash

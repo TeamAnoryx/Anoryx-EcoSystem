@@ -16,6 +16,8 @@ from orchestrator.persistence.models.ingest_audit_log import IngestAuditLog
 from orchestrator.persistence.models.ingest_event import IngestEvent
 from orchestrator.persistence.models.policy_distribution import PolicyDistribution
 from orchestrator.persistence.models.policy_distribution_target import PolicyDistributionTarget
+from orchestrator.persistence.models.sentinel_registry import SentinelRegistry
+from orchestrator.persistence.models.sentinel_registry_audit_log import SentinelRegistryAuditLog
 
 __all__ = [
     "Base",
@@ -27,4 +29,7 @@ __all__ = [
     "PolicyDistribution",
     "PolicyDistributionTarget",
     "DistributionAuditLog",
+    # O-005 multi-Sentinel coordination (ADR-0005).
+    "SentinelRegistry",
+    "SentinelRegistryAuditLog",
 ]

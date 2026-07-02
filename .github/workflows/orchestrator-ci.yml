@@ -40,7 +40,7 @@ jobs:
         run: pytest Anoryx-AI-Orchestrator/tests --tb=short -q
 
   orchestrator-integration:
-    name: Integration (ingest + policy distribution; migrations 0001+0002 on Postgres)
+    name: Integration (ingest + distribution + coordination; migrations to 0004 on Postgres)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -102,4 +102,10 @@ jobs:
           # CI Postgres has TLS off; disable asyncpg's SSL probe (also avoids a Windows
           # ConnectionResetError when the same suite is run locally by the auditor).
           ORCH_DB_SSL: disable
+          # O-005: turn the coordination e2e's skip-gate into a HARD FAILURE if the DBs are
+          # unreachable, so the non-stubbed coordination + health e2e provably EXECUTES on a
+          # fresh CI DB (a silent skip can never masquerade as a green gate). The e2e supplies
+          # its registry settings (loopback allowlist, health path, thresholds) via the
+          # coordination_settings test fixture, so no other ORCH_REGISTRY_* env is needed here.
+          ORCH_REQUIRE_COORDINATION_E2E: "1"
         run: pytest tests --tb=short -q

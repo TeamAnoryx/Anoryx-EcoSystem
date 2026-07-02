@@ -73,6 +73,20 @@ async def _intake_route(request: Request) -> JSONResponse:
     return JSONResponse({"result": type(result).__name__}, status_code=_http_status_for(result))
 
 
-def create_shim_app(intake_path: str = "/admin/policies/intake") -> Starlette:
-    """Build the single-route TEST Sentinel intake shim ASGI app."""
-    return Starlette(routes=[Route(intake_path, _intake_route, methods=["POST"])])
+async def _health_route(request: Request) -> JSONResponse:
+    """TEST Sentinel health probe (O-005). The documented-contract stand-in for a readiness
+    route Sentinel does not yet ship (ADR-0005 honesty boundary E1) — a reachability signal,
+    NOT a verified-enforcing signal. No auth (a health probe carries no secret)."""
+    return JSONResponse({"status": "ok"}, status_code=200)
+
+
+def create_shim_app(
+    intake_path: str = "/admin/policies/intake", health_path: str = "/healthz"
+) -> Starlette:
+    """Build the TEST Sentinel shim ASGI app: real intake (POST) + a health probe (GET)."""
+    return Starlette(
+        routes=[
+            Route(intake_path, _intake_route, methods=["POST"]),
+            Route(health_path, _health_route, methods=["GET"]),
+        ]
+    )
