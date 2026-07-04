@@ -1,24 +1,23 @@
 """Non-stubbed per-tenant authorization + read-seam e2e (O-006, ADR-0006) — the acceptance gate.
 
 Proves, on a REAL Postgres with the REAL app (driven over httpx → the real RLS-scoped read
-path), that a per-tenant service token cannot read another tenant's data:
+path), that a per-tenant service token cannot read another tenant's data on the NEW read seams:
 
-  1. A-token GET /v1/policies/distributions/{A} → 200; B-token same id → 404 (O-004 LOW-1 closed).
-  2. A-token GET /v1/bus/dlq → only A's rows; B-token → none of A's (O-002 DLQ prose closed).
-  3. A-token GET /v1/events → A only; ?tenant_id=B → 403 (Fork C).
-  4. Direct-DB RLS proof via the raw orchestrator_app (NOBYPASSRLS) conn: GUC→A sees the row,
+  1. A-token GET /v1/bus/dlq → only A's rows; B-token → none of A's (O-002 DLQ prose closed).
+  2. A-token GET /v1/events → A only; ?tenant_id=B → 403 (Fork C).
+  3. Direct-DB RLS proof via the raw orchestrator_app (NOBYPASSRLS) conn: GUC→A sees the row,
      GUC→B sees 0 — the DB blocks a direct cross-tenant query (Windows-robust, mirrors
      test_ingest_e2e.py:208).
-  5. Linux-only: the same isolation through the EXACT runtime path — get_tenant_session (autobegin,
+  4. Linux-only: the same isolation through the EXACT runtime path — get_tenant_session (autobegin,
      no session.begin()) — not just the DB-level equivalent.
 
 Seeding is done on the privileged (BYPASSRLS owner) conn so both tenants' rows exist; the reads
 are the non-stubbed thing under test.
 
-Scope note: the distribution POST stays COARSE relay auth (ORCH_SERVICE_TOKEN) — its inbound
-tenant_id is server-resolved from the signed body, NOT validated against a per-tenant principal
-(O-004 LOW-2 carried forward, because the live Delta budget-engine consumer is a trusted
-multi-tenant relay). This suite therefore proves the READ isolation, not a POST tenant-binding.
+Scope note: BOTH the distribution GET-status and POST stay COARSE relay auth (ORCH_SERVICE_TOKEN)
+— the live Delta budget-engine consumer is a trusted multi-tenant relay on both the read and
+write of that seam, so O-004 LOW-1 AND LOW-2 are both carried forward. This suite therefore
+proves the READ isolation of the NEW seams (/v1/events, /v1/bus/dlq), not the distribution seam.
 """
 
 from __future__ import annotations
@@ -94,44 +93,7 @@ async def _seed_dlq(db_conn, tenant_id: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# 1. GET distribution-status is tenant-scoped (O-004 LOW-1 closed).
-# --------------------------------------------------------------------------- #
-
-
-async def test_distribution_status_is_tenant_scoped(
-    authz_ready, app, db_conn, seed_query_token, seed_distribution
-):
-    tenant_a = str(uuid.uuid4())
-    tenant_b = str(uuid.uuid4())
-    tok_a = await seed_query_token(tenant_a)
-    tok_b = await seed_query_token(tenant_b)
-
-    distribution_id = uuid.uuid4().hex
-    signed = {
-        "policy_id": str(uuid.uuid4()),
-        "policy_version": 1,
-        "policy_type": "model_denylist",
-        "tenant_id": tenant_a,
-    }
-    await seed_distribution(
-        distribution_id=distribution_id,
-        tenant_id=tenant_a,
-        signed_record=signed,
-        sentinel_ids=["sentinel-a"],
-    )
-
-    ok = await _get(app, f"/v1/policies/distributions/{distribution_id}", tok_a)
-    assert ok.status_code == 200, ok.text
-    assert ok.json()["distribution_id"] == distribution_id
-
-    # B may not read A's distribution — cross-tenant lookup is a 404 (no existence oracle).
-    cross = await _get(app, f"/v1/policies/distributions/{distribution_id}", tok_b)
-    assert cross.status_code == 404, cross.text
-    assert cross.json()["error"]["code"] == "not_found"
-
-
-# --------------------------------------------------------------------------- #
-# 2. GET /v1/bus/dlq is tenant-scoped (O-002 DLQ-read prose deferral closed).
+# 1. GET /v1/bus/dlq is tenant-scoped (O-002 DLQ-read prose deferral closed).
 # --------------------------------------------------------------------------- #
 
 
@@ -161,7 +123,7 @@ async def test_dlq_read_is_tenant_scoped(authz_ready, app, db_conn, seed_query_t
 
 
 # --------------------------------------------------------------------------- #
-# 3. GET /v1/events is tenant-scoped + FilterTenantId=B → 403 (Fork C).
+# 2. GET /v1/events is tenant-scoped + FilterTenantId=B → 403 (Fork C).
 # --------------------------------------------------------------------------- #
 
 
@@ -201,7 +163,7 @@ async def test_events_read_is_tenant_scoped_and_filter_rejects_cross_tenant(
 
 
 # --------------------------------------------------------------------------- #
-# 4. Direct-DB RLS proof via the raw orchestrator_app (NOBYPASSRLS) conn (Windows-robust).
+# 3. Direct-DB RLS proof via the raw orchestrator_app (NOBYPASSRLS) conn (Windows-robust).
 # --------------------------------------------------------------------------- #
 
 
@@ -230,7 +192,7 @@ async def test_direct_db_rls_blocks_cross_tenant(authz_ready, app_db_conn, db_co
 
 
 # --------------------------------------------------------------------------- #
-# 5. Linux/CI: the same isolation through the EXACT runtime path — get_tenant_session.
+# 4. Linux/CI: the same isolation through the EXACT runtime path — get_tenant_session.
 # --------------------------------------------------------------------------- #
 
 

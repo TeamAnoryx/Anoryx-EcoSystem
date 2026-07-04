@@ -1,25 +1,16 @@
 """POST + GET /v1/policies/distributions — the O-001 distribution seam (O-004, ADR-0004).
 
 Mirrors the O-003 ingest router boundary discipline (src/orchestrator/ingest/router.py):
-fail-closed peer auth, parse + structural validation, locked-schema policy validation,
+fail-closed bearer peer-auth, parse + structural validation, locked-schema policy validation,
 a NUL guard (a \\x00 cannot be stored in Postgres text/JSONB), then a durable tenant-scoped
 persist (the tenant session AUTOBEGINS — never a nested `session.begin()`; ADR-0026) plus a
 privileged hash-chained audit link, then the async engine is scheduled as a FastAPI
 BackgroundTask and the request returns 202. Any error below the auth boundary propagates to
 the app fail-safe handler (503) — a non-durably-recorded distribution is never 202'd.
 
-AUTH IS SPLIT (O-006, ADR-0006):
-* POST (Delta → Orchestrator distribution WRITE) stays COARSE relay auth via the shared
-  `ORCH_SERVICE_TOKEN` (`_require_bearer`, constant-time compare, fail-closed 401/403). Its
-  `tenant_id` is server-resolved from the signed policy body, NOT validated against a
-  per-tenant principal — the live Delta budget-engine consumer is a trusted multi-tenant relay
-  (one shared credential distributes many tenants' policies), so a per-tenant POST gate would
-  401 the relay. O-004 LOW-2 (inbound tenant_id) is CARRIED FORWARD; closing it needs the Delta
-  consumer to become per-tenant (out of O-006 scope).
-* GET status (READ) is PER-TENANT: it derives a principal from the Bearer via
-  `require_tenant_principal` and runs the read under the principal's RLS session — a
-  cross-tenant lookup is a 404, not another tenant's row (closes O-004 LOW-1).
-The distribution engine + persistence are consumed UNCHANGED.
+PEER AUTH IS COARSE-GRAINED (O-001 honesty boundary d): the inbound service token is a single
+shared bearer, not per-tenant. Per-tenant authorization is O-006. The GET status read is
+documented as a coarse-grained read in its handler docstring.
 """
 
 from __future__ import annotations
@@ -32,7 +23,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 
 from orchestrator.boundary import contains_nul
@@ -47,7 +38,6 @@ from orchestrator.persistence.repositories import (
     list_distribution_targets,
 )
 from orchestrator.schema_validation import policy_schema_errors
-from orchestrator.security import require_tenant_principal
 
 router = APIRouter()
 
@@ -291,24 +281,36 @@ async def submit_distribution(request: Request, background: BackgroundTasks) -> 
 
 
 @router.get("/v1/policies/distributions/{distribution_id}")
-async def get_distribution_status(
-    distribution_id: str,
-    principal: str = Depends(require_tenant_principal),
-) -> JSONResponse:
-    """Return DistributionStatus for *distribution_id* (TENANT-SCOPED read, O-006, closes LOW-1).
+async def get_distribution_status(distribution_id: str, request: Request) -> JSONResponse:
+    """Return DistributionStatus for *distribution_id* (COARSE-GRAINED read).
 
-    The caller's per-tenant principal is derived from the Bearer (require_tenant_principal); the
-    read runs DIRECTLY under get_tenant_session(principal), so RLS returns the row only if it
-    belongs to that tenant. A cross-tenant (or absent) id is indistinguishable from not-found —
-    a 404, never another tenant's metadata and never an existence oracle. The old privileged
-    pre-resolve (the O-004 LOW-1 hole) is gone. READ-ONLY METADATA (honesty boundary c): no
-    policy body, no mutation.
+    The inbound bearer is a SINGLE shared service token, not a per-caller/per-tenant credential
+    (O-001 honesty boundary d), so any token holder can look up any distribution by id — there
+    is no per-caller isolation here. The path id carries no tenant and RLS needs the GUC set
+    before a tenant read, so we resolve the row's owning tenant_id under a PRIVILEGED (BYPASSRLS)
+    session, then RE-READ the distribution + its targets under get_tenant_session(tenant_id).
+    That re-read confirms structural RLS consistency for the resolved tenant (the app role only
+    sees the row if RLS admits it) and yields a 404 when the row is not visible — it is NOT
+    per-caller authorization. Honest scope: per-tenant caller binding (so a caller may read only
+    its OWN tenant's distributions) is deferred to O-006.
     """
+    settings: DistributionSettings = request.app.state.distribution_settings
     request_id = _request_id()
 
-    # Read under the principal's tenant session — RLS is the structural scope (no privileged
-    # pre-resolve). Not visible under the principal's RLS → 404.
-    async with get_tenant_session(principal) as session:
+    auth_error = _require_bearer(request, settings, request_id)
+    if auth_error is not None:
+        return auth_error
+
+    # Resolve the owning tenant under the privileged session — the path id has no tenant
+    # context and a tenant read needs the GUC set first.
+    async with get_privileged_session() as psession:
+        meta = await get_distribution(psession, distribution_id)
+    if meta is None:
+        return _error(404, "not_found", "distribution not found", request_id)
+    tenant_id = meta["tenant_id"]
+
+    # Re-read under the tenant session so the response is RLS-confirmed (fail-closed).
+    async with get_tenant_session(tenant_id) as session:
         dist = await get_distribution(session, distribution_id)
         if dist is None:
             return _error(404, "not_found", "distribution not found", request_id)

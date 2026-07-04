@@ -1,13 +1,9 @@
-"""Unit tests for the POST + GET /v1/policies/distributions boundary (O-004 + O-006). No DB.
+"""Unit tests for the POST /v1/policies/distributions boundary (O-004, ADR-0004). No DB.
 
-Every case returns at or before the tenant-session persist — strictly BEFORE any Postgres — so
-no DB is needed. AUTH IS SPLIT (O-006): the POST WRITE keeps the COARSE service-token peer gate
-(`_require_bearer`, ORCH_SERVICE_TOKEN — 401 on missing/empty/non-Bearer/unconfigured, 403 on a
-present-but-wrong token); its inbound `tenant_id` is server-resolved from the signed body, NOT
-validated against a principal (O-004 LOW-2 carried forward — the live Delta budget-engine
-consumer is a trusted multi-tenant relay). The GET status READ is per-tenant
-(require_tenant_principal): a missing/malformed Bearer → 401 (before any DB), and an id not
-visible under the principal's RLS session → 404 (closes O-004 LOW-1).
+Every case here returns at or before structural / schema / NUL validation — strictly BEFORE
+the tenant-session persist — so no Postgres is needed: fail-closed bearer auth (401/403), JSON
++ structural request validation (422), locked policy-schema validation (422), the NUL guard
+(422), and the sign_on_behalf=false constraint (422).
 """
 
 from __future__ import annotations
@@ -18,39 +14,30 @@ import uuid
 import httpx
 import pytest
 
-from orchestrator.security import require_tenant_principal
-
 _SERVICE_TOKEN = "unit-orch-service-token"  # noqa: S105 - test-only fake
-_PRINCIPAL = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
 
 @pytest.fixture
 def app(monkeypatch):
-    """The app with the coarse POST service token set; GET uses the real per-tenant gate."""
+    """Construct the orchestrator app with a service token and no DB access on these paths."""
     monkeypatch.setenv("ORCH_INGEST_HMAC_SECRET", "unit-ingest-secret")
     monkeypatch.setenv("ORCH_SERVICE_TOKEN", _SERVICE_TOKEN)
     monkeypatch.delenv("ORCH_DISTRIBUTION_TARGETS", raising=False)
+
     from orchestrator.app import create_app
 
     return create_app()
 
 
-@pytest.fixture
-def authed_app(app):
-    """The app with the GET principal dep overridden to a fixed tenant (no DB in the gate)."""
-    app.dependency_overrides[require_tenant_principal] = lambda: _PRINCIPAL
-    return app
-
-
-def _valid_policy(tenant_id: str | None = None) -> dict:
+def _valid_policy() -> dict:
     """A schema-valid model_denylist policy with a well-formed (unverified) signature.
 
-    The router only STRUCTURALLY validates the policy (Sentinel intake is the verifying
-    authority), so a syntactically valid signature is sufficient here.
+    The router only STRUCTURALLY validates the policy (it never verifies the JWS — Sentinel
+    intake is the verifying authority), so a syntactically valid signature is sufficient here.
     """
     return {
         "policy_type": "model_denylist",
-        "tenant_id": tenant_id or str(uuid.uuid4()),
+        "tenant_id": str(uuid.uuid4()),
         "team_id": str(uuid.uuid4()),
         "project_id": str(uuid.uuid4()),
         "agent_id": "gateway-core",
@@ -63,10 +50,6 @@ def _valid_policy(tenant_id: str | None = None) -> dict:
     }
 
 
-def _auth() -> dict[str, str]:
-    return {"Authorization": f"Bearer {_SERVICE_TOKEN}"}
-
-
 async def _post(app, *, headers=None, json=None, content=None) -> httpx.Response:
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://orch") as client:
@@ -75,38 +58,25 @@ async def _post(app, *, headers=None, json=None, content=None) -> httpx.Response
         )
 
 
-async def _get(app, distribution_id: str, *, headers=None) -> httpx.Response:
-    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
-    async with httpx.AsyncClient(transport=transport, base_url="http://orch") as client:
-        return await client.get(
-            f"/v1/policies/distributions/{distribution_id}", headers=headers or {}
-        )
-
-
-# --------------------------------------------------------------------------- #
-# POST auth gate (coarse service token): 401 missing/empty/non-Bearer, 403 wrong token.
-# --------------------------------------------------------------------------- #
-
-
-async def test_post_missing_authorization_is_401(app):
+async def test_missing_authorization_is_401(app):
     resp = await _post(app, json={"policy": _valid_policy()})
     assert resp.status_code == 401
     assert resp.json()["error"]["code"] == "unauthorized"
 
 
-async def test_post_non_bearer_authorization_is_401(app):
+async def test_non_bearer_authorization_is_401(app):
     resp = await _post(
         app, headers={"Authorization": "Basic abc"}, json={"policy": _valid_policy()}
     )
     assert resp.status_code == 401
 
 
-async def test_post_empty_bearer_is_401(app):
+async def test_empty_bearer_is_401(app):
     resp = await _post(app, headers={"Authorization": "Bearer "}, json={"policy": _valid_policy()})
     assert resp.status_code == 401
 
 
-async def test_post_wrong_bearer_is_403(app):
+async def test_wrong_bearer_is_403(app):
     resp = await _post(
         app, headers={"Authorization": "Bearer not-the-token"}, json={"policy": _valid_policy()}
     )
@@ -114,9 +84,8 @@ async def test_post_wrong_bearer_is_403(app):
     assert resp.json()["error"]["code"] == "forbidden"
 
 
-# --------------------------------------------------------------------------- #
-# Structural / schema / NUL 422s (coarse-authed; all fire before tenant extraction).
-# --------------------------------------------------------------------------- #
+def _auth() -> dict[str, str]:
+    return {"Authorization": f"Bearer {_SERVICE_TOKEN}"}
 
 
 async def test_non_json_body_is_422(app):
@@ -145,12 +114,15 @@ async def test_sign_on_behalf_true_is_422(app):
 
 
 async def test_policy_schema_invalid_is_422(app):
+    # Missing required fields (only policy_type present) → locked policy.schema.json fails.
     resp = await _post(app, headers=_auth(), json={"policy": {"policy_type": "model_allowlist"}})
     assert resp.status_code == 422
     assert resp.json()["error"]["code"] == "policy_schema_invalid"
 
 
 async def test_nul_in_policy_is_422(app):
+    # Schema-valid policy carrying a NUL in a string field → the NUL guard rejects (422),
+    # since \x00 cannot be stored in Postgres text/JSONB (deterministic terminal disposition).
     policy = _valid_policy()
     policy["reason"] = "blocked\x00now"
     resp = await _post(app, headers=_auth(), json={"policy": policy})
@@ -160,8 +132,18 @@ async def test_nul_in_policy_is_422(app):
 
 
 # --------------------------------------------------------------------------- #
-# GET /v1/policies/distributions/{id} — per-tenant auth (401) + not-visible (404), no DB.
+# GET /v1/policies/distributions/{distribution_id} — auth + not-found (no DB).
+# 401/403 decide at the auth boundary before any read; the 404 case mocks the
+# repository boundary (and a fake privileged session) so no Postgres is touched.
 # --------------------------------------------------------------------------- #
+
+
+async def _get(app, distribution_id: str, *, headers=None) -> httpx.Response:
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://orch") as client:
+        return await client.get(
+            f"/v1/policies/distributions/{distribution_id}", headers=headers or {}
+        )
 
 
 async def test_get_missing_authorization_is_401(app):
@@ -170,26 +152,28 @@ async def test_get_missing_authorization_is_401(app):
     assert resp.json()["error"]["code"] == "unauthorized"
 
 
-async def test_get_non_bearer_authorization_is_401(app):
-    resp = await _get(app, str(uuid.uuid4()), headers={"Authorization": "Basic abc"})
-    assert resp.status_code == 401
+async def test_get_wrong_bearer_is_403(app):
+    resp = await _get(app, str(uuid.uuid4()), headers={"Authorization": "Bearer not-the-token"})
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "forbidden"
 
 
-async def test_get_not_visible_under_principal_is_404(authed_app, monkeypatch):
-    # The GET reads DIRECTLY under the principal's tenant session (no privileged pre-resolve).
-    # A fake tenant-session CM + a get_distribution that resolves nothing → 404 before any DB.
+async def test_get_unknown_distribution_is_404(app, monkeypatch):
+    # Mock at the repository boundary so this stays a no-DB unit test: a fake privileged
+    # session context manager (never opens a real connection) + a get_distribution that
+    # resolves nothing → the handler returns 404 before any tenant read.
     from orchestrator.distribution import router as dist_router
 
     @contextlib.asynccontextmanager
-    async def _fake_tenant_session(_tenant_id):
+    async def _fake_privileged_session():
         yield object()
 
     async def _no_distribution(_session, _distribution_id):
         return None
 
-    monkeypatch.setattr(dist_router, "get_tenant_session", _fake_tenant_session)
+    monkeypatch.setattr(dist_router, "get_privileged_session", _fake_privileged_session)
     monkeypatch.setattr(dist_router, "get_distribution", _no_distribution)
 
-    resp = await _get(authed_app, str(uuid.uuid4()))
+    resp = await _get(app, str(uuid.uuid4()), headers=_auth())
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "not_found"

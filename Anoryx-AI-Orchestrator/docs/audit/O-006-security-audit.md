@@ -118,14 +118,31 @@ many tenants' policies), so the per-tenant POST enforcement returned 401 for the
 principal — and **O-004 LOW-2 (inbound `tenant_id`) is carried forward**, not closed. The
 `test_distribution_post_body_tenant_mismatch_is_403` assertion was removed accordingly.
 
-**Unaffected — the read-isolation findings and probes still hold.** Everything this report
-verified about the READ path is unchanged by the revert: RLS is structural on the NOBYPASSRLS
-`orchestrator_app` role (probe #1); the GET distribution-status is tenant-scoped, cross-tenant →
-404 with no existence oracle (gate + probe #4); the DLQ read is tenant-scoped, NULL-tenant rows
-operator-only (gate); `/v1/events` is tenant-scoped with `FilterTenantId=B` → 403 (gate); reads
-are metadata-only (probe #3); the three hash chains stay continuous across the migration (probe
-#6); the `query_service_tokens` auth bootstrap reads only under the privileged session and the
-app role is denied SELECT on it (probe #7). The Semgrep pass and the three Low findings (L-1
-cursor 422, L-2 nosemgrep, L-3 unsalted SHA-256) are also unaffected. The verdict on the READ
-seams — **CLEAN** — stands; the single change is that the distribution WRITE (POST) is a
-documented, carried-forward coarse-relay boundary rather than a per-tenant-enforced one.
+**Further amendment — the distribution GET-status was ALSO reverted to coarse relay auth.**
+The build this report audited additionally enforced per-tenant scoping on the distribution
+GET-status (`GET /v1/policies/distributions/{id}`), verified by probe #4 ("Existence oracle:
+cross-tenant GET distribution → 404. PASS") and the gate test
+`test_distribution_status_is_tenant_scoped` (A→200 / B→404). Per Affu, that GET scoping was
+reverted for the same reason as the POST: the live Delta budget-engine consumer reads the
+distribution seam COARSELY as a trusted multi-tenant relay, so a per-tenant read gate would 401
+it. The GET-status now stays coarse relay auth (the owning tenant is resolved from the stored
+row under the privileged session, as in origin/main). Consequently **probe #4 (the
+existence-oracle 404 on the distribution GET) and the removed
+`test_distribution_status_is_tenant_scoped` no longer apply**, and **O-004 LOW-1 (cross-tenant
+distribution read) is carried forward alongside LOW-2** — both distribution seam directions
+(GET-status + POST) are documented, carried-forward coarse-relay boundaries.
+
+**Unaffected — the NEW read-seam isolation findings and probes still hold.** Everything this
+report verified about the `/v1/events` + `/v1/bus/dlq` READ path is unchanged by the two
+reverts: RLS is structural on the NOBYPASSRLS `orchestrator_app` role (probe #1); the DLQ read
+is tenant-scoped, NULL-tenant rows operator-only (gate); `/v1/events` is tenant-scoped with
+`FilterTenantId=B` → 403 (gate); reads are metadata-only (probe #3); the token trust root has
+no enumeration oracle, plaintext never stored (probe #2); the `query_service_tokens` auth
+bootstrap reads only under the privileged session and the app role is denied SELECT on it
+(probe #7); the three hash chains stay continuous across the migration (probe #6); and the
+direct-DB RLS proof (GUC→A sees the row, GUC→B sees 0 on the raw `orchestrator_app` conn) is
+unchanged. The Semgrep pass and the three Low findings (L-1 cursor 422, L-2 nosemgrep, L-3
+unsalted SHA-256) are also unaffected. The verdict on the NEW read seams — **CLEAN** — stands;
+the single net change from the audited build is that BOTH distribution seam directions
+(GET-status + POST) are documented, carried-forward coarse-relay boundaries rather than
+per-tenant-enforced ones.

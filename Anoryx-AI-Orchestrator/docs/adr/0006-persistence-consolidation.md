@@ -6,23 +6,27 @@
 - Builds on: ADR-0001 (internal API contract), ADR-0002 (event-bus contract), ADR-0003
   (O-003 ingest persistence), ADR-0004 (O-004 policy distribution), ADR-0005 (O-005
   coordination)
-- Supersedes: nothing. Tightens the O-001/O-002/O-004 READ seams from
-  coarse-grained to per-tenant; the distribution WRITE (POST) stays coarse relay auth (O-004
-  LOW-2 carried forward). Consumes O-004 distribution + O-005 coordination unchanged.
+- Supersedes: nothing. Tightens the NEW O-001/O-002 READ seams (`/v1/events`, `/v1/bus/dlq`)
+  from coarse-grained to per-tenant; the O-004 distribution seam — BOTH the GET-status and the
+  WRITE (POST) — stays coarse relay auth (O-004 LOW-1 and LOW-2 both carried forward). Consumes
+  O-004 distribution + O-005 coordination unchanged.
 
 ## Context
 
 O-003/O-004/O-005 each stood up a minimal slice of persistence and **deferred**
 cross-cutting tenant-isolation to "the persistence task." This is that task. O-006:
 
-1. **Closes the O-004 cross-tenant READ hole (LOW-1); carries the inbound-`tenant_id` write
-   finding (LOW-2) forward.**
+1. **Carries BOTH O-004 findings forward: the cross-tenant READ hole (LOW-1) and the
+   inbound-`tenant_id` write finding (LOW-2).**
    - **O-004 audit LOW-1** (`docs/audit/O-004-security-audit.md`): `GET
      /v1/policies/distributions/{id}` is coarse — the handler resolves the owning tenant
      *from the stored row* under a privileged BYPASSRLS session, so any holder of the
      single shared `ORCH_SERVICE_TOKEN` reads *any* tenant's distribution metadata
-     (`distribution/router.py`). **CLOSED in O-006** — the GET status read now runs under the
-     principal's RLS session.
+     (`distribution/router.py`). **CARRIED FORWARD, not closed in O-006** — the initial
+     per-tenant scoping was reverted: the live Delta budget-engine consumer reads this
+     GET-status seam COARSELY as a trusted multi-tenant relay (one shared credential serves
+     many tenants), so a per-tenant read gate would 401 the relay. The GET-status read stays
+     coarse relay auth.
    - **O-004 audit LOW-2** (§3.1 step 5 of ADR-0004): inbound distribution `tenant_id` is
      taken from the signed policy body (`distribution/router.py`) and never validated against
      the caller. A shared-token holder can store a distribution under any tenant. **CARRIED
@@ -69,14 +73,14 @@ stays (mTLS → O-008), but the Bearer now resolves to a tenant.
 | **C** — inbound `tenant_id` trust | **C1 (reverted post-merge → coarse relay):** the distribution POST stays COARSE relay auth (`ORCH_SERVICE_TOKEN`); its body `tenant_id` is server-resolved from the signed policy, NOT validated against a per-tenant principal. Per-tenant POST auth 401s the live Delta budget-engine relay (one shared credential, many tenants), so **O-004 LOW-2 is CARRIED FORWARD, not closed.** |
 | **D** — DLQ metadata scoping | **D1**: tenant-scope DLQ reads. `dead_letter_queue` **already** has a nullable `tenant_id` + RLS (O-003); the read seam simply runs on a tenant session. **No schema change to the DLQ table.** NULL-tenant (payload-invalid) rows stay operator-only (RLS-invisible to every tenant). |
 | **E** — read-seam exposure | **E1**: bounded, tenant-scoped, metadata-only. The contract already dictates cursor pagination, `Limit` caps, and no-payload responses; implement exactly to it. |
-| **F** (premise gap) — the principal | **F1**: per-tenant service tokens. New `query_service_tokens` table maps a hashed Bearer → `tenant_id`; the query/bus/distribution seams derive `principal.tenant_id` from the presented token. |
-| Inbound **scope** | **Reads only; POST deferred.** The distribution POST (Delta→Orch write) stays COARSE relay auth: its `tenant_id` is server-resolved from the signed body, NOT validated against a per-tenant principal — the live Delta budget-engine consumer is a trusted multi-tenant RELAY (one shared credential distributes many tenants' policies), so a per-tenant POST gate would 401 it (O-004 LOW-2 carried forward). **Ingest (Sentinel→Orch) likewise stays a trusted multi-tenant relay** — one Sentinel peer legitimately emits events for many tenants; a per-tenant HMAC would break the single-peer model. Both keep their coarse peer check + structural invariants, documented below as explicit (unclosed) honesty boundaries. |
+| **F** (premise gap) — the principal | **F1**: per-tenant service tokens. New `query_service_tokens` table maps a hashed Bearer → `tenant_id`; the NEW query/bus read seams derive `principal.tenant_id` from the presented token. |
+| Inbound **scope** | **New read seams only; the distribution seam (GET-status + POST) deferred.** BOTH the distribution GET-status and the POST (Delta→Orch) stay COARSE relay auth: on the POST the `tenant_id` is server-resolved from the signed body, NOT validated against a per-tenant principal — the live Delta budget-engine consumer is a trusted multi-tenant RELAY (one shared credential serves many tenants' policies) on BOTH the read and the write of that seam, so a per-tenant gate would 401 it (O-004 LOW-1 and LOW-2 both carried forward). **Ingest (Sentinel→Orch) likewise stays a trusted multi-tenant relay** — one Sentinel peer legitimately emits events for many tenants; a per-tenant HMAC would break the single-peer model. All keep their coarse peer check + structural invariants, documented below as explicit (unclosed) honesty boundaries. |
 
 ### Locked (not forks)
 
-- **Consume O-004 distribution + O-005 coordination unchanged.** O-006 adds a per-tenant authz
-  layer in front of the O-004 GET seam and builds new read seams (the POST keeps its coarse
-  relay auth); it does **not** alter
+- **Consume O-004 distribution + O-005 coordination unchanged.** O-006 builds new per-tenant
+  read seams (`/v1/events`, `/v1/bus/dlq`); the O-004 distribution GET-status and POST keep
+  their coarse relay auth; it does **not** alter
   `distribution/engine.py`, the coordinator, the registry, or health. The O-005
   `/v1/policies/coordinate` path (gated by `ORCH_ADMIN_TOKEN`, persists rows internally
   via `get_tenant_session`) is untouched.
@@ -154,9 +158,10 @@ hash → lookup → return `tenant_id` or `None`. A shared FastAPI dependency
 resolver, and raises 401 on miss. Every tenant-scoped seam depends on it; the read then runs
 under `get_tenant_session(principal_tenant_id)` so RLS is the structural enforcer.
 
-`ORCH_SERVICE_TOKEN` (the old coarse peer token) **no longer grants tenant-data reads** —
-the query/bus/distribution seams require a per-tenant token. This is the intended tightening
-(the coarse token had no legitimate cross-tenant read grant). Operator cross-tenant / NULL-
+`ORCH_SERVICE_TOKEN` (the coarse peer token) **still gates the distribution GET-status + POST
+as a trusted multi-tenant relay**; the NEW query/bus read seams (`/v1/events`, `/v1/bus/dlq`)
+instead require a per-tenant token. This is the intended tightening on the new seams (the
+coarse token had no legitimate cross-tenant read grant on those). Operator cross-tenant / NULL-
 tenant DLQ triage is **not** exposed via the API in O-006 (operators inspect the DB
 directly; an operator DLQ seam is deferred).
 
@@ -182,12 +187,14 @@ non-object JSON cursor, an out-of-BIGINT-range sequence, and an unparseable DLQ 
 caught in the decoder rather than surfacing as a DB `DataError`. The contract's `GET /v1/events`
 and `GET /v1/bus/dlq` operations were updated to document this `422` response.
 
-## Distribution seam retrofit (no engine change)
+## Distribution seam (no engine change; coarse relay auth retained)
 
-- **GET status** (`distribution/router.py:283-323`): replace the privileged pre-resolve +
-  re-read with `principal → get_tenant_session(principal) → get_distribution(session, id)`.
-  RLS returns the row only if it belongs to the principal; otherwise **404** (cross-tenant
-  lookups are indistinguishable from not-found — no existence oracle).
+- **GET status** (`distribution/router.py:283-323`): stays COARSE relay auth — the initial
+  per-tenant retrofit (`principal → get_tenant_session → get_distribution`) was reverted. The
+  handler resolves the owning tenant from the stored row under the privileged session as
+  before; the live Delta budget-engine consumer reads this seam coarsely as a trusted
+  multi-tenant relay, so a per-tenant read gate would 401 it. **O-004 LOW-1 is carried
+  forward.** `distribution/router.py` is therefore byte-identical to origin/main.
 - **POST** (`distribution/router.py`): stays COARSE relay auth via `_require_bearer`
   (`ORCH_SERVICE_TOKEN`, constant-time compare, fail-closed 401/403). The body `tenant_id` is
   server-resolved from the signed policy, NOT validated against a per-tenant principal — the
@@ -196,15 +203,15 @@ and `GET /v1/bus/dlq` operations were updated to document this `422` response.
 
 ## Honesty boundaries (verbatim — non-removable)
 
-- **GET distribution-status, `GET /v1/events`, and `GET /v1/bus/dlq` are now
-  tenant-scoped.** A per-tenant service token establishes the principal; reads run under
-  that tenant's RLS session; a token cannot read another tenant's data. (Closes O-004 LOW-1
-  and the O-002 DLQ-read prose deferral.)
-- **The distribution POST remains coarse relay auth (`ORCH_SERVICE_TOKEN`); its `tenant_id`
-  is server-resolved from the signed body, not validated against a per-tenant principal —
-  O-004 LOW-2 is carried forward, because the live Delta consumer is a trusted multi-tenant
-  relay. Only the READ seams (GET status, `/v1/events`, `/v1/bus/dlq`) are tenant-scoped in
-  O-006.**
+- **`GET /v1/events` and `GET /v1/bus/dlq` are tenant-scoped.** A per-tenant service token
+  establishes the principal; these NEW reads run under that tenant's RLS session; a token
+  cannot read another tenant's event / DLQ data. (Closes the O-002 DLQ-read prose deferral and
+  builds the O-001/O-002 read seams.)
+- **The distribution GET-status and POST both remain coarse relay auth (`ORCH_SERVICE_TOKEN`);
+  O-004 LOW-1 and LOW-2 are both carried forward — the live Delta consumer is a trusted
+  multi-tenant relay on both the read and write of that seam. O-006 tenant-scopes only the NEW
+  read seams `/v1/events` and `/v1/bus/dlq` (and gates `/v1/bus/schema-versions`), and the DLQ
+  read — closing the O-002 DLQ-read deferral.**
 - **Ingest (Sentinel→Orch) remains a trusted multi-tenant relay.** Its `tenant_id` is
   server-resolved from the schema-validated body; the peer is authenticated by
   `source_product`, not per-tenant. O-006 does **not** close ingest tenant-binding — this is
@@ -221,24 +228,26 @@ and `GET /v1/bus/dlq` operations were updated to document this `422` response.
 
 | Threat | Mitigation |
 |--------|------------|
-| Cross-tenant read via GET status / `/v1/events` / `/v1/bus/dlq` | Per-tenant principal → `get_tenant_session` → RLS (`orchestrator_app` is NOBYPASSRLS, `FORCE ROW LEVEL SECURITY`); a token physically cannot widen past its tenant. Proven by a direct-DB cross-tenant probe in the e2e (not just app filtering). |
+| Cross-tenant read via `/v1/events` / `/v1/bus/dlq` | Per-tenant principal → `get_tenant_session` → RLS (`orchestrator_app` is NOBYPASSRLS, `FORCE ROW LEVEL SECURITY`); a token physically cannot widen past its tenant. Proven by a direct-DB cross-tenant probe in the e2e (not just app filtering). |
 | Forged / mismatched inbound `tenant_id` on distribution POST | **Carried forward (not mitigated in O-006).** The POST stays coarse relay auth; `tenant_id` is server-resolved from the signed body (never a client header) and Sentinel's intake is the verifying authority on the compact-JWS signature, but the Orchestrator does NOT validate the body `tenant_id` against a per-tenant principal — the Delta consumer is a trusted multi-tenant relay. O-004 LOW-2 deferred. |
 | RLS bypass | The runtime uses the NOBYPASSRLS `orchestrator_app` role; the strict `NULLIF(...)` predicate is unsatisfiable when the GUC is unset (fail-closed to zero rows). The chain-validators keep their BYPASSRLS fail-loud guard. |
 | `query_service_tokens` as a NEW trust root — token theft / replay | Only the SHA-256 hash is stored (no plaintext at rest or in logs); tokens are high-entropy operator-issued secrets; `enabled=false` revokes instantly; a miss/disabled token → 401 with no enumeration oracle. Replay within TLS is bounded by O-008 mTLS (deferred); interim risk is the shared-transport risk already accepted for the Bearer scheme. |
 | Read-seam over-exposure / PII leak | Metadata-only projections enforced in the repo layer + asserted in tests (no `payload` / `original_envelope` / policy body in any response). Cursor + `Limit` bound the result set. |
 | Hash-chain break on consolidation | The migration touches no audit table/column; continuity is preserved by construction and re-validated in the round-trip test. |
-| Existence oracle via GET status | Cross-tenant lookup returns 404 (identical to not-found), not 403. |
+| Cross-tenant read via distribution GET-status | **Carried forward (not mitigated in O-006).** The GET-status stays coarse relay auth; a shared-token holder reads any tenant's distribution metadata. The Delta consumer reads this seam coarsely as a trusted multi-tenant relay, so a per-tenant read gate would 401 it. O-004 LOW-1 deferred. |
 
 ## Residual risk (known, deferred)
 
-- **O-004 LOW-2 (inbound distribution `tenant_id`) is carried forward, not closed.** The
-  distribution POST stays coarse relay auth: the live Delta budget-engine consumer is a trusted
-  multi-tenant RELAY (one shared `ORCH_SERVICE_TOKEN` distributes many tenants' policies), so a
-  per-tenant POST gate would 401 the relay. The body `tenant_id` is server-resolved from the
-  signed policy (never a client header), and Sentinel's intake remains the verifying authority
-  on the signature; but the Orchestrator does not bind the body `tenant_id` to a per-tenant
-  principal. Closing LOW-2 requires the Delta consumer to authenticate per-tenant (out of O-006
-  scope). This was reverted after the initial per-tenant POST enforcement 401'd the merged
+- **O-004 LOW-1 (cross-tenant distribution read) AND LOW-2 (inbound distribution `tenant_id`
+  write) are BOTH carried forward, not closed.** BOTH the distribution GET-status and the POST
+  stay coarse relay auth: the live Delta budget-engine consumer is a trusted multi-tenant RELAY
+  on BOTH the read and the write of that seam (one shared `ORCH_SERVICE_TOKEN` serves many
+  tenants' policies), so a per-tenant gate on either would 401 the relay. On the POST the body
+  `tenant_id` is server-resolved from the signed policy (never a client header), and Sentinel's
+  intake remains the verifying authority on the signature; but the Orchestrator neither scopes
+  the GET-status read to a per-tenant principal nor binds the POST body `tenant_id` to one.
+  Closing LOW-1/LOW-2 requires the Delta consumer to authenticate per-tenant (out of O-006
+  scope). Both were reverted after the initial per-tenant enforcement 401'd the merged
   Delta→O-004 integration lane.
 - **Ingest tenant-binding is not closed** (trusted-relay decision). A holder of the shared
   ingest HMAC secret can ingest an event for any `tenant_id`. Bounded operationally (single
@@ -276,19 +285,18 @@ and `GET /v1/bus/dlq` operations were updated to document this `422` response.
   `payload` / `original_envelope` / policy body).
 - **Integration (non-stubbed, the gate)** — `tests/integration/test_authz_reads_e2e.py`,
   `ORCH_REQUIRE_AUTHZ_E2E=1`: seed per-tenant tokens + rows for tenants A and B on the
-  privileged conn, then prove: (1) A reads its distribution → 200, B reads the same id →
-  404; (2) A's DLQ read returns only A's rows, B sees none of A's; (3) A's `/v1/events`
-  returns A only, `FilterTenantId=B` → 403; (4) **direct-DB RLS proof** via the raw
-  `orchestrator_app` conn (GUC→A sees the row, GUC→B sees 0) — Windows-robust, mirrors
-  `test_ingest_e2e.py:208`; (5) a Linux-only `get_tenant_session` runtime-path variant
-  (`skipif win32`). The distribution POST is coarse relay auth, so there is no per-tenant
-  POST-mismatch assertion — O-004 LOW-2 is carried forward.
+  privileged conn, then prove: (1) A's DLQ read returns only A's rows, B sees none of A's;
+  (2) A's `/v1/events` returns A only, `FilterTenantId=B` → 403; (3) **direct-DB RLS proof**
+  via the raw `orchestrator_app` conn (GUC→A sees the row, GUC→B sees 0) — Windows-robust,
+  mirrors `test_ingest_e2e.py:208`; (4) a Linux-only `get_tenant_session` runtime-path variant
+  (`skipif win32`). The distribution GET-status and POST are both coarse relay auth, so there
+  is no per-tenant distribution assertion — O-004 LOW-1 and LOW-2 are both carried forward.
 - **Migration** (`test_migration_roundtrip.py`): head bumped to `0005_...`; downgrade→upgrade
   clean; the ingest chain still validates across it.
-- **O-004 test updates**: the existing distribution GET-status tests
-  (`test_distribution_e2e.py`, `test_distribution_router.py`) seed and use a per-tenant token
-  for the READ; the POST cases authenticate with the coarse `ORCH_SERVICE_TOKEN` relay — an
-  authz *tightening on the reads only*, not a semantics change.
+- **O-004 tests unchanged**: the existing distribution tests (`test_distribution_e2e.py`,
+  `test_distribution_router.py`) and `distribution/router.py` are byte-identical to
+  origin/main — the distribution GET-status and POST both keep their coarse relay auth, so no
+  O-004 test needed updating.
 
 ## Out of scope (do not build here)
 
@@ -299,15 +307,16 @@ mTLS provisioning; Sentinel's real HTTP intake/health routes.
 
 ## Consequences
 
-- The Orchestrator gains its first real per-tenant authorization boundary on the READ seams;
-  the coarse service token is demoted from a cross-tenant reader to (nothing, for those
-  reads) — it still gates the distribution POST as a trusted multi-tenant relay. Future read
-  seams should depend on `require_tenant_principal`.
-- The O-004 cross-tenant READ hole (LOW-1) and the O-002 DLQ-read prose deferral are closed
-  and proven non-stubbed; the query/bus read seams O-001/O-002 promised now exist. The O-004
-  inbound-`tenant_id` write finding (LOW-2) is CARRIED FORWARD: the live Delta budget-engine
-  consumer is a trusted multi-tenant relay on the POST, so per-tenant POST auth is deferred to
-  a per-tenant Delta consumer (out of O-006 scope).
+- The Orchestrator gains its first real per-tenant authorization boundary on the NEW read
+  seams (`/v1/events`, `/v1/bus/dlq`); the coarse service token still gates the distribution
+  GET-status and POST as a trusted multi-tenant relay. Future read seams should depend on
+  `require_tenant_principal`.
+- The O-002 DLQ-read prose deferral is closed and proven non-stubbed; the query/bus read seams
+  O-001/O-002 promised now exist. BOTH O-004 findings are CARRIED FORWARD: the distribution
+  GET-status cross-tenant read (LOW-1) and the inbound-`tenant_id` write (LOW-2) stay coarse
+  relay auth, because the live Delta budget-engine consumer is a trusted multi-tenant relay on
+  both the read and write of that seam — per-tenant distribution auth is deferred to a
+  per-tenant Delta consumer (out of O-006 scope).
 - Consolidation is deliberately light: the persistence layer was already coherent, so O-006
   reconciles ORM drift + adds read-path indexes rather than reshaping tables — keeping the
   hash chains untouched and the change reversible.

@@ -61,19 +61,22 @@ info:
     (c) The query API is READ-ONLY METADATA at this stage. It exposes distribution
         status and event metadata; it does not mutate state and does not return full
         event payloads.
-    (d) The query READ seams are PER-TENANT (O-006, ENFORCED): a per-tenant token maps to one
-        tenant (query_service_tokens). The query + bus + distribution-STATUS reads derive that
+    (d) The NEW query READ seams are PER-TENANT (O-006, ENFORCED): a per-tenant token maps to
+        one tenant (query_service_tokens). The `/v1/events` + `/v1/bus/dlq` reads derive that
         principal from the presented Bearer and read under the tenant's RLS session, so a token
-        CANNOT read another tenant's event / distribution / DLQ metadata (closes the O-004
-        distribution-read hole and the O-002 DLQ-read prose deferral). The distribution WRITE
-        (POST /v1/policies/distributions) stays COARSE relay auth: it is gated by the shared
-        `ORCH_SERVICE_TOKEN`, and its `tenant_id` is server-resolved from the signed policy
-        body, NOT validated against a per-tenant principal — the O-004 inbound-`tenant_id`
-        finding (LOW-2) is CARRIED FORWARD, because the live Delta budget-engine consumer is a
-        trusted multi-tenant relay (one shared credential distributes many tenants' policies),
-        so a per-tenant POST gate would 401 the relay. mTLS provisioning stays deferred to
-        O-008; the interim read Bearer is tenant-bound. Ingest (Sentinel → Orchestrator) also
-        remains a trusted multi-tenant relay — a documented boundary that O-006 does NOT close.
+        CANNOT read another tenant's event / DLQ metadata (closes the O-002 DLQ-read prose
+        deferral and builds the O-001/O-002 read seams). The distribution seam — BOTH the
+        GET-status (GET /v1/policies/distributions/{id}) and the WRITE (POST
+        /v1/policies/distributions) — stays COARSE relay auth: it is gated by the shared
+        `ORCH_SERVICE_TOKEN`, and (on the POST) its `tenant_id` is server-resolved from the
+        signed policy body, NOT validated against a per-tenant principal. The live Delta
+        budget-engine consumer is a trusted multi-tenant relay on BOTH the read and the write of
+        that seam (one shared credential serves many tenants' policies), so the O-004
+        distribution-read finding (LOW-1) AND the inbound-`tenant_id` finding (LOW-2) are BOTH
+        CARRIED FORWARD — a per-tenant gate would 401 the relay. mTLS provisioning stays deferred
+        to O-008; the interim read Bearer on the new seams is tenant-bound. Ingest (Sentinel →
+        Orchestrator) also remains a trusted multi-tenant relay — a documented boundary that
+        O-006 does NOT close.
 
     ## Trust boundary (what each auth layer does / does not cover)
     mTLS authenticates the PEER PRODUCT (Sentinel or Delta), not the message. The
@@ -330,12 +333,13 @@ paths:
         METADATA (honesty boundary c): per-target delivery state, no policy body, no
         mutation.
 
-        NOTE: per-tenant read authorization is now ENFORCED (O-006, honesty boundary d).
-        The caller's per-tenant service token establishes the principal; the read runs under
-        that tenant's RLS session, so a token can read only its OWN tenant's distribution — a
-        cross-tenant id is a 404, not another tenant's metadata.
+        NOTE: this GET-status read stays COARSE relay auth (O-006, honesty boundary d);
+        per-tenant read authorization is DEFERRED (O-004 LOW-1 carried forward). It is gated by
+        the shared `ORCH_SERVICE_TOKEN`; the live Delta budget-engine consumer reads this seam
+        coarsely as a trusted multi-tenant relay, so a per-tenant read gate would 401 the relay.
+        Only the NEW read seams (/v1/events, /v1/bus/dlq) are tenant-scoped in O-006.
 
-        Auth: mTLS (peer = Delta) AND a per-tenant service token (bearer).
+        Auth: mTLS (peer = Delta) AND the coarse `ORCH_SERVICE_TOKEN` (bearer).
       security:
         - mutualTLS: []
           serviceToken: []
@@ -981,12 +985,14 @@ components:
         Bearer-only: it authorizes the caller but does NOT sign request bodies (the
         embedded policy compact-JWS does that for distribution). Issued/rotated by
         deploy tooling; provisioning details are out of scope for O-001.
-        NOTE (O-006): the READ seams (GET distribution status, /v1/events, /v1/bus/dlq)
-        authenticate a PER-TENANT token from `query_service_tokens` presented as this Bearer,
-        and enforce per-tenant isolation. The distribution WRITE (POST
-        /v1/policies/distributions) is still gated by this COARSE shared `ORCH_SERVICE_TOKEN`
-        as a trusted multi-tenant relay — its inbound `tenant_id` is server-resolved from the
-        signed body, not validated per-tenant (O-004 LOW-2 carried forward).
+        NOTE (O-006): this COARSE shared `ORCH_SERVICE_TOKEN` gates BOTH the distribution
+        GET-status (GET /v1/policies/distributions/{id}) and the distribution WRITE (POST
+        /v1/policies/distributions) as a trusted multi-tenant relay — on the POST its inbound
+        `tenant_id` is server-resolved from the signed body, not validated per-tenant (O-004
+        LOW-1 and LOW-2 BOTH carried forward). For the NEW per-tenant read seams (/v1/events,
+        /v1/bus/dlq) the coarse `ORCH_SERVICE_TOKEN` is legacy/not accepted: those seams
+        authenticate a PER-TENANT token from `query_service_tokens` presented under this same
+        Bearer scheme and enforce per-tenant isolation.
 
     operatorBearer:
       type: http
