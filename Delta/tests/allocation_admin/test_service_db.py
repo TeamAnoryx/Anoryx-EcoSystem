@@ -25,6 +25,7 @@ from delta.allocation_admin.service import (
     create_allocation_request,
     decide_allocation,
     get_allocation_view,
+    list_allocation_views,
 )
 from delta.budget import BudgetPeriod, BudgetScope
 from delta.persistence.database import get_tenant_session
@@ -181,3 +182,24 @@ async def test_unreconciled_targets_rejected(tenant_id: str) -> None:
     with pytest.raises(AllocationReconciliationError):
         async with get_tenant_session(tenant_id) as session:
             await create_allocation_request(session, req)
+
+
+@db_required
+async def test_list_allocations_respects_limit(tenant_id: str) -> None:
+    for _ in range(3):
+        req = AllocationCreateRequest(
+            tenant_id=tenant_id,
+            total_minor_units=1_000,
+            currency="USD",
+            period=BudgetPeriod.DAILY,
+            targets=[_team_target(team_id=str(uuid.uuid4()), amount=1_000)],
+            requested_by="operator-1",
+        )
+        async with get_tenant_session(tenant_id) as session:
+            await create_allocation_request(session, req)
+
+    async with get_tenant_session(tenant_id) as session:
+        capped = await list_allocation_views(session, limit=2)
+        uncapped = await list_allocation_views(session, limit=100)
+    assert len(capped) == 2
+    assert len(uncapped) == 3

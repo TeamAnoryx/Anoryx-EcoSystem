@@ -48,9 +48,12 @@ async def post_allocation(req: AllocationCreateRequest) -> AllocationView:
 async def get_allocations(
     tenant_id: TenantId,
     status: AllocationStatus | None = None,
+    limit: int = 100,
 ) -> list[AllocationView]:
+    # list_allocation_views/store.list_allocations clamp limit server-side
+    # regardless of what's passed here — this is not the enforcement boundary.
     async with get_tenant_session(tenant_id) as session:
-        return await list_allocation_views(session, status=status)
+        return await list_allocation_views(session, status=status, limit=limit)
 
 
 @router.get("/allocations/{allocation_id}", response_model=AllocationView)
@@ -78,9 +81,12 @@ async def get_history(
     tenant_id: TenantId,
     entity_type: str | None = None,
     entity_id: str | None = None,
+    limit: int = 100,
 ) -> list[ChangeHistoryEntryView]:
     async with get_tenant_session(tenant_id) as session:
-        rows = await list_history(session, entity_type=entity_type, entity_id=entity_id)
+        rows = await list_history(
+            session, entity_type=entity_type, entity_id=entity_id, limit=limit
+        )
     return [
         ChangeHistoryEntryView(
             history_id=r.history_id,

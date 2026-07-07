@@ -150,9 +150,9 @@ async def get_allocation_view(
 
 
 async def list_allocation_views(
-    session: AsyncSession, *, status: str | None = None
+    session: AsyncSession, *, status: str | None = None, limit: int = store.DEFAULT_LIST_LIMIT
 ) -> list[AllocationView]:
-    records = await store.list_allocations(session, status=status)
+    records = await store.list_allocations(session, status=status, limit=limit)
     return [_record_to_view(r) for r in records]
 
 

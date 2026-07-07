@@ -19,6 +19,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..budget import BudgetPeriod, BudgetScope
 from ..persistence.models import allocation_targets, allocations, change_history
 
+# List-response bounds (finding #1, docs/audit/d-007-security-audit.md): an
+# unbounded SELECT over a long-lived, append-only tenant grows without limit.
+DEFAULT_LIST_LIMIT = 100
+MAX_LIST_LIMIT = 500
+
+
+def _clamp_limit(limit: int) -> int:
+    return max(1, min(limit, MAX_LIST_LIMIT))
+
 
 @dataclass(frozen=True)
 class AllocationTargetRecord:
@@ -182,13 +191,17 @@ async def get_allocation(session: AsyncSession, *, allocation_id: str) -> Alloca
 
 
 async def list_allocations(
-    session: AsyncSession, *, status: str | None = None
+    session: AsyncSession, *, status: str | None = None, limit: int = DEFAULT_LIST_LIMIT
 ) -> list[AllocationRecord]:
-    """List allocations for the caller's tenant (RLS-confined), optionally by status."""
+    """List allocations for the caller's tenant (RLS-confined), optionally by status.
+
+    ``limit`` is clamped to ``[1, MAX_LIST_LIMIT]`` — the caller (router) may expose
+    it, but this function never returns an unbounded result set on its own.
+    """
     stmt = select(allocations)
     if status is not None:
         stmt = stmt.where(allocations.c.status == status)
-    stmt = stmt.order_by(allocations.c.requested_at.desc())
+    stmt = stmt.order_by(allocations.c.requested_at.desc()).limit(_clamp_limit(limit))
     rows = (await session.execute(stmt)).all()
     records: list[AllocationRecord] = []
     for row in rows:
@@ -293,14 +306,18 @@ async def list_history(
     *,
     entity_type: str | None = None,
     entity_id: str | None = None,
+    limit: int = DEFAULT_LIST_LIMIT,
 ) -> list[HistoryRecord]:
-    """List change-history rows for the caller's tenant (RLS-confined), newest first."""
+    """List change-history rows for the caller's tenant (RLS-confined), newest first.
+
+    ``limit`` is clamped to ``[1, MAX_LIST_LIMIT]`` (see :func:`list_allocations`).
+    """
     stmt = select(change_history)
     if entity_type is not None:
         stmt = stmt.where(change_history.c.entity_type == entity_type)
     if entity_id is not None:
         stmt = stmt.where(change_history.c.entity_id == entity_id)
-    stmt = stmt.order_by(change_history.c.created_at.desc())
+    stmt = stmt.order_by(change_history.c.created_at.desc()).limit(_clamp_limit(limit))
     rows = (await session.execute(stmt)).all()
     return [
         HistoryRecord(

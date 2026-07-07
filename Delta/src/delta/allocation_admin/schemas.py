@@ -7,10 +7,11 @@ total" invariant (vector 4) is enforced by construction, not re-implemented here
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..budget import BudgetPeriod, BudgetScope
 from ..identifiers import AgentId, AllocationId, ProjectId, TeamId, TenantId
@@ -19,10 +20,21 @@ from ..money import DEFAULT_CURRENCY, Currency
 AllocationStatus = Literal["requested", "approved", "rejected"]
 ApprovalAction = Literal["approve", "reject"]
 
-# Bounded free-text fields (log-injection / storage-bloat guard — mirrors the request_id
-# charset discipline in delta.identifiers rather than accepting unbounded strings).
+# Bounded free-text fields (storage-bloat guard — mirrors the request_id length
+# discipline in delta.identifiers). Unlike RequestId's narrow slug pattern, actor
+# names and notes are genuinely free text (e.g. "Jane Doe"), so length is bounded
+# here and control characters are rejected separately (log-injection guard: a
+# forged newline could impersonate a second change-history/audit-log line in any
+# downstream renderer — see docs/audit/d-007-security-audit.md finding #2).
 _ACTOR_MAX_LENGTH = 128
 _NOTE_MAX_LENGTH = 1024
+_CONTROL_CHAR_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _reject_control_chars(value: str, field_name: str) -> str:
+    if _CONTROL_CHAR_PATTERN.search(value):
+        raise ValueError(f"{field_name} must not contain control characters (incl. newlines)")
+    return value
 
 
 class AllocationTargetIn(BaseModel):
@@ -54,6 +66,11 @@ class AllocationCreateRequest(BaseModel):
     period: BudgetPeriod
     targets: list[AllocationTargetIn] = Field(min_length=1, max_length=1024)
     requested_by: str = Field(min_length=1, max_length=_ACTOR_MAX_LENGTH)
+
+    @field_validator("requested_by")
+    @classmethod
+    def _requested_by_no_control_chars(cls, value: str) -> str:
+        return _reject_control_chars(value, "requested_by")
 
 
 class AllocationTargetView(BaseModel):
@@ -92,6 +109,16 @@ class ApprovalDecisionRequest(BaseModel):
     action: ApprovalAction
     actor: str = Field(min_length=1, max_length=_ACTOR_MAX_LENGTH)
     note: str | None = Field(default=None, max_length=_NOTE_MAX_LENGTH)
+
+    @field_validator("actor")
+    @classmethod
+    def _actor_no_control_chars(cls, value: str) -> str:
+        return _reject_control_chars(value, "actor")
+
+    @field_validator("note")
+    @classmethod
+    def _note_no_control_chars(cls, value: str | None) -> str | None:
+        return None if value is None else _reject_control_chars(value, "note")
 
 
 class ChangeHistoryEntryView(BaseModel):
