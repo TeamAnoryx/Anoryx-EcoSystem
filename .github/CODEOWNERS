@@ -1,0 +1,12 @@
+# CODEOWNERS — backstop for the pinned policy schema.
+#
+# Baseline re-pinned to the current reviewed schema (was F-008 a9e2344;
+# extended by F-016/F-017/F-019). Requires @affu-79 review on the schema, its
+# hash lock, and the guard, so a single PR cannot quietly edit schema + lock.
+#
+# IMPORTANT: enforces nothing until branch protection on `main` is set to
+# "Require review from Code Owners". Preparing the file is setup-side.
+
+/Anoryx-Sentinel/contracts/policy.schema.json    @affu-79
+/Anoryx-Sentinel/contracts/policy.schema.lock    @affu-79
+/policy_schema_guard.py                          @affu-79
