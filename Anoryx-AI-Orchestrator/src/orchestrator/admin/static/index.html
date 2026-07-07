@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Anoryx Orchestrator — Operator Console</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 1.5rem;
+         background: Canvas; color: CanvasText; }
+  h1 { font-size: 1.25rem; margin: 0 0 0.25rem; }
+  .subtitle { opacity: 0.7; margin: 0 0 1.25rem; font-size: 0.85rem; }
+  .auth-bar { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1.5rem;
+              flex-wrap: wrap; }
+  .auth-bar input[type="password"] { flex: 1 1 20rem; min-width: 12rem; }
+  input, button { font: inherit; padding: 0.4rem 0.6rem; border-radius: 0.35rem;
+                  border: 1px solid color-mix(in srgb, CanvasText 30%, transparent); }
+  button { cursor: pointer; background: color-mix(in srgb, CanvasText 8%, Canvas); }
+  button:hover { background: color-mix(in srgb, CanvasText 16%, Canvas); }
+  section { margin-bottom: 2rem; }
+  section h2 { font-size: 1rem; display: flex; align-items: center; gap: 0.6rem; }
+  section h2 .limit { font-weight: normal; font-size: 0.8rem; opacity: 0.75; }
+  section h2 input[type="number"] { width: 4.5rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
+  th, td { text-align: left; padding: 0.35rem 0.6rem; border-bottom: 1px solid
+           color-mix(in srgb, CanvasText 12%, transparent); white-space: nowrap; }
+  th { opacity: 0.7; font-weight: 600; }
+  .status { font-size: 0.8rem; opacity: 0.75; margin: 0.4rem 0; min-height: 1.1rem; }
+  .status.err { color: #c0392b; opacity: 1; }
+  .table-wrap { overflow-x: auto; }
+  .empty { opacity: 0.6; font-size: 0.82rem; padding: 0.4rem 0; }
+</style>
+</head>
+<body>
+  <h1>Anoryx Orchestrator — Operator Console</h1>
+  <p class="subtitle">
+    Read-only fleet triage (O-007). Registry, recent events, and recent policy
+    distributions across ALL tenants — an operator view, not a tenant-scoped one.
+  </p>
+
+  <div class="auth-bar">
+    <label for="token">Operator bearer token</label>
+    <input id="token" type="password" placeholder="paste ORCH_ADMIN_TOKEN" autocomplete="off">
+    <button id="load-all">Load all</button>
+  </div>
+  <p class="status" id="global-status"></p>
+
+  <section>
+    <h2>Registered Sentinels
+      <button data-refresh="registry">Refresh</button>
+    </h2>
+    <p class="status" id="registry-status"></p>
+    <div class="table-wrap"><table id="registry-table"></table></div>
+  </section>
+
+  <section>
+    <h2>Recent Events
+      <span class="limit"><label for="events-limit">limit</label>
+        <input id="events-limit" type="number" min="1" max="200" value="50"></span>
+      <button data-refresh="events">Refresh</button>
+    </h2>
+    <p class="status" id="events-status"></p>
+    <div class="table-wrap"><table id="events-table"></table></div>
+  </section>
+
+  <section>
+    <h2>Recent Distributions
+      <span class="limit"><label for="distributions-limit">limit</label>
+        <input id="distributions-limit" type="number" min="1" max="200" value="50"></span>
+      <button data-refresh="distributions">Refresh</button>
+    </h2>
+    <p class="status" id="distributions-status"></p>
+    <div class="table-wrap"><table id="distributions-table"></table></div>
+  </section>
+
+<script>
+(() => {
+  "use strict";
+
+  // The bearer token lives ONLY in this in-page variable — never written to
+  // localStorage/sessionStorage/cookies, so it does not outlive the tab/reload.
+  let token = "";
+
+  const tokenInput = document.getElementById("token");
+  tokenInput.addEventListener("input", () => { token = tokenInput.value; });
+
+  function setStatus(id, message, isError) {
+    const el = document.getElementById(id);
+    el.textContent = message;
+    el.classList.toggle("err", Boolean(isError));
+  }
+
+  function renderTable(tableId, columns, rows, emptyMessage) {
+    const table = document.getElementById(tableId);
+    table.innerHTML = "";
+    if (!rows.length) {
+      table.innerHTML = `<tr><td class="empty">${emptyMessage}</td></tr>`;
+      return;
+    }
+    const thead = document.createElement("tr");
+    for (const col of columns) {
+      const th = document.createElement("th");
+      th.textContent = col;
+      thead.appendChild(th);
+    }
+    table.appendChild(thead);
+    for (const row of rows) {
+      const tr = document.createElement("tr");
+      for (const col of columns) {
+        const td = document.createElement("td");
+        const value = row[col];
+        td.textContent = value === null || value === undefined ? "—" : String(value);
+        tr.appendChild(td);
+      }
+      table.appendChild(tr);
+    }
+  }
+
+  async function authedGet(path) {
+    if (!token) {
+      throw new Error("enter the operator bearer token first");
+    }
+    const resp = await fetch(path, { headers: { Authorization: `Bearer ${token}` } });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const message = body && body.error && body.error.message
+        ? body.error.message
+        : `HTTP ${resp.status}`;
+      throw new Error(message);
+    }
+    return body;
+  }
+
+  async function loadRegistry() {
+    setStatus("registry-status", "loading…", false);
+    try {
+      const body = await authedGet("/v1/registry/sentinels");
+      renderTable(
+        "registry-table",
+        ["sentinel_id", "endpoint", "health_status", "enabled", "capabilities", "updated_at"],
+        (body.sentinels || []).map((s) => ({ ...s, capabilities: (s.capabilities || []).join(", ") })),
+        "no Sentinels registered"
+      );
+      setStatus("registry-status", `${(body.sentinels || []).length} registered`, false);
+    } catch (err) {
+      setStatus("registry-status", err.message, true);
+    }
+  }
+
+  async function loadEvents() {
+    setStatus("events-status", "loading…", false);
+    try {
+      const limit = document.getElementById("events-limit").value || 50;
+      const body = await authedGet(`/v1/admin/events/recent?limit=${encodeURIComponent(limit)}`);
+      renderTable(
+        "events-table",
+        ["event_timestamp", "event_type", "tenant_id", "team_id", "project_id", "agent_id", "event_id"],
+        body.data || [],
+        "no events"
+      );
+      setStatus("events-status", `${(body.data || []).length} shown`, false);
+    } catch (err) {
+      setStatus("events-status", err.message, true);
+    }
+  }
+
+  async function loadDistributions() {
+    setStatus("distributions-status", "loading…", false);
+    try {
+      const limit = document.getElementById("distributions-limit").value || 50;
+      const body = await authedGet(
+        `/v1/admin/distributions/recent?limit=${encodeURIComponent(limit)}`
+      );
+      renderTable(
+        "distributions-table",
+        ["created_at", "state", "policy_type", "tenant_id", "policy_id", "distribution_id"],
+        body.data || [],
+        "no distributions"
+      );
+      setStatus("distributions-status", `${(body.data || []).length} shown`, false);
+    } catch (err) {
+      setStatus("distributions-status", err.message, true);
+    }
+  }
+
+  const loaders = { registry: loadRegistry, events: loadEvents, distributions: loadDistributions };
+
+  for (const button of document.querySelectorAll("button[data-refresh]")) {
+    button.addEventListener("click", () => loaders[button.dataset.refresh]());
+  }
+
+  document.getElementById("load-all").addEventListener("click", async () => {
+    setStatus("global-status", "loading…", false);
+    await Promise.all(Object.values(loaders).map((fn) => fn()));
+    setStatus("global-status", "", false);
+  });
+})();
+</script>
+</body>
+</html>
