@@ -697,7 +697,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] O-004 Policy distribution engine ✅ (#42)
 - [x] O-005 Multi-Sentinel coordination ✅ (#43)
 - [x] O-006 Persistence consolidation + tenant-scoped read seams ✅ (#47)
-- [ ] O-007 Admin API + minimal UI — Tricky (16-20h)
+- [x] O-007 Admin API + minimal UI ✅ (shipped PR #51)
 - [ ] O-008 Deployment — Easy-Tricky (6-10h)
 - [ ] O-009 Centralized Sentinel proxy for all inter-app traffic — Heavy 🏦
 - [ ] O-010 Unified identity + cross-platform access mgmt — Heavy 🏦

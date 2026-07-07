@@ -821,3 +821,72 @@ async def list_dead_letters(
         rows = rows[:limit]
     projected = [{column: row[column] for column in _DEAD_LETTER_METADATA_COLUMNS} for row in rows]
     return projected, next_cursor
+
+
+# =========================================================================== #
+# Admin API read seams (O-007, ADR-0007) — ADDITIVE, parallel to the blocks above. The
+# operator (ORCH_ADMIN_TOKEN, same principal as the O-005 registry) gets bounded,
+# metadata-only, CROSS-TENANT visibility for fleet triage — deliberately coarser than the
+# O-006 per-tenant reads, mirroring the registry's own operator-global scope. Both reads run
+# on the caller-owned PRIVILEGED session (no tenant GUC, so no RLS scoping applies) and
+# project ONLY metadata columns — never `payload`, never `signed_record`. "Recent" is a
+# single DESC-ordered, Limit-bounded page — no cursor (out of scope; see ADR-0007).
+# =========================================================================== #
+
+# Mirrors _EVENT_METADATA_COLUMNS (O-006) — identical projection, cross-tenant scope only.
+_ADMIN_EVENT_METADATA_COLUMNS = _EVENT_METADATA_COLUMNS
+
+# The AdminDistributionSummary projection columns (openapi.yaml). Deliberately excludes
+# `signed_record` / `content_hash` (never re-expose a policy body on a fleet-overview read).
+_ADMIN_DISTRIBUTION_SUMMARY_COLUMNS = (
+    "distribution_id",
+    "policy_id",
+    "tenant_id",
+    "policy_type",
+    "state",
+    "created_at",
+)
+
+
+async def list_recent_events_admin(session: AsyncSession, *, limit: int) -> list[dict[str, Any]]:
+    """Return the `limit` most-recent ingest_events rows, newest first (PRIVILEGED session).
+
+    Cross-tenant by design (operator fleet triage, ADR-0007) — no tenant GUC, no RLS
+    scoping. Projects ONLY the EventMetadata columns, identical to the O-006 `list_events`
+    projection — never `payload`.
+    """
+    columns = ", ".join(_ADMIN_EVENT_METADATA_COLUMNS)
+    # avoid-sqlalchemy-text false positive: `columns` is joined from the constant
+    # _ADMIN_EVENT_METADATA_COLUMNS tuple; `limit` is a bound parameter, not interpolated.
+    # nosemgrep: avoid-sqlalchemy-text
+    statement = text(
+        f"SELECT {columns} FROM ingest_events "  # noqa: S608
+        "ORDER BY sequence_number DESC LIMIT :lim"
+    )
+    result = await session.execute(statement, {"lim": limit})
+    rows = result.mappings().all()
+    return [{column: row[column] for column in _ADMIN_EVENT_METADATA_COLUMNS} for row in rows]
+
+
+async def list_recent_distributions_admin(
+    session: AsyncSession, *, limit: int
+) -> list[dict[str, Any]]:
+    """Return the `limit` most-recent policy_distributions rows, newest first (PRIVILEGED).
+
+    Cross-tenant by design (operator fleet triage, ADR-0007) — no tenant GUC, no RLS
+    scoping. Projects ONLY the AdminDistributionSummary columns — never `signed_record` /
+    `content_hash` (no policy body on a fleet-overview read). Per-target detail is NOT
+    included here; an operator drills into a specific distribution via the existing
+    coarse-relay `GET /v1/policies/distributions/{distribution_id}` (O-004/O-006) for that.
+    """
+    columns = ", ".join(_ADMIN_DISTRIBUTION_SUMMARY_COLUMNS)
+    # avoid-sqlalchemy-text false positive: `columns` is joined from the constant
+    # _ADMIN_DISTRIBUTION_SUMMARY_COLUMNS tuple; `limit` is a bound parameter.
+    # nosemgrep: avoid-sqlalchemy-text
+    statement = text(
+        f"SELECT {columns} FROM policy_distributions "  # noqa: S608
+        "ORDER BY created_at DESC LIMIT :lim"
+    )
+    result = await session.execute(statement, {"lim": limit})
+    rows = result.mappings().all()
+    return [{column: row[column] for column in _ADMIN_DISTRIBUTION_SUMMARY_COLUMNS} for row in rows]

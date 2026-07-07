@@ -9,8 +9,10 @@ SCOPE: this app exposes the ingest seam (POST /v1/ingest/events), the policy-dis
 seams (POST + GET /v1/policies/distributions — O-004, ADR-0004), the multi-Sentinel
 coordination seams (registry CRUD /v1/registry/sentinels, /v1/registry/health-check, and the
 coordinated push /v1/policies/coordinate — O-005, ADR-0005), the tenant-scoped query/bus read
-seams (GET /v1/events, /v1/bus/dlq, /v1/bus/schema-versions — O-006, ADR-0006), plus a health
-probe. The query/distribution seams derive a per-tenant principal (require_tenant_principal); a
+seams (GET /v1/events, /v1/bus/dlq, /v1/bus/schema-versions — O-006, ADR-0006), the
+operator-scoped admin API + minimal UI (GET /v1/admin/events/recent,
+/v1/admin/distributions/recent, /admin — O-007, ADR-0007), plus a health probe. The
+query/distribution seams derive a per-tenant principal (require_tenant_principal); a
 missing/invalid token → a uniform 401. mTLS termination is O-008.
 """
 
@@ -21,6 +23,7 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from orchestrator.admin.router import router as admin_router
 from orchestrator.config import (
     get_coordination_settings,
     get_distribution_settings,
@@ -110,4 +113,5 @@ def create_app() -> FastAPI:
     app.include_router(distribution_router)
     app.include_router(coordination_router)
     app.include_router(query_router)
+    app.include_router(admin_router)
     return app
