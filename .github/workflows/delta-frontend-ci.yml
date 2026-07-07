@@ -1,0 +1,56 @@
+name: Delta Admin Console CI
+
+# Additive frontend lane (D-007, ADR-0007). Independent of delta-ci.yml: separate
+# file + path filter scoped to the console (mirrors frontend-ci.yml / F-012), so the
+# Python lane is never touched and the two never share fixtures or ordering.
+on:
+  push:
+    branches: [main]
+    paths: ["Delta/frontend/**"]
+  pull_request:
+    branches: [main]
+    paths: ["Delta/frontend/**"]
+
+concurrency:
+  group: delta-frontend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  admin-console:
+    name: Lint · Typecheck · Build · Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Delta/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: Delta/frontend/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Lint (eslint)
+        run: npm run lint
+      - name: Typecheck (tsc)
+        run: npm run typecheck
+      # Build with a throwaway canary admin token so the token-absence check has a
+      # known value to grep for.
+      - name: Build (next build)
+        env:
+          DELTA_API_URL: http://127.0.0.1:9
+          DELTA_ADMIN_TOKEN: CANARY_admin_token_ci_do_not_ship_x7Q2
+          SESSION_SECRET: CANARY_session_secret_ci_0123456789abcdef
+        run: npm run build
+      - name: Token absence in client bundle
+        env:
+          DELTA_ADMIN_TOKEN: CANARY_admin_token_ci_do_not_ship_x7Q2
+        run: npm run check:token
+      - name: Unit tests (vitest)
+        run: npm test
+      # Render lane (jsdom): separate config from the node unit lane — must be gated
+      # explicitly so a render test cannot pass locally yet silently skip CI (the
+      # F-018 lesson, banked process rule #11).
+      - name: Render tests (vitest jsdom)
+        run: npm run test:render
