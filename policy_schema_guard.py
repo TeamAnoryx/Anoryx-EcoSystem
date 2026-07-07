@@ -17,21 +17,26 @@ Baseline
     process. Current pinned baseline commit: 1a823bf.
     Re-pinning is a rare, deliberate, reviewed act — see SETUP.md.
 
+Line endings
+    The hash is computed over LINE-ENDING-NORMALIZED bytes (CRLF/CR -> LF) so it
+    is identical on a Windows (CRLF) working copy and a Linux/CI (LF) checkout.
+    Line endings are not schema content; only real edits flip the hash.
+
 Usage
     python policy_schema_guard.py               -> exit 0 if unchanged, 1 if changed/invalid
     python policy_schema_guard.py --print-hash   -> print sha256 of the current schema file
     pytest                                       -> discovers test_policy_schema_unchanged
 
 What this guard does and does NOT do
-    - It makes ANY modification to the schema loud and CI-blocking: the hash
-      flips, the check goes red, and the change cannot land without a human
+    - It makes ANY content modification to the schema loud and CI-blocking: the
+      hash flips, the check goes red, and the change cannot land without a human
       deliberately re-pinning the lock in a visible diff.
     - It does NOT cryptographically stop a single PR that edits BOTH the schema
       and the lock file at once. That is caught by your kept human merge gate
       (the diff shows both files) plus a CODEOWNERS rule on both paths.
 
-Intentionally strict: this blocks ALL changes (even tightening), not just
-widening. Re-pinning is meant to be a rare, deliberate, reviewed act.
+Intentionally strict: this blocks ALL content changes (even tightening), not
+just widening. Re-pinning is meant to be a rare, deliberate, reviewed act.
 """
 
 from __future__ import annotations
@@ -69,9 +74,15 @@ def _schema_bytes(root: Path) -> bytes:
     return path.read_bytes()
 
 
+def _normalize_newlines(data: bytes) -> bytes:
+    # CRLF and lone CR -> LF, so CRLF (Windows) and LF (Linux/CI) checkouts hash
+    # identically. Line endings are not schema content.
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
 def current_hash(root: Path | None = None) -> str:
     root = root or _repo_root()
-    data = _schema_bytes(root)
+    data = _normalize_newlines(_schema_bytes(root))
     # Fail fast if the schema is not even valid JSON.
     try:
         json.loads(data.decode("utf-8"))
