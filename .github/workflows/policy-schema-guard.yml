@@ -1,0 +1,31 @@
+# .github/workflows/policy-schema-guard.yml
+#
+# Load-bearing safety control for the unattended Anoryx pipeline.
+# Fails the PR if the locked policy.schema.json (F-008, a9e2344) was modified.
+# In unattended mode there is no interactive security-auditor gate; this is it.
+#
+# This workflow is ADDITIVE — it does not touch your existing fresh-DB CI.
+# Make "policy-schema-guard" a REQUIRED status check in branch protection for
+# main, or it gates nothing.
+
+name: policy-schema-guard
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ "claude/**" ]   # also catch it on the routine's branch, pre-PR
+
+permissions:
+  contents: read
+
+jobs:
+  policy-schema-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify locked policy schema is unchanged
+        run: python policy_schema_guard.py   # <-- adjust path if not at repo root
