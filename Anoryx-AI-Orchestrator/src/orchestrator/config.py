@@ -88,11 +88,17 @@ DEFAULT_DISTRIBUTION_HTTP_TIMEOUT_SECONDS: float = 10.0
 class DistributionSettings:
     """Resolved policy-distribution configuration (O-004, ADR-0004).
 
-    service_token / sentinel_admin_token may be None (absence is not fatal); the request
-    boundary enforces presence fail-closed. targets maps sentinel_id -> base URL (a static
-    minimal list; the dynamic registry resolver is O-005). Tokens are never logged.
+    service_token is the LEGACY coarse peer bearer (ORCH_SERVICE_TOKEN). Post-O-006 it NO
+    LONGER gates the query/distribution seams — those enforce per-tenant read authz via the
+    `query_service_tokens` principal (see security.py). It is still parsed (may be None) purely
+    to avoid env breakage and is unused by those seams. sentinel_admin_token may be None (absence
+    is not fatal); the request boundary enforces its presence fail-closed. targets maps
+    sentinel_id -> base URL (a static minimal list; the dynamic registry resolver is O-005).
+    Tokens are never logged.
     """
 
+    #: LEGACY — no longer used to gate the query/distribution seams post-O-006 (per-tenant
+    #: query_service_tokens do). Retained only for env-parse compatibility.
     service_token: str | None
     sentinel_admin_token: str | None
     targets: dict[str, str]
@@ -174,7 +180,10 @@ def get_distribution_settings() -> DistributionSettings:
     """Resolve distribution settings from the environment (NON-FATAL on absence).
 
     Env vars:
-      ORCH_SERVICE_TOKEN            inbound bearer the POST/GET seams require (None if unset).
+      ORCH_SERVICE_TOKEN            LEGACY coarse peer bearer — post-O-006 it NO LONGER gates the
+                                   query/distribution seams (per-tenant query_service_tokens do,
+                                   via security.py). Still parsed for env compatibility; unused by
+                                   those seams (None if unset).
       SENTINEL_ADMIN_TOKEN         outbound bearer presented to Sentinel intake (None if unset).
       ORCH_DISTRIBUTION_TARGETS    JSON object {sentinel_id: base_url} ({} if unset).
       ORCH_SENTINEL_INTAKE_PATH    Sentinel intake path (default "/admin/policies/intake").

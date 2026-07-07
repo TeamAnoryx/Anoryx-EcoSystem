@@ -108,4 +108,7 @@ jobs:
           # its registry settings (loopback allowlist, health path, thresholds) via the
           # coordination_settings test fixture, so no other ORCH_REGISTRY_* env is needed here.
           ORCH_REQUIRE_COORDINATION_E2E: "1"
+          # O-006: same fail-not-skip discipline for the tenant-scoped authz/read-seam e2e —
+          # a silent skip must never masquerade as a green cross-tenant-isolation gate.
+          ORCH_REQUIRE_AUTHZ_E2E: "1"
         run: pytest tests --tb=short -q

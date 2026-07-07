@@ -647,3 +647,177 @@ async def validate_registry_chain(session: AsyncSession) -> bool:
             return False
         expected_prev = row.row_hash
     return True
+
+
+# =========================================================================== #
+# Per-tenant query principal + tenant-scoped metadata read seams (O-006, ADR-0006) —
+# ADDITIVE, parallel to the blocks above. The principal resolver runs on the PRIVILEGED
+# session (the operator-global query_service_tokens table has no RLS + no app-role grant, and
+# the auth lookup must resolve the tenant BEFORE any tenant GUC is set). The read seams run on
+# a caller-owned RLS-scoped get_tenant_session — they carry NO explicit tenant predicate; RLS
+# is the structural enforcer (a token physically cannot widen past its tenant). Every read is
+# METADATA-ONLY (never `payload`, never `original_envelope`), cursor-paginated, and Limit-
+# bounded. The shipped O-003/O-004/O-005 body above is byte-identical, so all three hash chains
+# still hash identically.
+# =========================================================================== #
+
+# The EventMetadata projection columns (openapi.yaml EventMetadata) — join keys + type + time.
+# `payload` is deliberately EXCLUDED (honesty boundary c). sequence_number is selected only to
+# compute the opaque cursor; it is NOT part of the projected metadata.
+_EVENT_METADATA_COLUMNS = (
+    "event_id",
+    "event_type",
+    "event_timestamp",
+    "tenant_id",
+    "team_id",
+    "project_id",
+    "agent_id",
+    "request_id",
+)
+
+# The DeadLetterMetadata projection columns (openapi.yaml DeadLetterMetadata). `source_sequence`
+# maps to the contract's `sequence`. `original_envelope` is deliberately EXCLUDED (never
+# re-expose a full payload on a read seam). created_at is selected only for the cursor.
+_DEAD_LETTER_METADATA_COLUMNS = (
+    "dlq_id",
+    "reason",
+    "attempt_count",
+    "first_failed_at",
+    "event_type",
+    "source_product",
+    "source_sequence",
+)
+
+
+async def resolve_principal_tenant(session: AsyncSession, token_sha256: str) -> str | None:
+    """Resolve a presented token's SHA-256 hash to its tenant_id (PRIVILEGED session).
+
+    Reads query_service_tokens (operator-global, no RLS, no app-role grant) on the privileged
+    session — the auth bootstrap must resolve the tenant BEFORE any tenant GUC is set. Returns
+    the tenant_id for an ENABLED token, else None. Unknown and disabled are indistinguishable
+    (both → None → a uniform 401 at the boundary: no enumeration oracle). Only the hash is
+    read here; the plaintext token is never read or logged.
+    """
+    result = await session.execute(
+        text("SELECT tenant_id FROM query_service_tokens " "WHERE token_sha256 = :h AND enabled"),
+        {"h": token_sha256},
+    )
+    return result.scalar_one_or_none()
+
+
+async def list_events(
+    session: AsyncSession,
+    *,
+    filters: dict[str, Any],
+    limit: int,
+    cursor: int | None,
+) -> tuple[list[dict[str, Any]], int | None]:
+    """Cursor-paginated, metadata-only read of ingest_events (tenant session, RLS-scoped).
+
+    Runs on get_tenant_session so RLS scopes rows to the principal's tenant (NO explicit
+    tenant predicate — the DB enforces isolation). Projects ONLY the EventMetadata columns —
+    NEVER `payload`. `cursor` is the exclusive lower bound on sequence_number (the monotonic
+    PK); one extra row (limit+1) is fetched to compute the next cursor without a second query.
+    `filters` may carry team_id / agent_id / event_type / since / until / tenant_id (a
+    tenant_id filter only reaches here when it already equals the principal — the router 403s a
+    mismatch — so it is redundant with RLS but applied harmlessly). Returns (rows, next_cursor)
+    where next_cursor is the last returned row's sequence_number when more pages remain, else
+    None.
+    """
+    conditions: list[str] = []
+    params: dict[str, Any] = {}
+    if cursor is not None:
+        conditions.append("sequence_number > :cursor")
+        params["cursor"] = cursor
+    for column in ("tenant_id", "team_id", "agent_id", "event_type"):
+        value = filters.get(column)
+        if value is not None:
+            conditions.append(f"{column} = :{column}")
+            params[column] = value
+    if filters.get("since") is not None:
+        conditions.append("event_timestamp >= :since")
+        params["since"] = filters["since"]
+    if filters.get("until") is not None:
+        conditions.append("event_timestamp < :until")
+        params["until"] = filters["until"]
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    columns = ", ".join(_EVENT_METADATA_COLUMNS)
+    params["lim"] = limit + 1
+    # S608 safe: `columns` is joined from the constant _EVENT_METADATA_COLUMNS tuple and `where`
+    # from literal predicate fragments — NO user input is interpolated into the SQL text; every
+    # filter/cursor VALUE is a bound parameter.
+    # avoid-sqlalchemy-text false positive: only the constant _EVENT_METADATA_COLUMNS tuple +
+    # literal predicate fragments are interpolated; every filter/cursor VALUE is a bound parameter.
+    # nosemgrep: avoid-sqlalchemy-text
+    statement = text(
+        f"SELECT {columns}, sequence_number FROM ingest_events{where} "  # noqa: S608
+        "ORDER BY sequence_number ASC LIMIT :lim"
+    )
+    result = await session.execute(statement, params)
+    rows = result.mappings().all()
+    next_cursor: int | None = None
+    if len(rows) > limit:
+        next_cursor = rows[limit - 1]["sequence_number"]
+        rows = rows[:limit]
+    projected = [{column: row[column] for column in _EVENT_METADATA_COLUMNS} for row in rows]
+    return projected, next_cursor
+
+
+async def list_dead_letters(
+    session: AsyncSession,
+    *,
+    filters: dict[str, Any],
+    limit: int,
+    cursor: tuple[str, str] | None,
+) -> tuple[list[dict[str, Any]], tuple[object, str] | None]:
+    """Cursor-paginated, metadata-only read of dead_letter_queue (tenant session, RLS-scoped).
+
+    Runs on get_tenant_session so RLS scopes rows to the principal's tenant AND hides
+    NULL-tenant (payload-invalid, operator-only) rows from every tenant (NO explicit tenant
+    predicate — the DB enforces isolation). Projects ONLY the DeadLetterMetadata columns —
+    NEVER `original_envelope`. `cursor` is the exclusive lower bound on the composite
+    (created_at, dlq_id) sort key; one extra row (limit+1) is fetched to compute the next
+    cursor. `filters` may carry reason / source_product / since / until (since/until bound
+    created_at — the index-aligned failure time). Returns (rows, next_cursor) where next_cursor
+    is the last returned row's (created_at, dlq_id) when more pages remain, else None.
+    """
+    conditions: list[str] = []
+    params: dict[str, Any] = {}
+    if cursor is not None:
+        c_created, c_dlq = cursor
+        conditions.append("(created_at, dlq_id) > (CAST(:c_created AS timestamptz), :c_dlq)")
+        params["c_created"] = c_created
+        params["c_dlq"] = c_dlq
+    for column in ("reason", "source_product"):
+        value = filters.get(column)
+        if value is not None:
+            conditions.append(f"{column} = :{column}")
+            params[column] = value
+    if filters.get("since") is not None:
+        conditions.append("created_at >= CAST(:since AS timestamptz)")
+        params["since"] = filters["since"]
+    if filters.get("until") is not None:
+        conditions.append("created_at < CAST(:until AS timestamptz)")
+        params["until"] = filters["until"]
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    columns = ", ".join(_DEAD_LETTER_METADATA_COLUMNS)
+    params["lim"] = limit + 1
+    # S608 safe: `columns` is joined from the constant _DEAD_LETTER_METADATA_COLUMNS tuple and
+    # `where` from literal predicate fragments — NO user input is interpolated into the SQL text;
+    # every filter/cursor VALUE is a bound parameter.
+    # avoid-sqlalchemy-text false positive: only the constant _DEAD_LETTER_METADATA_COLUMNS tuple
+    # + literal predicate fragments are interpolated; every filter/cursor VALUE is a bound param.
+    # nosemgrep: avoid-sqlalchemy-text
+    statement = text(
+        f"SELECT {columns}, created_at FROM dead_letter_queue{where} "  # noqa: S608
+        "ORDER BY created_at ASC, dlq_id ASC LIMIT :lim"
+    )
+    result = await session.execute(statement, params)
+    rows = result.mappings().all()
+    next_cursor: tuple[object, str] | None = None
+    if len(rows) > limit:
+        last = rows[limit - 1]
+        next_cursor = (last["created_at"], last["dlq_id"])
+        rows = rows[:limit]
+    projected = [{column: row[column] for column in _DEAD_LETTER_METADATA_COLUMNS} for row in rows]
+    return projected, next_cursor

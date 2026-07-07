@@ -3,11 +3,17 @@
 Tenant-scoped (RLS). On accept the pipeline records that an event SHOULD be forwarded to
 subscribers — it builds NO router and forwards nothing (O-005 owns the registry + the
 real routing and consumes these rows). This is an honest, non-removable boundary.
+
+ORM sync (O-006, ADR-0006): the dispatch-state columns (attempt_count, last_attempt_at,
+last_error) were added to the LIVE schema by the D-004 `d004_forward_dispatch_state`
+migration; the dispatcher read them via raw SQL while this ORM class stayed stale. O-006
+reconciles the ORM to the live columns (code only — NO migration; the columns already
+exist).
 """
 
 from __future__ import annotations
 
-from sqlalchemy import String, text
+from sqlalchemy import Integer, String, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -28,3 +34,7 @@ class ForwardOutbox(Base):
     created_at: Mapped[object] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=text("now()")
     )
+    # Dispatch-state columns (D-004 d004_forward_dispatch_state; ORM-synced in O-006).
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    last_attempt_at: Mapped[object | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)

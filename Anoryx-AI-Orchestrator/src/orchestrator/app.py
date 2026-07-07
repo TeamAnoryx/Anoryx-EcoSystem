@@ -8,9 +8,10 @@ durably recorded must never return a 202.
 SCOPE: this app exposes the ingest seam (POST /v1/ingest/events), the policy-distribution
 seams (POST + GET /v1/policies/distributions — O-004, ADR-0004), the multi-Sentinel
 coordination seams (registry CRUD /v1/registry/sentinels, /v1/registry/health-check, and the
-coordinated push /v1/policies/coordinate — O-005, ADR-0005), plus a health probe. The GET
-query/bus read seams (/v1/events, /v1/bus/dlq, /v1/bus/schema-versions) are O-006. mTLS
-termination is O-008.
+coordinated push /v1/policies/coordinate — O-005, ADR-0005), the tenant-scoped query/bus read
+seams (GET /v1/events, /v1/bus/dlq, /v1/bus/schema-versions — O-006, ADR-0006), plus a health
+probe. The query/distribution seams derive a per-tenant principal (require_tenant_principal); a
+missing/invalid token → a uniform 401. mTLS termination is O-008.
 """
 
 from __future__ import annotations
@@ -28,6 +29,8 @@ from orchestrator.config import (
 from orchestrator.coordination.router import router as coordination_router
 from orchestrator.distribution.router import router as distribution_router
 from orchestrator.ingest.router import router as ingest_router
+from orchestrator.query.router import router as query_router
+from orchestrator.security import PrincipalAuthError
 
 
 def create_app() -> FastAPI:
@@ -38,8 +41,8 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Anoryx Orchestrator",
         version="0.1.0",
-        description="Event ingest pipeline (O-003). Ingest seam only; query/bus read "
-        "seams are O-006.",
+        description="Ingest, policy distribution, coordination, and tenant-scoped "
+        "query/bus read seams (O-003…O-006).",
         docs_url=None,
         redoc_url=None,
     )
@@ -77,6 +80,28 @@ def create_app() -> FastAPI:
             headers={"X-Request-Id": request_id},
         )
 
+    @app.exception_handler(PrincipalAuthError)
+    async def _principal_auth_handler(request: Request, exc: PrincipalAuthError) -> JSONResponse:
+        """Render a per-tenant auth failure as a UNIFORM 401 (O-006, ADR-0006).
+
+        A specific handler for PrincipalAuthError so an auth miss is a clean 401, not the
+        catch-all 503. Absent/malformed header, unknown token, and disabled token are
+        indistinguishable here (no enumeration oracle); the message is generic and PII-free, the
+        request_id is server-generated (never a reflected client X-Request-Id).
+        """
+        request_id = "req-orch-" + uuid.uuid4().hex[:24]
+        return JSONResponse(
+            status_code=401,
+            content={
+                "error": {
+                    "code": "unauthorized",
+                    "message": "tenant authentication required",
+                    "request_id": request_id,
+                }
+            },
+            headers={"X-Request-Id": request_id},
+        )
+
     @app.get("/health", include_in_schema=False)
     async def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -84,4 +109,5 @@ def create_app() -> FastAPI:
     app.include_router(ingest_router)
     app.include_router(distribution_router)
     app.include_router(coordination_router)
+    app.include_router(query_router)
     return app
