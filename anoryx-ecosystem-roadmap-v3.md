@@ -13,7 +13,7 @@ v2 (2026-06-18) was accurate as of F-008. Between then and 2026-06-25, the Senti
 
 ### Two things v3 does
 
-1. **Reconciles Sentinel shipped state** — F-009 through F-021 are now ✅ SHIPPED (merged, CI green, security-audited). Counts, totals, sequence, and checklist updated accordingly. F-010 (deployment) is correctly surfaced as the active next build (it was stepped over for 13 features and is the design-partner unlock).
+1. **Reconciles Sentinel shipped state** — F-009 through F-021 are now ✅ SHIPPED (merged, CI green, security-audited). Counts, totals, sequence, and checklist updated accordingly. F-010 (deployment) — stepped over for 13 features as the design-partner unlock — has since shipped (Part 1 compose #27 + Part 2 Helm #38); the first unshipped Sentinel task is now F-022 (Phase 4).
 
 2. **Expands Delta / Rendly / Orchestrator scope.** The original task lists captured only a slice of each product. v3 keeps the **near-term MVP** as the committed, next-buildable path and adds the **full product vision** as a clearly-marked later tier (see new status label below). The MVP is what you build now; the vision is funded-future.
 
