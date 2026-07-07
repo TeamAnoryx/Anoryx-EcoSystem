@@ -209,17 +209,19 @@ def app(hmac_secret: bytes, monkeypatch: pytest.MonkeyPatch):
     """The real Delta ingest app (POST /v1/ingest/usage + /health).
 
     These tests exercise ONLY the D-004 consume/posting/DLQ path — never the D-005
-    enforcement seam (that is covered by tests/budget_engine with the engine enabled). The
-    budget engine defaults to enabled and, when enabled, requires an O-004 distribution URL
-    at construction (fail-loud; budget_engine.config). So when no O-004 target is configured
-    (the normal ingest-lane env — see delta-ci.yml) set the engine inert here so create_app()
-    builds without a distribution URL it does not need; evaluate_after_post is then a no-op.
-    If a URL IS configured, the engine is left enabled. This sets only the TEST environment
-    (monkeypatch, auto-reverted, scoped to this fixture) — the production fail-loud guard in
-    budget_engine.config is unchanged.
+    enforcement seam or the D-006 kill-switch (covered by tests/budget_engine and
+    tests/kill_switch respectively, both with their engine enabled). Both default to
+    enabled and, when enabled, require an O-004 distribution URL at construction
+    (fail-loud; budget_engine.config / kill_switch.config — the SAME env vars, one seam).
+    So when no O-004 target is configured (the normal ingest-lane env — see delta-ci.yml)
+    set both inert here so create_app() builds without a distribution URL it does not
+    need; evaluate_after_post / evaluate_kill_switch are then no-ops. If a URL IS
+    configured, both are left enabled. This sets only the TEST environment (monkeypatch,
+    auto-reverted, scoped to this fixture) — the production fail-loud guards are unchanged.
     """
     if not os.environ.get("DELTA_ORCH_DISTRIBUTION_URL"):
         monkeypatch.setenv("DELTA_BUDGET_ENGINE_ENABLED", "0")
+        monkeypatch.setenv("DELTA_KILL_SWITCH_ENABLED", "0")
     return create_app()
 
 

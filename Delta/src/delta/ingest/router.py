@@ -15,6 +15,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ..budget_engine.evaluator import evaluate_after_post
+from ..kill_switch.evaluator import evaluate_kill_switch
 from .config import ATTEMPT_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER
 from .dlq import dead_letter
 from .errors import DeadLetterReason, PermanentIngestError, is_transient
@@ -142,6 +143,11 @@ async def ingest_usage(request: Request) -> JSONResponse:
     # authority; enforcement is downstream). evaluate_after_post classifies and absorbs all
     # of its own failures (it never raises), so a successful debit always returns 200.
     await evaluate_after_post(record, request.app.state.budget_engine_settings)
+
+    # D-006 kill-switch hook: an independent, faster, per-transaction check (unauthorized
+    # agent identity / anomalous single-transaction cost) — no period accumulation. Same
+    # post-commit, never-raises, response-never-altered shape as the budget engine above.
+    await evaluate_kill_switch(record, request.app.state.kill_switch_settings)
 
     return JSONResponse(
         status_code=200,

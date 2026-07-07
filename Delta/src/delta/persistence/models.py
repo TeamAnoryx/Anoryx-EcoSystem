@@ -127,3 +127,53 @@ budget_publish_outbox = sa.Table(
     sa.Column("last_error", sa.String(512), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
+
+# --- D-006 kill-switch (migration 0004) -------------------------------------------
+# Tenant-wide identity allow-list (opt-in). While a tenant has zero rows here, the
+# unauthorized-agent trigger is inert for it (ADR-0006 §2 fork 2, §3.6).
+agent_authorizations = sa.Table(
+    "agent_authorizations",
+    metadata,
+    sa.Column("tenant_id", sa.String(64), primary_key=True),
+    sa.Column("agent_id", sa.String(64), primary_key=True),
+    sa.Column("authorized_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# Per (tenant, team, project, agent) edge state — the SAME granularity as Sentinel's
+# BudgetScope.AGENT (exact team+project+agent match; no wildcard for budget policies).
+# One row per scope ever observed to offend; no period bucket (unlike D-005, the
+# kill-switch is not period-based).
+kill_switch_state = sa.Table(
+    "kill_switch_state",
+    metadata,
+    sa.Column("kill_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("team_id", sa.String(64), nullable=False),
+    sa.Column("project_id", sa.String(64), nullable=False),
+    sa.Column("agent_id", sa.String(64), nullable=False),
+    sa.Column("policy_id", sa.String(64), nullable=False),
+    sa.Column("state", sa.String(16), nullable=False),
+    sa.Column("reason", sa.String(32), nullable=True),
+    sa.Column("last_published_version", sa.BigInteger, nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# The durable kill/clear DECISION + delivery state (mirrors budget_publish_outbox
+# exactly). Reuses delta.policy.sign + delta.budget_engine.publisher unchanged.
+kill_switch_outbox = sa.Table(
+    "kill_switch_outbox",
+    metadata,
+    sa.Column("outbox_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("kill_id", sa.String(64), nullable=False),
+    sa.Column("policy_id", sa.String(64), nullable=False),
+    sa.Column("policy_version", sa.BigInteger, nullable=False),
+    sa.Column("transition", sa.String(16), nullable=False),
+    sa.Column("policy_payload", postgresql.JSONB, nullable=False),
+    sa.Column("distribution_id", sa.String(64), nullable=True),
+    sa.Column("state", sa.String(16), nullable=False),
+    sa.Column("attempts", sa.Integer, nullable=False),
+    sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("last_error", sa.String(512), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
