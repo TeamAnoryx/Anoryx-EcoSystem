@@ -4,9 +4,27 @@
 # bootstrap Job, region.replication.bootstrapJob.enabled). Replicates ONLY the
 # globally-uniform stores (policies, policy_versions, events_audit_log) active ->
 # passive. Logical (not physical) replication so nothing residency-bound is copied;
-# row-faithful so the audit hash chain + policy signatures survive; the passive copy
-# is read-only so the chain cannot fork. The generated SQL is append-only safe: it
-# only CREATEs a publication/subscription — it never drops, deletes, or rewrites data.
+# row-faithful so the audit hash chain + policy signatures survive replication.
+# The generated SQL is append-only safe: it only CREATEs a publication/subscription
+# — it never drops, deletes, or rewrites data.
+#
+# HONESTY BOUNDARY (F-022 audit H1): the passive region's read-only posture is NOT
+# enforced by this deployment layer. SENTINEL_REGION_ROLE is context env only
+# (GatewaySettings extra="ignore" — no code reads it), and neither a DB-role REVOKE
+# nor an app-tier serve-path gate ships in F-022. A passive region that serves
+# governed traffic would append to its LOCAL events_audit_log and fork the chain /
+# collide on the per-DB sequence_number. Until app-tier role enforcement lands (the
+# named deferral — see docs/followups/f-022-passive-readonly-enforcement.md), an
+# operator MUST NOT route governed/audit-generating traffic to a passive region.
+#
+# Residency safety is ENFORCED here (not merely conventional): the guard below
+# fails the render if region.replication.tables is not a subset of the approved
+# global stores, so a residency-bound / tenant-scoped table can never be published.
+{{- range .Values.region.replication.tables }}
+{{- if not (has . (list "policies" "policy_versions" "events_audit_log")) }}
+{{- fail (printf "region.replication.tables: %q is not an approved global store — only policies, policy_versions, events_audit_log may cross regions (ADR-0028 D3 residency safety)" .) }}
+{{- end }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

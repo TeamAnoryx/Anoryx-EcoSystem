@@ -6,7 +6,11 @@ type: application
 # 0.2.0 — F-022 multi-region overlay (ADR-0028): region identity/labels/env,
 # cross-region logical-replication templates, geo-routing annotations, topology
 # spread. All gated behind region.enabled (default off).
-version: 0.2.0
+# 0.2.1 — F-022 audit remediation: gate region includes at the call site (true
+# byte-identical default render), residency table allowlist enforced at render,
+# revision-suffixed replication Job, fail-hard bootstrap (no silent sed|psql
+# no-op), least-privilege replication secret, verify-full replication TLS.
+version: 0.2.1
 # appVersion tracks the Sentinel release (single source of truth: src/gateway/__init__.py).
 appVersion: "0.10.0"
 keywords:

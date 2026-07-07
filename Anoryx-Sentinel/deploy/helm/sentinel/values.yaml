@@ -82,7 +82,10 @@ region:
   # e.g. "us-east-1". Required when enabled.
   name: ""
   # "active"  — the SOLE writer for the policy store + audit log (ADR-0028 D2).
-  # "passive" — read-only replica + failover standby (promote via the runbook).
+  # "passive" — replica + failover standby (promote via the runbook). NOTE: the
+  # passive read-only posture is NOT enforced by this chart (F-022 audit H1) — do
+  # NOT route governed/audit-generating traffic to a passive region until app-tier
+  # role enforcement ships (docs/followups/f-022-passive-readonly-enforcement.md).
   role: active
   # Data-residency jurisdiction label — SENTINEL_DATA_RESIDENCY env +
   # anoryx.io/data-residency label, e.g. "us" / "eu". Informational at the
@@ -93,12 +96,17 @@ region:
   # (policies, policy_versions, events_audit_log). Renders publication SQL on the
   # active region and subscription SQL on a passive region into a ConfigMap the
   # operator applies (ADR-0028 D3). Logical replication is row-faithful, so the
-  # audit hash chain + policy signatures survive intact; the passive copy is
-  # read-only so the chain cannot fork. Physical replication is deliberately NOT
-  # used — it would clone residency-bound rows across regions.
+  # audit hash chain + policy signatures survive replication intact. Physical
+  # replication is deliberately NOT used — it would clone residency-bound rows
+  # across regions. The `tables` list is enforced against a global-store allowlist
+  # at render time (residency safety). Chain-fork safety depends on the passive
+  # region NOT serving writes — which is an operator responsibility today, not a
+  # chart-enforced guarantee (F-022 audit H1; see the `role` note above).
   replication:
     enabled: false
-    # The exact tables to replicate. Defaults = the two global stores only.
+    # The exact tables to replicate. Defaults = the three global stores only.
+    # Render fails if this is not a subset of {policies, policy_versions,
+    # events_audit_log} (ADR-0028 D3 residency safety — enforced, not conventional).
     tables:
       - policies
       - policy_versions

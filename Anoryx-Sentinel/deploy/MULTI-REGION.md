@@ -37,8 +37,10 @@ first, get one cluster working, then layer this on.
 - **Active region** — the sole writer for `policies`, `policy_versions`, and the
   append-only `events_audit_log`. Publishes them via Postgres **logical**
   replication.
-- **Passive region(s)** — subscribe to the active region's publication; serve
-  residency-local reads; stand by for promotion. Writes route to the active region
+- **Passive region(s)** — subscribe to the active region's publication and stand by
+  for promotion. **Do NOT serve governed traffic on a passive region** — passive
+  write-exclusion is not enforced by this chart (audit H1, §8); serving there forks
+  the audit chain and halts replication. Keep the passive geo-routing weight at 0
   until you promote (§6).
 - **Data residency** — each region carries `topology.kubernetes.io/region`,
   `anoryx.io/region-role`, and `anoryx.io/data-residency` pod labels plus
@@ -83,7 +85,11 @@ helm install sentinel-eu deploy/helm/sentinel \
 
 Set `region.replication.activePrimaryConninfo` to the **active** region's primary
 (host/port/db/user/sslmode) **without the password** — the password is injected at
-apply time (§5), never committed.
+apply time (§5), never committed. Use **`sslmode=verify-full`** with a pinned CA
+(`sslrootcert=`) on that conninfo: the cross-region link carries signed policies and
+the tamper-evident audit log, so a weaker mode (`require` encrypts but does not
+verify the server cert) leaves it open to an on-path MITM that could tamper the
+replicated stream.
 
 ---
 
@@ -111,6 +117,14 @@ kubectl get configmap sentinel-eu-sentinel-region-replication \
   | sed "s|\${REPLICATION_PASSWORD}|$REPLICATION_PASSWORD|" \
   | psql "$PASSIVE_ADMIN_DSN"
 ```
+
+> **Credential hygiene.** `CREATE SUBSCRIPTION` persists the connection string
+> (including the substituted password) in the passive DB's `pg_subscription`
+> catalog in plaintext, and it can surface in server logs. Before applying, set the
+> passive Postgres to a quiet logging posture for the bootstrap window
+> (`log_statement=none`, restrict `log_min_error_statement`), and **rotate the
+> replication password after bootstrap**. Prefer a `.pgpass`/passfile conninfo
+> option where your Postgres version supports it so the secret is not inlined.
 
 ### 5b. Opt-in bootstrap Job (bundled-store demo)
 
@@ -194,12 +208,24 @@ failover to the active region.
 
 ## 8. What this does and does not claim
 
-**Does:** region identity + residency labeling; a correct, integrity-preserving
-replication design for exactly the two global stores (row-faithful → the audit hash
-chain and policy signatures survive; read-only passive → the chain cannot fork);
-zero change to the single-region default (fully gated); no `src/` change.
+**Does:** region identity + residency labeling; an integrity-preserving replication
+design for exactly the three global stores (row-faithful → the audit hash chain and
+policy signatures survive replication); **render-enforced residency scope** (the
+`tables` allowlist fails the render if anything but the global stores is listed);
+zero change to the single-region default (byte-identical when off, gated at the call
+site); no `src/` change.
 
-**Does not:** automatic active-active multi-writer; automatic failover; a
-provisioned global load balancer; app-tier residency enforcement (the deployment
-provides region *context*; routing a tenant's data by residency is a later
-application feature). These are deferred by name in ADR-0028, not partially built.
+**Does not (and you must account for):** automatic active-active multi-writer;
+automatic failover; a provisioned global load balancer; app-tier residency
+enforcement; **and — importantly — passive-region write-exclusion.** A passive
+region's read-only posture is NOT enforced by this chart (audit finding **H1**):
+`SENTINEL_REGION_ROLE` is context env only, and there is no DB-role `REVOKE` or
+app-tier serve gate. Because the terminal audit middleware writes to the **local**
+`events_audit_log` on every governed request, a passive region that serves governed
+traffic **forks the hash chain** and collides on the replicated `sequence_number`,
+halting replication. **Until app-tier role enforcement ships
+(`docs/followups/f-022-passive-readonly-enforcement.md`), do NOT route
+governed/audit-generating traffic to a passive region** — keep the passive
+`geoRouting` weight at 0 (as the example does) and treat passive strictly as a
+promote-on-failover standby. These are deferred by name in ADR-0028, not partially
+built.

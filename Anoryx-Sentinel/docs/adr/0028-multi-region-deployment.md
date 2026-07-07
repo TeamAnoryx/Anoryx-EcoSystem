@@ -1,6 +1,6 @@
 # ADR-0028 — Multi-Region Deployment (F-022)
 
-- Status: Proposed
+- Status: Accepted (implemented — F-022, PR #49; hardened + independently audited in the F-022 reconciliation PR)
 - Date: 2026-07-07
 - Builds on: ADR-0027 (Helm single-cluster deployment — the chart this overlay
   extends), ADR-0012 (deployment & release — image variants, NetworkPolicy,
@@ -74,9 +74,22 @@ This is stated plainly so the env is not mistaken for enforcement.
 ### D2 — Active / passive, not automated active-active
 
 One region is `active` — the **sole writer** for the policy store and the audit
-log. `passive` regions run **read-only** replicas of those two stores and a serve
-stack that can be **promoted on failover** (runbook, D-below). Passive regions
-MAY serve residency-local **reads**; **writes route to the active region.**
+log. `passive` regions run replicas of those two stores and a serve stack that can
+be **promoted on failover** (runbook, D-below). The intent is that passive regions
+serve residency-local **reads** while **writes route to the active region.**
+
+> **Read-only passive is NOT enforced by this deployment layer (F-022 audit H1).**
+> `SENTINEL_REGION_ROLE` is context env only (`GatewaySettings` uses
+> `extra="ignore"`; no code reads it), and F-022 ships neither a DB-role `REVOKE`
+> nor an app-tier serve-path gate. Because the non-bypassable terminal audit
+> middleware appends to the **local** `events_audit_log` on every governed request
+> and `sequence_number` is a per-database `bigserial` that logical replication does
+> not carry, a passive region that serves governed traffic would fork the
+> hash chain and collide on the replicated sequence PK (halting replication).
+> Until app-tier role enforcement lands (a named deferral —
+> `docs/followups/f-022-passive-readonly-enforcement.md`), an operator **MUST NOT**
+> route governed/audit-generating traffic to a passive region. This is the honest
+> posture; the guarantee is operator-owned, not chart-enforced, today.
 
 Automated **active-active multi-writer is explicitly NOT attempted.** Two writers
 concurrently extending an append-only, hash-chained log (`events_audit_log`)
@@ -99,10 +112,18 @@ defaulting to exactly these). Rationale and safety:
   Logical replication (a `PUBLICATION` of a named table set → a `SUBSCRIPTION`)
   replicates **exactly** the two globally-uniform stores and nothing
   residency-bound.
-- **Integrity survives.** Logical replication is row-faithful, so each audit
-  row's `prev_hash` / `row_hash` and each policy's signature copy verbatim; the
-  hash chain and signatures remain verifiable on the passive side. Because the
-  passive copy is **read-only**, the chain cannot fork.
+- **Integrity survives replication.** Logical replication is row-faithful, so each
+  audit row's `prev_hash` / `row_hash` and each policy's signature copy verbatim;
+  the hash chain and signatures remain verifiable on the passive side. Chain-fork
+  safety additionally requires the passive region to **not write** those tables —
+  which is **operator-owned, not chart-enforced** today (see the D2 note above and
+  audit finding H1). The chart enforces *residency* scope (the table allowlist
+  below) but not passive write-exclusion.
+- **Residency scope is enforced at render.** `region-replication-configmap.yaml`
+  fails the render if `region.replication.tables` is not a subset of the approved
+  global stores `{policies, policy_versions, events_audit_log}`, so a
+  residency-bound / tenant-scoped table can never be added to the publication by a
+  values override. Residency safety is enforced, not merely conventional.
 - **Delivered as rendered SQL, not auto-executed.** The chart renders a
   `region-replication` ConfigMap holding the **publication SQL** (on `active`) or
   **subscription SQL** (on `passive`), generated from values. An operator applies
@@ -158,12 +179,22 @@ Bedrock). The runbook documents the precise rule.
 ## Consequences
 
 **Positive.** Region identity + residency labeling are first-class; the
-replication design is correct and **integrity-preserving for exactly the two
-global stores** (and residency-safe by construction, because it is logical and
-table-scoped); the single-region default is **untouched** (byte-identical, fully
-gated); there is **no `src/` change**, so the existing test suite carries no risk;
-and the active/passive posture is stated honestly rather than overclaimed as
+replication design is **integrity-preserving for exactly the three
+global stores** and **residency-safe by an enforced allowlist** (logical,
+table-scoped, and render-time-validated — not merely conventional); the
+single-region default is **untouched** (byte-identical when off, fully gated at the
+call site); there is **no `src/` change**, so the existing test suite carries no
+risk; and the active/passive posture is stated honestly rather than overclaimed as
 active-active.
+
+**Known limitation (F-022 audit H1, tracked).** The passive-region read-only
+posture that makes chain-fork "impossible" is **not enforced** by F-022 — it is an
+operator responsibility until app-tier `SENTINEL_REGION_ROLE` enforcement ships
+(`docs/followups/f-022-passive-readonly-enforcement.md`). This is documented, not
+hidden: the ADR, the ConfigMap, `values.yaml`, and the runbook all state it, and
+the audit-of-record (`docs/audit/f-022-security-audit.md`) escalates it for human
+remediation. Multi-region should not be operated with a serving passive region
+until it lands.
 
 **Negative / costs.** Passive promotion is **manual** (runbook), so failover has
 an operator-in-the-loop RTO. Operators must themselves wire the GSLB, the

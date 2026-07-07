@@ -17,7 +17,9 @@ spec:
       labels:
         {{- include "sentinel.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: gateway
+        {{- if .Values.region.enabled }}
         {{- include "sentinel.regionLabels" . | nindent 8 }}
+        {{- end }}
       {{- with .Values.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
@@ -81,7 +83,9 @@ spec:
             - name: PII_DETECTION_ENABLED
               value: {{ .Values.piiDetectionEnabled | quote }}
             # Region identity (F-022, ADR-0028 D1) — gated on region.enabled.
+            {{- if .Values.region.enabled }}
             {{- include "sentinel.regionEnv" . | nindent 12 }}
+            {{- end }}
             {{- range .Values.env }}
             - name: {{ .name }}
               value: {{ .value | quote }}

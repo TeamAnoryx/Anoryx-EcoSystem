@@ -22,7 +22,12 @@ region:
     # libpq conninfo to the ACTIVE region's primary, WITHOUT the password. The
     # password is supplied at apply time from a Secret (envSecret key
     # REPLICATION_PASSWORD) — NEVER commit it here.
-    activePrimaryConninfo: "host=us-east-1.db.example.com port=5432 dbname=sentinel_dev user=replicator sslmode=require"
+    # TLS: use sslmode=verify-full with a pinned CA (sslrootcert) — the cross-region
+    # link carries signed policies + the tamper-evident audit log, so a MITM that a
+    # weaker mode (require = encrypt-but-don't-verify) allows could tamper the stream.
+    # sslrootcert points at a CA file on the PASSIVE Postgres server (it opens the
+    # subscription connection). See deploy/MULTI-REGION.md §5.
+    activePrimaryConninfo: "host=us-east-1.db.example.com port=5432 dbname=sentinel_dev user=replicator sslmode=verify-full sslrootcert=/etc/ssl/certs/active-region-ca.crt"
     bootstrapJob:
       enabled: false
   topologySpread:
