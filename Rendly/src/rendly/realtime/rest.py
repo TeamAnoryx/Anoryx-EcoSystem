@@ -47,6 +47,7 @@ from ..persistence import chat_repo
 from ..persistence.async_database import get_tenant_session
 from .authz import AuthzPrincipal, ChannelAction, authorize
 from .frames import to_message_record
+from .ice import build_ice_servers
 
 _UUID_PATTERN = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 _ChannelIdPath = Annotated[str, Path(pattern=_UUID_PATTERN, max_length=64)]
@@ -333,3 +334,20 @@ async def list_messages(
         )
     next_cursor = str(messages[-1].seq) if len(messages) == limit else None
     return {"messages": [to_message_record(m) for m in messages], "next_cursor": next_cursor}
+
+
+@router.get("/huddles/ice-servers", status_code=200)
+async def get_ice_servers(
+    request: Request,
+    principal: AccessTokenClaims = Depends(require_scope("huddle:initiate")),
+) -> dict:
+    """Self-hosted ICE/TURN bootstrap for a 1-on-1 huddle (R-007, ``getIceServers``).
+
+    Never returns an external meeting link — only operator-configured self-hosted STUN/TURN
+    endpoints (``IceServerConfig.from_env``). No target resource is addressed, so there is no
+    tenant/existence check beyond the ``huddle:initiate`` scope gate.
+    """
+    now_epoch = int(datetime.now(timezone.utc).timestamp())
+    return build_ice_servers(
+        request.app.state.ice_config, user_id=principal.sub, now_epoch=now_epoch
+    )

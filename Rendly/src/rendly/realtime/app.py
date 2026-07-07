@@ -10,6 +10,11 @@ the LOCKED Error envelope; closed-schema 400; fail-closed 500) apply to the chat
 The inspector defaults to the fail-closed NO-OP (``NoOpMessageInspector``). R-008 passes a real
 :class:`MessageInspector` here with NO other change — the send pipeline already calls it
 synchronously before persist + fan-out.
+
+R-007 adds the in-process ``HuddleRegistry`` to the same runtime context and ``ice_config`` (the
+self-hosted STUN/TURN bootstrap ``GET /v1/huddles/ice-servers`` reads) to app state, defaulting to
+``IceServerConfig.from_env()`` — no operator config means STUN/TURN entries are simply empty
+(never a fabricated or third-party endpoint).
 """
 
 from __future__ import annotations
@@ -19,6 +24,8 @@ from fastapi import FastAPI
 from ..auth.keys import KeyMaterial
 from ..auth.service import AuthConfig, Clock
 from ..persistence.identity_app import create_db_app
+from .huddle import HuddleRegistry
+from .ice import IceServerConfig
 from .inspector import MessageInspector, NoOpMessageInspector
 from .pipeline import RuntimeContext
 from .registry import ConnectionRegistry
@@ -34,6 +41,7 @@ def create_chat_app(
     clock: Clock | None = None,
     inspector: MessageInspector | None = None,
     resolver: TeamMembershipResolver | None = None,
+    ice_config: IceServerConfig | None = None,
 ) -> FastAPI:
     """Build the Rendly chat app: the DB-backed auth app + the WebSocket/chat REST layer.
 
@@ -42,13 +50,16 @@ def create_chat_app(
     ``inspector`` defaults to the fail-closed no-op content seam (R-008 swaps in real inspection);
     the ``resolver`` defaults to the manual team-membership resolver (R-006 FORK C — admin-managed
     membership, ``external_ref`` opaque; a future D-016 Delta-event impl plugs in here unchanged).
+    ``ice_config`` defaults to ``IceServerConfig.from_env()`` (R-007's self-hosted ICE bootstrap).
     """
     app = create_db_app(key=key, config=config, clock=clock)
     app.state.realtime_ctx = RuntimeContext(
         registry=ConnectionRegistry(),
         inspector=inspector or NoOpMessageInspector(),
         resolver=resolver or ManualResolver(),
+        huddles=HuddleRegistry(),
     )
+    app.state.ice_config = ice_config or IceServerConfig.from_env()
     app.add_api_websocket_route("/v1/realtime", realtime_endpoint)
     app.include_router(chat_rest_router)
     return app

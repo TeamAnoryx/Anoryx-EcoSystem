@@ -12,11 +12,19 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+from jsonschema import Draft202012Validator
+from pydantic import ValidationError
+
 from rendly.realtime import frames
 from rendly.realtime.inspector import InspectionOutcome
 from rendly.realtime.message import Message
 
 _CONTRACT = Path(__file__).resolve().parent.parent.parent / "contracts" / "messages.schema.json"
+
+
+def _catalog_validator() -> Draft202012Validator:
+    return Draft202012Validator(json.loads(_CONTRACT.read_text(encoding="utf-8")))
 
 
 def test_error_message_pairing_matches_contract_verbatim() -> None:
@@ -104,3 +112,122 @@ def test_chat_ack_blocked_has_error_code_no_message_id() -> None:
     assert ack["error_code"] == "message_blocked"
     assert "message_id" not in ack
     assert ack["inspection"]["status"] == "blocked"
+
+
+# --- R-007 huddle/signal framing --------------------------------------------------------
+
+_TENANT = "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+_HUDDLE = "d5e6f7a8-cdef-3456-0123-4567890abcde"
+_INVITER = "7d9e2f3a-1234-5c6b-8def-0123456789ab"
+_PEER = "9f8e7d6c-5b4a-3210-fedc-ba9876543210"
+
+
+def test_huddle_invite_frame_channel_id_is_optional() -> None:
+    frame = frames.HuddleInviteFrame(msg_type="huddle.invite", peer_user_id=_PEER)
+    assert frame.channel_id is None
+    with_channel = frames.HuddleInviteFrame(
+        msg_type="huddle.invite", peer_user_id=_PEER, channel_id=_HUDDLE
+    )
+    assert with_channel.channel_id == _HUDDLE
+
+
+def test_huddle_invite_frame_rejects_extra_keys() -> None:
+    with pytest.raises(ValidationError):
+        frames.HuddleInviteFrame(msg_type="huddle.invite", peer_user_id=_PEER, extra="nope")
+
+
+def test_huddle_hangup_frame_requires_huddle_id() -> None:
+    with pytest.raises(ValidationError):
+        frames.HuddleHangupFrame(msg_type="huddle.hangup")
+    frame = frames.HuddleHangupFrame(msg_type="huddle.hangup", huddle_id=_HUDDLE)
+    assert frame.huddle_id == _HUDDLE
+
+
+@pytest.mark.parametrize(
+    "signal,expected_type",
+    [
+        ({"kind": "offer", "sdp": "v=0..."}, frames.SignalOffer),
+        ({"kind": "answer", "sdp": "v=0..."}, frames.SignalAnswer),
+        (
+            {
+                "kind": "ice-candidate",
+                "candidate": "candidate:1 1 UDP ...",
+                "sdp_mid": "0",
+                "sdp_mline_index": 0,
+            },
+            frames.SignalIceCandidate,
+        ),
+        (
+            {"kind": "ice-candidate", "candidate": "candidate:1 1 UDP ..."},
+            frames.SignalIceCandidate,
+        ),
+    ],
+)
+def test_signal_send_frame_dispatches_by_kind(signal, expected_type) -> None:
+    frame = frames.SignalSendFrame(msg_type="signal.send", huddle_id=_HUDDLE, signal=signal)
+    assert isinstance(frame.signal, expected_type)
+
+
+def test_signal_send_frame_rejects_unknown_kind() -> None:
+    with pytest.raises(ValidationError):
+        frames.SignalSendFrame(
+            msg_type="signal.send", huddle_id=_HUDDLE, signal={"kind": "bogus", "sdp": "x"}
+        )
+
+
+def test_signal_send_frame_rejects_oversized_sdp() -> None:
+    with pytest.raises(ValidationError):
+        frames.SignalSendFrame(
+            msg_type="signal.send",
+            huddle_id=_HUDDLE,
+            signal={"kind": "offer", "sdp": "x" * (frames.MAX_SDP_LEN + 1)},
+        )
+
+
+def test_signal_content_extracts_sdp_or_candidate() -> None:
+    offer = frames.SignalOffer(kind="offer", sdp="v=0 offer-body")
+    assert frames.signal_content(offer) == "v=0 offer-body"
+    candidate = frames.SignalIceCandidate(kind="ice-candidate", candidate="candidate:1 1 UDP ...")
+    assert frames.signal_content(candidate) == "candidate:1 1 UDP ..."
+
+
+def test_build_huddle_update_omits_archival_when_not_given() -> None:
+    frame = frames.build_huddle_update(
+        huddle_id=_HUDDLE, tenant_id=_TENANT, peer_user_id=_PEER, state="ringing"
+    )
+    assert "archival" not in frame
+    _catalog_validator().validate(frame)
+
+
+def test_build_huddle_update_carries_archival_on_terminal_state() -> None:
+    archival = frames.build_huddle_archival(
+        huddle_id=_HUDDLE, seq=7, created_at=datetime(2026, 6, 26, 12, 5, 0, tzinfo=timezone.utc)
+    )
+    frame = frames.build_huddle_update(
+        huddle_id=_HUDDLE, tenant_id=_TENANT, peer_user_id=_PEER, state="ended", archival=archival
+    )
+    assert frame["archival"]["record_id"] == _HUDDLE
+    assert frame["archival"]["seq"] == 7
+    assert frame["archival"]["prev_record_hash"] is None  # RESERVED (R-009)
+    assert frame["archival"]["content_hash"] is None
+    _catalog_validator().validate(frame)
+
+
+@pytest.mark.parametrize("state", ["ringing", "accepted", "active", "declined", "ended", "busy"])
+def test_build_huddle_update_every_wire_state_validates(state) -> None:
+    frame = frames.build_huddle_update(
+        huddle_id=_HUDDLE, tenant_id=_TENANT, peer_user_id=_PEER, state=state
+    )
+    _catalog_validator().validate(frame)
+
+
+def test_build_signal_relay_matches_the_locked_contract() -> None:
+    frame = frames.build_signal_relay(
+        tenant_id=_TENANT,
+        huddle_id=_HUDDLE,
+        from_user_id=_PEER,
+        signal={"kind": "answer", "sdp": "v=0..."},
+    )
+    assert frame["msg_type"] == "signal.relay"
+    assert frame["from_user_id"] == _PEER
+    _catalog_validator().validate(frame)

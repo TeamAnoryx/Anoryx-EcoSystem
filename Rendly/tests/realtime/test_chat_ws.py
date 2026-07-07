@@ -356,10 +356,12 @@ def test_message_too_large_is_blocked(make_client, seed_user, mint_token, new_uu
         assert ack["error_code"] == "message_too_large"
 
 
-def test_unsupported_huddle_frame_answered_unavailable(
+def test_server_only_huddle_frame_from_client_answered_unavailable(
     make_client, seed_user, mint_token, new_uuid
 ):
-    """A valid-but-unsupported huddle frame (R-007) is answered huddle_unavailable, not dropped."""
+    """A client sending a SERVER->client-only catalog frame (R-007: huddle.update/signal.relay)
+    is answered huddle_unavailable, not dropped — huddle.invite/hangup/signal.send are the real
+    client->server operations (see test_chat_huddles.py)."""
     tenant = new_uuid()
     u1 = new_uuid()
     seed_user(tenant_id=tenant, user_id=u1)
@@ -367,7 +369,15 @@ def test_unsupported_huddle_frame_answered_unavailable(
     tok = mint_token(user_id=u1, tenant_id=tenant, scope="chat:read chat:write")
     with client.websocket_connect(_REALTIME, headers=_auth(tok)) as ws:
         assert ws.receive_json()["msg_type"] == "session.welcome"
-        ws.send_json({"msg_type": "huddle.invite", "peer_user_id": str(uuid.uuid4())})
+        ws.send_json(
+            {
+                "msg_type": "huddle.update",
+                "huddle_id": str(uuid.uuid4()),
+                "tenant_id": tenant,
+                "peer_user_id": str(uuid.uuid4()),
+                "state": "ringing",
+            }
+        )
         err = recv_until(ws, "error")
         assert err["error_code"] == "huddle_unavailable"
 

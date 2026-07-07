@@ -101,6 +101,14 @@ class ConnectionRegistry:
         """A SNAPSHOT list of the connections in a (tenant, channel) bucket."""
         return list(self._by_channel.get((tenant_id, channel_id), ()))
 
+    def user_connections(self, tenant_id: str, user_id: str) -> list[Connection]:
+        """A SNAPSHOT list of a user's live connections (all of them — a user may hold several).
+
+        Used by the R-007 huddle signaling path to address a specific user directly (huddle
+        invites/updates/signal relays are user-to-user, not channel fan-out).
+        """
+        return list(self._by_user.get((tenant_id, user_id), ()))
+
     def sharing_connections(self, conn: Connection) -> list[Connection]:
         """Connections that share at least one channel with ``conn`` (presence audience)."""
         seen: set[Connection] = set()

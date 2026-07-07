@@ -13,13 +13,21 @@ socket is closed before accept — no session is opened). The handshake gate is 
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from starlette.websockets import WebSocket
 
 from ..auth.errors import new_request_id
 from ..auth.tokens import TokenVerificationError, verify
 from ..persistence import chat_repo
 from ..persistence.async_database import get_tenant_session
-from .frames import build_error, build_presence_update, build_session_welcome
+from .frames import (
+    build_error,
+    build_huddle_archival,
+    build_huddle_update,
+    build_presence_update,
+    build_session_welcome,
+)
 from .pipeline import RuntimeContext, dispatch_frame
 from .registry import Connection
 
@@ -128,6 +136,29 @@ async def realtime_endpoint(websocket: WebSocket) -> None:
                     build_error(error_code="internal_error", request_id=new_request_id())
                 )
     finally:
+        # End any huddle this connection's user was in BEFORE dropping the connection (R-007) —
+        # a dropped socket must not leave the other party ringing/talking to a dead peer forever.
+        # NOTE: like presence below, this fires on ANY disconnect of ANY of the user's sockets,
+        # even if they hold another live connection elsewhere (the existing R-005 multi-connection
+        # simplification this module already accepts for presence).
+        ended = ctx.huddles.end_active_for_user(tenant_id=conn.tenant_id, user_id=conn.user_id)
+        if ended is not None:
+            archival = build_huddle_archival(
+                huddle_id=ended.huddle_id,
+                seq=ctx.huddles.next_seq(conn.tenant_id),
+                created_at=datetime.now(timezone.utc),
+            )
+            other_user_id = ended.other(conn.user_id)
+            for c in ctx.registry.user_connections(conn.tenant_id, other_user_id):
+                await c.send(
+                    build_huddle_update(
+                        huddle_id=ended.huddle_id,
+                        tenant_id=conn.tenant_id,
+                        peer_user_id=conn.user_id,
+                        state="ended",
+                        archival=archival,
+                    )
+                )
         # Notify peers BEFORE removing this connection from the registry (afterwards it shares no
         # channel with anyone, so the audience would be empty).
         audience = [c for c in ctx.registry.sharing_connections(conn) if c is not conn]

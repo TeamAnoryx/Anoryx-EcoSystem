@@ -17,7 +17,7 @@ import re
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from .inspector import InspectionOutcome
 from .message import Message
@@ -104,6 +104,66 @@ class PresenceSetFrame(BaseModel):
     model_config = ConfigDict(extra="forbid")
     msg_type: Literal["presence.set"]
     status: Literal["online", "away", "busy", "offline"]
+
+
+# --- 1-on-1 huddle signaling (R-007) — client->server inbound frames -------------------
+
+HuddleState = Literal["ringing", "accepted", "active", "declined", "ended", "busy"]
+
+MAX_SDP_LEN = 65536  # Signal.sdp maxLength (offer/answer)
+MAX_CANDIDATE_LEN = 1024  # Signal.candidate maxLength (ice-candidate)
+
+
+class HuddleInviteFrame(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    msg_type: Literal["huddle.invite"]
+    peer_user_id: _Uuid
+    channel_id: _Uuid | None = None
+
+
+class HuddleHangupFrame(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    msg_type: Literal["huddle.hangup"]
+    huddle_id: _Uuid
+
+
+class SignalOffer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["offer"]
+    sdp: Annotated[str, StringConstraints(max_length=MAX_SDP_LEN)]
+
+
+class SignalAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["answer"]
+    sdp: Annotated[str, StringConstraints(max_length=MAX_SDP_LEN)]
+
+
+class SignalIceCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["ice-candidate"]
+    candidate: Annotated[str, StringConstraints(max_length=MAX_CANDIDATE_LEN)]
+    sdp_mid: Annotated[str, StringConstraints(max_length=64)] | None = None
+    sdp_mline_index: Annotated[int, Field(ge=0, le=1024)] | None = None
+
+
+# The Signal oneOf (contracts/messages.schema.json #/$defs/Signal): dispatch by the `kind`
+# const. Pydantic v2's "smart" union mode picks the matching member by its distinct Literal.
+SignalPayload = SignalOffer | SignalAnswer | SignalIceCandidate
+
+
+class SignalSendFrame(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    msg_type: Literal["signal.send"]
+    huddle_id: _Uuid
+    signal: SignalPayload
+
+
+def signal_content(signal: SignalPayload) -> str:
+    """The inspectable text payload of a signal — the SDP blob or the ICE candidate line."""
+    if isinstance(signal, (SignalOffer, SignalAnswer)):
+        return signal.sdp
+    return signal.candidate
 
 
 # --- server->client frame builders -----------------------------------------------------
@@ -219,6 +279,55 @@ def build_presence_update(*, tenant_id: str, user_id: str, status: str) -> dict:
         "tenant_id": tenant_id,
         "user_id": user_id,
         "status": status,
+    }
+
+
+def build_huddle_archival(*, huddle_id: str, seq: int, created_at: datetime) -> dict:
+    """Archival metadata for a TERMINAL huddle.update (declined/ended/busy) — R-009 RESERVED
+    (the hash fields stay null; see ``ArchivalMeta`` / ADR-0001 D3)."""
+    return {
+        "schema_version": "1",
+        "record_id": huddle_id,
+        "created_at": _iso(created_at),
+        "seq": seq,
+        "prev_record_hash": None,
+        "content_hash": None,
+    }
+
+
+def build_huddle_update(
+    *,
+    huddle_id: str,
+    tenant_id: str,
+    peer_user_id: str,
+    state: str,
+    archival: dict | None = None,
+) -> dict:
+    """Server->client huddle lifecycle frame. ``peer_user_id`` is RECIPIENT-RELATIVE — the OTHER
+    participant as seen by whoever this frame is sent to (see ``Huddle.other``); the same lifecycle
+    event is built once per recipient, not broadcast verbatim to both. ``archival`` is populated
+    only on a TERMINAL state (declined/ended/busy) — an in-flight state (ringing/accepted/active)
+    carries none, matching the contract's optional field + the locked examples."""
+    frame = {
+        "msg_type": "huddle.update",
+        "huddle_id": huddle_id,
+        "tenant_id": tenant_id,
+        "peer_user_id": peer_user_id,
+        "state": state,
+    }
+    if archival is not None:
+        frame["archival"] = archival
+    return frame
+
+
+def build_signal_relay(*, tenant_id: str, huddle_id: str, from_user_id: str, signal: dict) -> dict:
+    """Server->client relayed WebRTC signaling payload (the SAME signal the sender submitted)."""
+    return {
+        "msg_type": "signal.relay",
+        "tenant_id": tenant_id,
+        "huddle_id": huddle_id,
+        "from_user_id": from_user_id,
+        "signal": signal,
     }
 
 
