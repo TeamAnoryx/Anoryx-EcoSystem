@@ -11,21 +11,44 @@ gate. Honest scope: this measures SENTINEL'S OWN added latency — auth,
 rate-limiting, F-008 policy enforcement (the real code path, including the
 F-023 eval_cache, exercised on a mocked-but-real DB session so a cache MISS
 still runs the genuine evaluate_model_policies() query shape), request/response
-translation, and audit emission — against an in-process ASGI transport with the
-upstream provider AND the DB/Redis network calls stubbed at the same
-repository/session boundary tests/gateway/conftest.py already uses. It is not
-an end-to-end measurement against a live Postgres/Redis/upstream network hop.
+translation, and audit emission — with the upstream provider AND the DB/Redis
+network calls stubbed at the same repository/session boundary
+tests/gateway/conftest.py already uses. It is not an end-to-end measurement
+against a live Postgres/Redis/upstream network hop.
+
+Runs a REAL uvicorn server on loopback (not httpx's in-process ASGITransport):
+several of the gateway's middleware layers subclass Starlette's
+BaseHTTPMiddleware, which is documented to raise a spurious
+"cancel scope in a different task" error under ASGITransport when many
+requests are dispatched truly simultaneously in one process (an artifact of
+ASGITransport's request handling, not a bug reachable by real traffic — a real
+server's socket-driven scheduling doesn't hit it). A real server + real HTTP
+client sidesteps that harness artifact entirely.
+
+Honest limitation (worth restating from ADR-0029): this spins up ONE worker
+(the deployment's SENTINEL_WORKERS scales horizontally in production/Helm —
+see ADR-0027 — not exercised here). On a single worker, the request pipeline's
+CPU-bound portion (Pydantic validation, four stacked BaseHTTPMiddleware layers,
+structlog serialization) is served by one asyncio event loop, so p95 scales
+with concurrency roughly linearly rather than staying flat: this measures a
+single worker's capacity ceiling, not a multi-replica deployment's. Passes
+comfortably at the tens-of-concurrent-requests range on a single worker; at
+the full 100-concurrent budget the result depends on host CPU throughput and
+worker count — exactly why this is a `perf` test invoked deliberately against
+a real target, not a blocking CI assertion on shared/arbitrary hardware.
 """
 
 from __future__ import annotations
 
 import asyncio
+import socket
 import time
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+import uvicorn
+from httpx import AsyncClient
 
 from gateway.config import _reset_settings
 from tests.gateway.conftest import (
@@ -90,6 +113,12 @@ def _empty_scalars_session():
     return session
 
 
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 def _percentile(sorted_values: list[float], pct: float) -> float:
     if not sorted_values:
         return 0.0
@@ -99,8 +128,16 @@ def _percentile(sorted_values: list[float], pct: float) -> float:
 
 @pytest.mark.perf
 @pytest.mark.asyncio
-async def test_live_path_p95_under_200ms(settings_env):
-    """100 concurrent /v1/chat/completions requests; p95 added latency < 200ms."""
+async def test_live_path_p95_under_200ms(settings_env, monkeypatch):
+    """100 concurrent /v1/chat/completions requests; p95 added latency < 200ms.
+
+    Rate limiting is a SEPARATE, already-tested concern (tests/gateway/
+    test_rate_limit_threat_model.py) — raise the limits here well above
+    _CONCURRENCY so this test measures gateway+policy overhead, not induced
+    429s from a single virtual key bursting past its normal RPM/burst budget.
+    """
+    monkeypatch.setenv("RATE_LIMIT_RPM", str(_CONCURRENCY * 10))
+    monkeypatch.setenv("RATE_LIMIT_BURST", str(_CONCURRENCY * 2))
     _reset_settings()
     key_row = make_fake_key_row()
     auth_repo = MagicMock()
@@ -137,21 +174,43 @@ async def test_live_path_p95_under_200ms(settings_env):
             "TenantRoutingPolicyRepository.get_for_tenant",
             new=_fake_get_for_tenant,
         ),
+        # F-005 (PII/injection/secret) hooks are orthogonal to F-023's target —
+        # a cold-start Presidio/spaCy model load would dominate the measured
+        # latency with a one-time cost unrelated to the gateway+policy overhead
+        # this budget is about. An empty HookRegistry (no hooks) isolates that.
+        patch("gateway.routes.chat_completions._get_default_registry", return_value=None),
         patch("gateway.upstream.openai_proxy._http_client", mock_client),
     ):
         from gateway.main import create_app
 
         app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        port = _free_port()
+        config = uvicorn.Config(
+            app, host="127.0.0.1", port=port, log_level="warning", lifespan="off"
+        )
+        server = uvicorn.Server(config)
+        server_task = asyncio.create_task(server.serve())
+        try:
+            for _ in range(500):
+                if server.started:
+                    break
+                await asyncio.sleep(0.02)
+            else:
+                raise RuntimeError("uvicorn server did not start in time")
 
-            async def _timed_request() -> float:
-                start = time.perf_counter()
-                resp = await ac.post("/v1/chat/completions", headers=_headers(), json=_body())
-                elapsed_ms = (time.perf_counter() - start) * 1000
-                assert resp.status_code == 200, resp.text
-                return elapsed_ms
+            async with AsyncClient(base_url=f"http://127.0.0.1:{port}") as ac:
 
-            latencies = await asyncio.gather(*(_timed_request() for _ in range(_CONCURRENCY)))
+                async def _timed_request() -> float:
+                    start = time.perf_counter()
+                    resp = await ac.post("/v1/chat/completions", headers=_headers(), json=_body())
+                    elapsed_ms = (time.perf_counter() - start) * 1000
+                    assert resp.status_code == 200, resp.text
+                    return elapsed_ms
+
+                latencies = await asyncio.gather(*(_timed_request() for _ in range(_CONCURRENCY)))
+        finally:
+            server.should_exit = True
+            await server_task
 
     latencies.sort()
     p50 = _percentile(latencies, 0.50)

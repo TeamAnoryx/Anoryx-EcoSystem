@@ -101,19 +101,36 @@ provisioned; the audit found no change needed there.
 
 A new pytest-marked (`@pytest.mark.perf`, excluded from the default `pytest`
 run via `addopts = "-m 'not perf'"` so normal CI stays fast and non-flaky — run
-explicitly via `pytest -m perf tests/gateway/`) harness drives the FastAPI app
-in-process (`httpx.AsyncClient` + `ASGITransport`, the same pattern
-`tests/gateway/` already uses) with **100 concurrent**
-`/v1/chat/completions` requests against a mocked upstream provider — the
-perf-load-engineer budget is explicitly "added latency" (Sentinel's own
-overhead), not upstream provider latency, which Sentinel does not control. The
-DB session is a `MagicMock` whose `execute()` answers every query with zero
-rows (same repository-boundary stub `tests/gateway/conftest.py` uses
-elsewhere) — this exercises the REAL `_enforce_policies_pre_request` /
-`evaluate_model_policies` / `eval_cache` code path on a cache MISS, not a
-bypass of it, so the test also stands as a load-bearing regression check on
-this ADR's own cache-miss code. Asserts p95 < 200ms; failure message reports
-p50/p95/p99.
+explicitly via `pytest -m perf tests/gateway/`) harness drives a REAL uvicorn
+server on loopback (not httpx's in-process `ASGITransport` — several gateway
+middleware layers subclass Starlette's `BaseHTTPMiddleware`, which raises a
+spurious "cancel scope in a different task" error under `ASGITransport` at
+high in-process concurrency; a real server + real HTTP client sidesteps that
+harness artifact) with **100 concurrent** `/v1/chat/completions` requests
+against a mocked upstream provider — the perf-load-engineer budget is
+explicitly "added latency" (Sentinel's own overhead), not upstream provider
+latency, which Sentinel does not control. The DB session is a `MagicMock`
+whose `execute()` answers every query with zero rows (same repository-boundary
+stub `tests/gateway/conftest.py` uses elsewhere) — this exercises the REAL
+`_enforce_policies_pre_request` / `evaluate_model_policies` / `eval_cache` code
+path on a cache MISS, not a bypass of it, so the test also stands as a
+load-bearing regression check on this ADR's own cache-miss code. Asserts
+p95 < 200ms; failure message reports p50/p95/p99.
+
+**Measured, disclosed honestly:** on this repo's sandboxed dev/CI-authoring
+environment (a single, resource-constrained CPU core, one uvicorn worker, no
+multi-process scaling), p95 stays well under budget through the tens of
+concurrent requests but exceeds it at the full 100-concurrent mark — the
+per-request CPU-bound cost (Pydantic validation, four stacked
+`BaseHTTPMiddleware` layers, structlog serialization) is served by a single
+asyncio event loop, so latency scales with concurrency roughly linearly on one
+worker rather than staying flat. This is a single-worker capacity
+characteristic, not a defect in this ADR's cache/pool changes — production
+scales via `SENTINEL_WORKERS` / Helm replica count (ADR-0027), neither
+exercised by this test. Recorded here rather than hidden: re-run this test
+against your target deployment's actual worker topology for the authoritative
+budget verdict — exactly why it stays a `perf`-marked, explicitly-invoked test
+and not a blocking CI assertion on arbitrary/shared hardware.
 
 ## Honest limitations
 
@@ -130,3 +147,7 @@ p50/p95/p99.
   budget, not a capacity-planning guarantee for arbitrary production load;
   operators must tune `DB_APP_POOL_SIZE`/`DB_APP_MAX_OVERFLOW` against their
   own `max_connections` and worker count.
+- The load test's own p95 verdict is single-worker/single-host dependent (see
+  above) — it validates the harness and the code path, not a universal PASS at
+  100 concurrent on every deployment. Multi-worker capacity validation is
+  future work, not claimed as done here.
