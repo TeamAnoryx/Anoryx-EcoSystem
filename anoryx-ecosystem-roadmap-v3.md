@@ -744,7 +744,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] R-005 Real-time chat (WebSocket) ✅ (#44)
 - [x] R-006 Role-based secure channels + manual team map ✅ (#46) ➕
 - [x] R-007 Low-latency voice/video huddles (1-on-1, no external links) ✅ (#53)
-- [ ] R-008 Sentinel safety + data sovereignty — Tricky (12-16h)
+- [x] R-008 Sentinel safety + data sovereignty ✅ (#58)
 - [ ] R-009 Immutable comms + video-log archiving — Tricky (12-16h) ➕
 - [ ] R-010 Deployment — Tricky (12-16h)
 - [ ] R-011 Group huddles — Complex 🏦

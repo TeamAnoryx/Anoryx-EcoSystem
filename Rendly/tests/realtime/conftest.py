@@ -54,6 +54,7 @@ if not os.environ.get("DATABASE_URL"):
     collect_ignore_glob = ["*"]
 
 _ALL_TABLES = (
+    "inspection_audit_log",
     "messages",
     "memberships",
     "channels",
@@ -272,7 +273,7 @@ def make_client(key: "object") -> Callable[..., "object"]:
 
     from rendly.realtime.app import create_chat_app
     from rendly.realtime.ice import IceCredentialProvider
-    from rendly.realtime.inspector import MessageInspector
+    from rendly.realtime.inspector import MessageInspector, NoOpMessageInspector
     from rendly.realtime.resolver import TeamMembershipResolver
 
     def _make(
@@ -280,8 +281,15 @@ def make_client(key: "object") -> Callable[..., "object"]:
         resolver: TeamMembershipResolver | None = None,
         ice_provider: IceCredentialProvider | None = None,
     ) -> "object":
+        # create_chat_app's OWN default is the real R-008 SentinelMessageInspector; this harness
+        # defaults to the explicit no-op instead so every pre-existing test (most of which pass no
+        # inspector at all) keeps sending arbitrary fixture content through an inert seam exactly
+        # as before R-008 — tests that want the real detectors ask for it explicitly.
         app = create_chat_app(
-            key=key, inspector=inspector, resolver=resolver, ice_provider=ice_provider
+            key=key,
+            inspector=inspector or NoOpMessageInspector(),
+            resolver=resolver,
+            ice_provider=ice_provider,
         )
         return TestClient(app)
 

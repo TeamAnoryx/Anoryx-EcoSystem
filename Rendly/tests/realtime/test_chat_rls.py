@@ -21,7 +21,12 @@ from sqlalchemy.exc import IntegrityError
 from rendly.channel import Channel
 from rendly.enums import ChannelRole, ChannelType, PresenceStatus
 from rendly.membership import bind_membership
-from rendly.persistence.chat_models import ChannelRow, MembershipRow, MessageRow
+from rendly.persistence.chat_models import (
+    ChannelRow,
+    InspectionAuditLogRow,
+    MembershipRow,
+    MessageRow,
+)
 from rendly.persistence.database import _get_app_session_factory, get_tenant_session
 from rendly.user import User
 
@@ -180,6 +185,79 @@ def test_cross_tenant_membership_rejected_at_app_layer(new_uuid):
         bind_membership(user_b, channel_a, role=ChannelRole.MEMBER, added_at=_NOW)
 
 
+def test_load_inspection_audit_log_returns_newest_first_scoped_to_tenant(seed_user, new_uuid):
+    """chat_repo.load_inspection_audit_log (R-008): newest-first, RLS-scoped, metadata only.
+
+    Exercises the async write+read pair directly (asyncio.run, mirroring
+    ``test_async_get_tenant_session_is_fail_closed_on_blank_tenant`` below) since there is no
+    REST surface over this yet (ADR-0008 Fork B: the admin read endpoint is deferred).
+    """
+    import asyncio
+    from datetime import timedelta
+
+    from rendly.persistence import chat_repo
+    from rendly.persistence.async_database import get_tenant_session as async_tenant_session
+    from rendly.realtime.inspector import DetectorFinding
+
+    ta, tb = new_uuid(), new_uuid()
+    ua, ub = new_uuid(), new_uuid()
+    ca, cb = new_uuid(), new_uuid()
+    seed_user(tenant_id=ta, user_id=ua)
+    seed_user(tenant_id=tb, user_id=ub)
+    _add_channel(ta, ca, ua)
+    _add_channel(tb, cb, ub)
+
+    older, newer = new_uuid(), new_uuid()
+
+    async def _write_and_read() -> list[dict]:
+        async with async_tenant_session(ta) as s:
+            await chat_repo.insert_inspection_audit(
+                s,
+                audit_id=older,
+                tenant_id=ta,
+                channel_id=ca,
+                sender_user_id=ua,
+                status="blocked",
+                detectors=(DetectorFinding(category="pii", outcome="block"),),
+                evaluated_at=_NOW,
+                created_at=_NOW,
+            )
+            await chat_repo.insert_inspection_audit(
+                s,
+                audit_id=newer,
+                tenant_id=ta,
+                channel_id=ca,
+                sender_user_id=ua,
+                status="seam_unavailable",
+                detectors=(),
+                evaluated_at=_NOW + timedelta(seconds=1),
+                created_at=_NOW + timedelta(seconds=1),
+            )
+            await s.commit()
+        async with async_tenant_session(tb) as s:
+            await chat_repo.insert_inspection_audit(
+                s,
+                audit_id=new_uuid(),
+                tenant_id=tb,
+                channel_id=cb,
+                sender_user_id=ub,
+                status="blocked",
+                detectors=(),
+                evaluated_at=_NOW,
+                created_at=_NOW,
+            )
+            await s.commit()
+        async with async_tenant_session(ta) as s:
+            return await chat_repo.load_inspection_audit_log(s, tenant_id=ta)
+
+    rows = asyncio.run(_write_and_read())
+    assert [r["audit_id"] for r in rows] == [newer, older]  # newest first
+    assert rows[0]["status"] == "seam_unavailable"
+    assert rows[0]["detectors"] == ()
+    assert rows[1]["status"] == "blocked"
+    assert rows[1]["detectors"] == (DetectorFinding(category="pii", outcome="block"),)
+
+
 def test_async_get_tenant_session_is_fail_closed_on_blank_tenant():
     """The ASYNC get_tenant_session refuses to open without a tenant context (rule-6 fail-closed).
 
@@ -196,6 +274,68 @@ def test_async_get_tenant_session_is_fail_closed_on_blank_tenant():
 
     with pytest.raises(TenantContextRequiredError):
         asyncio.run(_open_blank())
+
+
+def _add_inspection_audit(tenant_id: str, channel_id: str, audit_id: str, sender: str) -> None:
+    with get_tenant_session(tenant_id) as s:
+        s.add(
+            InspectionAuditLogRow(
+                tenant_id=tenant_id,
+                audit_id=audit_id,
+                channel_id=channel_id,
+                sender_user_id=sender,
+                status="blocked",
+                detectors=[{"category": "pii", "outcome": "block"}],
+                evaluated_at=_NOW,
+                created_at=_NOW,
+            )
+        )
+        s.commit()
+
+
+def test_inspection_audit_log_scoped_to_guc_tenant(seed_user, new_uuid):
+    """R-008: inspection_audit_log RLS mirrors messages' — a tenant sees only its own incidents."""
+    ta, tb = new_uuid(), new_uuid()
+    ua, ub = new_uuid(), new_uuid()
+    ca, cb = new_uuid(), new_uuid()
+    aa, ab = new_uuid(), new_uuid()
+    seed_user(tenant_id=ta, user_id=ua)
+    seed_user(tenant_id=tb, user_id=ub)
+    _add_channel(ta, ca, ua)
+    _add_channel(tb, cb, ub)
+    _add_inspection_audit(ta, ca, aa, ua)
+    _add_inspection_audit(tb, cb, ab, ub)
+
+    with get_tenant_session(ta) as s:
+        ids = set(s.execute(select(InspectionAuditLogRow.audit_id)).scalars().all())
+    assert ids == {aa}
+
+    with get_tenant_session(tb) as s:
+        ids = set(s.execute(select(InspectionAuditLogRow.audit_id)).scalars().all())
+    assert ids == {ab}
+
+
+def test_rendly_app_cannot_update_or_delete_inspection_audit_log(seed_user, new_uuid):
+    """inspection_audit_log is APPEND-ONLY by grant — same posture as messages, no R-009 chain."""
+    ta = new_uuid()
+    ua, ca, aa = new_uuid(), new_uuid(), new_uuid()
+    seed_user(tenant_id=ta, user_id=ua)
+    _add_channel(ta, ca, ua)
+    _add_inspection_audit(ta, ca, aa, ua)
+
+    with get_tenant_session(ta) as s:
+        with pytest.raises(Exception):  # noqa: B017 - psycopg raises a permission error on UPDATE
+            s.execute(
+                text(
+                    "UPDATE rendly.inspection_audit_log SET status='seam_unavailable' WHERE audit_id=:a"
+                ),
+                {"a": aa},
+            )
+            s.commit()
+    with get_tenant_session(ta) as s:
+        with pytest.raises(Exception):  # noqa: B017 - and on DELETE
+            s.execute(text("DELETE FROM rendly.inspection_audit_log WHERE audit_id=:a"), {"a": aa})
+            s.commit()
 
 
 def test_rendly_app_cannot_update_or_delete_messages(seed_user, new_uuid):

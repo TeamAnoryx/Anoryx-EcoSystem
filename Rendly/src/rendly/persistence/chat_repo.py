@@ -22,11 +22,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..channel import Channel
 from ..enums import ChannelRole, ChannelSource, ChannelType
 from ..membership import Membership
+from ..realtime.inspector import DetectorFinding
 from ..realtime.message import Message
 from ..user import User
-from .chat_models import ChannelRow, MembershipRow, MessageRow
+from .chat_models import ChannelRow, InspectionAuditLogRow, MembershipRow, MessageRow
 from .identity_repo import user_from_row  # reuse the one row->User mapper (DRY)
 from .models import UserRow
+
+
+def _detectors_from_json(raw: list | None) -> tuple[DetectorFinding, ...]:
+    if not raw:
+        return ()
+    return tuple(
+        DetectorFinding(category=item["category"], outcome=item["outcome"]) for item in raw
+    )
+
+
+def _detectors_to_json(detectors: tuple[DetectorFinding, ...]) -> list[dict]:
+    return [{"category": f.category, "outcome": f.outcome} for f in detectors]
+
 
 # --- row -> frozen domain --------------------------------------------------------------
 
@@ -57,6 +71,7 @@ def message_from_row(row: MessageRow) -> Message:
         created_at=row.created_at,
         inspection_status=row.inspection_status,
         inspection_evaluated_at=row.inspection_evaluated_at,
+        detectors=_detectors_from_json(row.detectors),
     )
 
 
@@ -242,14 +257,16 @@ async def insert_message(
     content_type: str,
     created_at: datetime,
     inspection_evaluated_at: datetime,
+    detectors: tuple[DetectorFinding, ...] = (),
 ) -> Message:
     """Persist a chat message, assigning the per-channel ``seq`` under a row lock.
 
     FORK C: locks the channel row (``SELECT ... FOR UPDATE``), reads ``next_seq``, writes the
     message with that seq, and increments the counter — strictly monotonic, gap-free, and
     serialized per channel. A persisted message has ALWAYS passed inspection
-    (``inspection_status='pass'``); the hash columns stay NULL (R-009). Returns the frozen
-    :class:`Message`. The caller commits.
+    (``inspection_status='pass'``); the hash columns stay NULL (R-009). ``detectors`` (R-008) is
+    the per-category findings the seam evaluated for THIS message (metadata only). Returns the
+    frozen :class:`Message`. The caller commits.
     """
     channel = (
         await session.execute(
@@ -279,6 +296,7 @@ async def insert_message(
             content_hash=None,  # RESERVED (R-009)
             inspection_status="pass",
             inspection_evaluated_at=inspection_evaluated_at,
+            detectors=_detectors_to_json(detectors),
         )
     )
     channel.next_seq = seq + 1
@@ -294,6 +312,7 @@ async def insert_message(
         created_at=created_at,
         inspection_status="pass",
         inspection_evaluated_at=inspection_evaluated_at,
+        detectors=detectors,
     )
 
 
@@ -321,3 +340,73 @@ async def load_message_history(
     query = query.order_by(MessageRow.seq.desc()).limit(limit)
     rows = (await session.execute(query)).scalars().all()
     return [message_from_row(row) for row in rows]
+
+
+# --- inspection audit log (R-008: the administrative-oversight complement to messages) -----
+
+
+async def insert_inspection_audit(
+    session: AsyncSession,
+    *,
+    audit_id: str,
+    tenant_id: str,
+    channel_id: str,
+    sender_user_id: str,
+    status: str,
+    detectors: tuple[DetectorFinding, ...],
+    evaluated_at: datetime,
+    created_at: datetime,
+) -> None:
+    """Record a BLOCKED / SEAM-UNAVAILABLE send attempt (never a ``pass`` — see ADR-0008).
+
+    A passed message is already fully durable in ``messages``; this is the ONLY durable trace of
+    a rejected send. Metadata only — the caller never passes message content here. The caller
+    commits (mirrors every other write helper in this module).
+    """
+    session.add(
+        InspectionAuditLogRow(
+            tenant_id=tenant_id,
+            audit_id=audit_id,
+            channel_id=channel_id,
+            sender_user_id=sender_user_id,
+            status=status,
+            detectors=_detectors_to_json(detectors),
+            evaluated_at=evaluated_at,
+            created_at=created_at,
+        )
+    )
+    await session.flush()  # surface FK/CHECK violations before the caller commits
+
+
+async def load_inspection_audit_log(
+    session: AsyncSession, *, tenant_id: str, limit: int = 50
+) -> list[dict]:
+    """The tenant's most recent inspection incidents, newest first (RLS-scoped, metadata only).
+
+    Returns plain dicts (there is no wire contract for this yet — see ADR-0008's honesty
+    boundary: a dedicated admin REST surface is deferred, not built).
+    """
+    rows = (
+        (
+            await session.execute(
+                select(InspectionAuditLogRow)
+                .where(InspectionAuditLogRow.tenant_id == tenant_id)
+                .order_by(InspectionAuditLogRow.created_at.desc())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "audit_id": row.audit_id,
+            "channel_id": row.channel_id,
+            "sender_user_id": row.sender_user_id,
+            "status": row.status,
+            "detectors": _detectors_from_json(row.detectors),
+            "evaluated_at": row.evaluated_at,
+            "created_at": row.created_at,
+        }
+        for row in rows
+    ]

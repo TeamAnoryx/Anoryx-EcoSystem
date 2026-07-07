@@ -10,9 +10,12 @@ THE SEND PIPELINE (FORK D — the seam is strictly BEFORE persist + fan-out):
   1. validate the frame (correlation fields, closed shape, content bound);
   2. authorize (``chat:write`` scope + LIVE DB membership);
   3. INSPECT via the seam (awaited in-line);
-  4. on PASS only: persist (assign message_id + per-channel seq), ack ``accepted``, fan out
-     ``chat.message``. A ``blocked`` / ``seam_unavailable`` / raising inspector yields a
-     ``chat.ack`` ``blocked`` and the message is NEVER persisted and NEVER delivered (fail-closed).
+  4. on PASS only: persist (assign message_id + per-channel seq, with the R-008 per-category
+     ``detectors`` findings), ack ``accepted``, fan out ``chat.message``. A ``blocked`` /
+     ``seam_unavailable`` / raising inspector yields a ``chat.ack`` ``blocked`` and the message is
+     NEVER persisted and NEVER delivered (fail-closed) — R-008 additionally records the rejection
+     in ``inspection_audit_log`` (``_record_inspection_audit``), the administrative-oversight
+     trail for a send that ``messages`` structurally cannot show (ADR-0008).
 
 THE HUDDLE/SIGNALING SURFACE (R-007, ADR-0007): ephemeral, single-instance, NOT persisted (see
 ``realtime/huddle.py``). ``huddle:initiate`` gates STARTING a huddle (``huddle.invite``) and
@@ -27,6 +30,7 @@ content-inspected (R-001 D4 honesty boundary).
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -159,12 +163,30 @@ async def handle_chat_send(conn: Connection, data: dict, ctx: RuntimeContext) ->
         unavailable = InspectionOutcome(
             status="seam_unavailable", evaluated_at=datetime.now(timezone.utc)
         )
+        await _record_inspection_audit(
+            tenant_id=tenant_id,
+            channel_id=channel_id,
+            sender_user_id=conn.user_id,
+            outcome=unavailable,
+        )
         await conn.send(ack_blocked("inspection_unavailable", inspection=unavailable))
         return
     if outcome.status == "blocked":
+        await _record_inspection_audit(
+            tenant_id=tenant_id,
+            channel_id=channel_id,
+            sender_user_id=conn.user_id,
+            outcome=outcome,
+        )
         await conn.send(ack_blocked("message_blocked", inspection=outcome))
         return
     if outcome.status != "pass":  # seam_unavailable
+        await _record_inspection_audit(
+            tenant_id=tenant_id,
+            channel_id=channel_id,
+            sender_user_id=conn.user_id,
+            outcome=outcome,
+        )
         await conn.send(ack_blocked("inspection_unavailable", inspection=outcome))
         return
 
@@ -202,6 +224,7 @@ async def handle_chat_send(conn: Connection, data: dict, ctx: RuntimeContext) ->
             content_type=content_type,
             created_at=created_at,
             inspection_evaluated_at=outcome.evaluated_at,
+            detectors=outcome.detectors,
         )
         await session.commit()
 
@@ -217,6 +240,37 @@ async def handle_chat_send(conn: Connection, data: dict, ctx: RuntimeContext) ->
     await ctx.registry.broadcast_channel(
         tenant_id=tenant_id, channel_id=channel_id, frame=build_chat_message(message)
     )
+
+
+async def _record_inspection_audit(
+    *, tenant_id: str, channel_id: str, sender_user_id: str, outcome: InspectionOutcome
+) -> None:
+    """Record a BLOCKED / SEAM-UNAVAILABLE inspection outcome (R-008 administrative oversight).
+
+    The ONLY durable trace of a rejected send — ``messages`` never sees it (fail-closed
+    pre-persist). Metadata only (tenant/channel/sender/status/detectors), never the message
+    content, which this function is never even passed. Best-effort: a failure to WRITE the audit
+    row must not change the ack the sender already fail-closed on (the send is blocked either
+    way), so this never raises into the caller.
+    """
+    try:
+        async with get_tenant_session(tenant_id) as session:
+            await chat_repo.insert_inspection_audit(
+                session,
+                audit_id=str(uuid.uuid4()),
+                tenant_id=tenant_id,
+                channel_id=channel_id,
+                sender_user_id=sender_user_id,
+                status=outcome.status,
+                detectors=outcome.detectors,
+                evaluated_at=outcome.evaluated_at,
+                created_at=datetime.now(timezone.utc),
+            )
+            await session.commit()
+    except Exception:  # noqa: BLE001 - the send is ALREADY blocked; an audit-write failure must
+        # not surface as a different error to the sender, and must never flip the outcome to a
+        # pass. Silent here as a matter of ack-stability, not a hidden fail-open.
+        pass
 
 
 # --- chat.read (read receipt — no server fan-out frame exists; accept + no-op) ----------
