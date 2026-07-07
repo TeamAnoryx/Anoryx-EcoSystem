@@ -1,0 +1,101 @@
+# docker-compose.yml — Anoryx-AI-Orchestrator local dev stack (O-008, ADR-0008)
+#
+# Secrets:
+#   Local-dev defaults are supplied via file-based Docker secrets (see
+#   deploy/secrets/gen-dev-secrets.sh). Never commit a .env file with real
+#   credentials. Production MUST inject these from Vault or cloud KMS.
+#
+# QUICK START:
+#   1. bash deploy/secrets/gen-dev-secrets.sh
+#   2. docker compose up -d --build
+#   3. Wait for orchestrator-app healthy
+#   4. curl http://localhost:8081/health
+#
+# Teardown:                   docker compose down
+# Teardown + remove volumes:  docker compose down -v
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: orchestrator-postgres
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-orchestrator}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orchestrator}
+      POSTGRES_DB: ${POSTGRES_DB:-orchestrator_dev}
+    volumes:
+      - orchestrator-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-orchestrator} -d ${POSTGRES_DB:-orchestrator_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+    restart: unless-stopped
+    networks:
+      - orchestrator-net
+
+  # ----------------------------------------------------------------------- #
+  # O-008 — Orchestrator app. Builds from the repo Dockerfile. Reads         #
+  # file-based Docker secrets at /run/secrets/* (the entrypoint shim         #
+  # assembles ORCH_DATABASE_URL / ORCH_APP_DATABASE_URL / ORCH_INGEST_HMAC_  #
+  # SECRET / ORCH_ADMIN_TOKEN). Passwords/tokens are NEVER set as            #
+  # environment variables here — only mounted as secret files (`docker       #
+  # inspect` env must contain no secret value).                             #
+  # ----------------------------------------------------------------------- #
+  orchestrator-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "0.1.0"
+    image: anoryx-orchestrator:0.1.0
+    container_name: orchestrator-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Non-secret config only.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-orchestrator}
+      POSTGRES_DB: ${POSTGRES_DB:-orchestrator_dev}
+      ORCH_WORKERS: ${ORCH_WORKERS:-1}
+      # Compose convenience: run alembic upgrade head + provision the app role
+      # on startup (Kubernetes uses a dedicated migration Job instead).
+      RUN_MIGRATIONS: "1"
+      ORCH_PROVISION_APP_ROLE: "1"
+    secrets:
+      - postgres_password
+      - orch_ingest_hmac_secret
+      - orch_admin_token
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://localhost:8081/health', timeout=3).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - orchestrator-net
+
+networks:
+  orchestrator-net:
+    driver: bridge
+
+volumes:
+  orchestrator-postgres-data:
+
+# File-based Docker secrets. The orchestrator-app entrypoint reads these at
+# /run/secrets/* and assembles the connection URLs / tokens. Generate the
+# files first: bash deploy/secrets/gen-dev-secrets.sh
+secrets:
+  postgres_password:
+    file: ./deploy/secrets/postgres_password
+  orch_ingest_hmac_secret:
+    file: ./deploy/secrets/orch_ingest_hmac_secret
+  orch_admin_token:
+    file: ./deploy/secrets/orch_admin_token

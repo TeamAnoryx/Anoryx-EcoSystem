@@ -1,0 +1,47 @@
+# Anoryx-AI-Orchestrator — Docker build context exclusions (O-008, ADR-0008).
+#
+# Keep the build context small AND ensure no secrets, tests, or local cruft are
+# ever copied into an image layer. Mirrors Anoryx-Sentinel's F-010 .dockerignore.
+
+# Version control
+.git
+.gitignore
+.github
+
+# Tests + docs + deploy artifacts (not needed at runtime; reduces image size)
+tests
+docs
+deploy
+contracts
+
+# Python caches / build outputs
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+**/*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+build
+dist
+*.so
+
+# Secrets + local env (MUST never enter an image layer)
+.env
+.env.*
+!.env.example
+secrets
+**/secrets
+*.pem
+*.key
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+*.swp
