@@ -714,7 +714,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-003 Sub-second double-entry ledger ✅ (#39)
 - [x] D-004 Event ingest from Orchestrator ✅ (#41)
 - [x] D-005 Budget engine (killer-feature half) ✅ (#45)
-- [ ] D-006 Kill-switch for unauthorized AI agent txns — Tricky (12-16h) ➕
+- [x] D-006 Kill-switch for unauthorized AI agent txns ✅ (shipped PR #54)
 - [ ] D-007 Budget allocation UI — Tricky (12-16h)
 - [ ] D-008 Live cost-to-value dashboards (param-driven) — Tricky (12-16h)
 - [ ] D-009 Immutable financial-workflow audit trails — Tricky (8-12h) ➕

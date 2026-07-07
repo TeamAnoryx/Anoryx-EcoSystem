@@ -14,6 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from ..budget_engine.config import load_settings as load_budget_engine_settings
+from ..kill_switch.config import load_settings as load_kill_switch_settings
 from .config import load_settings
 from .router import router
 
@@ -32,6 +33,9 @@ def create_app() -> FastAPI:
     # service token must be set (a misconfigured enforcement path is a deployment error,
     # not a silent degrade). Disabled => an inert no-op (the engine never evaluates).
     app.state.budget_engine_settings = load_budget_engine_settings()
+    # Fail-loud: same requirement, same O-004 seam, for the D-006 kill-switch. Disabled
+    # (or unconfigured allow-list / anomaly ceiling) => inert no-op triggers.
+    app.state.kill_switch_settings = load_kill_switch_settings()
 
     @app.get("/health", include_in_schema=False)
     async def health() -> dict[str, str]:
