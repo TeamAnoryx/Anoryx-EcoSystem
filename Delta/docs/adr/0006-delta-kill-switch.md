@@ -33,7 +33,7 @@ Delta signer) but fires on a **per-transaction** signal instead of a **per-perio
 | **2 — detection signals** | Two independent, orthogonal triggers: (a) **unauthorized agent** — an opt-in per-tenant agent allow-list (`agent_authorizations`); a usage event from a non-allow-listed agent, in a tenant that HAS configured the allow-list, is unauthorized. (b) **anomalous single transaction** — a configurable absolute per-transaction cost ceiling (`DELTA_KILL_SWITCH_MAX_TX_COST_CENTS`), independent of any period accumulation. | Matches the roadmap's own wording verbatim ("an unauthorized/anomalous AI agent transaction"). Both are O(1) per-event checks — no ledger SUM — so they are structurally faster than D-005's cumulative evaluation. Both are opt-in/inert-by-default (no configured allow-list / no configured ceiling ⇒ that trigger never fires), mirroring D-005 §11's "engine inert until configured" honesty boundary — D-006 must never brick an existing tenant that has not opted in. |
 | **3 — enforcement granularity** | The kill targets the **exact (tenant, team, project, agent) scope of the offending transaction** — i.e. Sentinel's own `BudgetScope.AGENT` granularity (ADR-0009: budget policies do NOT use the wildcard convention; `scope="agent"` matching requires exact team_id + project_id + agent_id, per `policy/enforcement.py::budget_matches_scope`). | This is the ONLY scope the locked schema can express without a wildcard; a tenant-wide "block this agent everywhere" is not expressible by a single `budget_limit` record. Precisely blocking the transaction's own scope is also the smaller, more conservative blast radius — it cannot collaterally block the same `agent_id` legitimately operating under a different team/project. |
 | **4 — edge detection + idempotent publish** | Identical shape to ADR-0005 §3.3: a per-scope `kill_switch_state` row with a conditional `UPDATE ... WHERE state='clear'` transition — under concurrent offending events for the same scope, exactly one publishes. | Proven pattern; no new risk surface. |
-| **5 — recovery (un-kill)** | Explicit operator action only, no automatic timer/expiry. `authorize_agent()` (allow-listing an agent) clears every `killed` row for that `(tenant, agent_id)` immediately, in the same transaction, publishing a refreshed (unblocking) version — it does not wait for a new inbound event (which cannot arrive from a blocked scope). A standalone `clear_kill_switch()` lets an operator override an anomaly-triggered kill without changing the allow-list. | Mirrors D-005's own "raise the cap" recovery path, but resolves D-005's known idle-tenant gap (§12 "Deferred, review LOW"): a killed scope generates no further usage events, so waiting for the next event to re-evaluate would never fire. D-006 closes that gap for its own recovery path by making the admin action itself the trigger. |
+| **5 — recovery (un-kill)** | Explicit operator action only, no automatic timer/expiry. `authorize_agent()` (allow-listing an agent) clears every `unauthorized_agent`-killed row for that `(tenant, agent_id)` — NOT other reasons (an identity allow-list has no authority over a separate `anomalous_single_tx` kill). A standalone `clear_kill_switch()` lets an operator override a kill of EITHER reason without changing the allow-list. Both are transaction-scoped DB primitives; the real entry points are `authorize_agent_and_publish()` / `clear_kill_switch_and_publish()`, which commit AND immediately drain in the same call — they do not wait for a new inbound event (which cannot arrive from a blocked scope). | Mirrors D-005's own "raise the cap" recovery path, but resolves D-005's known idle-tenant gap (§12 "Deferred, review LOW"): a killed scope generates no further usage events, so waiting for the next event to re-evaluate would never fire. D-006 closes that gap by making the `_and_publish` entry point itself drain, not merely enqueue (independent security review M-1: the bare primitives alone do not self-deliver — fixed by adding the wrappers). Reason-scoping the allow-list's clear (review M-2) avoids an identity fix silently lifting an unrelated anomaly block. |
 | **6 — fail posture** | Same two dangerous directions as D-005 §3.5, applied here: detection-read failure ⇒ fail-safe (never falsely kill on a transient blip); publish failure ⇒ never silently drop (durable outbox, retry, dead-letter + alert). | A kill-switch that fails open on a real threat is useless; a kill-switch that fails closed on a blip (killing a legitimate agent on a DB hiccup) is its own outage. Both are first-class, exactly as ADR-0005 treats budget enforcement. |
 
 ---
@@ -119,12 +119,21 @@ pattern as ADR-0005 §4).
 to team/project; the admin concept is "this agent is known-good for this tenant," independent of
 which team/project it is invoked under). `authorize_agent()` inserts (idempotent,
 `ON CONFLICT DO NOTHING`) and, in the SAME transaction, finds every `kill_switch_state` row for
-`(tenant_id, agent_id)` still `killed` — across ALL team/project scopes that agent has ever
-offended under — and clears each one (§3.3, §2 fork 5). `revoke_agent()` deletes the allow-list
-row; it does not retroactively kill anything (future events re-evaluate under the now-narrower
-allow-list, same as D-005's budget-raise path only takes effect going forward). Seeding is an
-internal function/CLI path, same convention as D-005's `create_budget` — a full admin UI is
-deferred (mirrors D-007 for budgets).
+`(tenant_id, agent_id)` still `killed` **with reason `unauthorized_agent`** — across ALL
+team/project scopes that agent has ever offended under — and clears each one (§3.3, §2 fork 5).
+It does NOT touch a separate `anomalous_single_tx` kill for the same agent (that is
+`clear_kill_switch`'s job — an identity fix has no authority over an unrelated magnitude-based
+kill; independent security review M-2). `clear_kill_switch()` uses a read-only lookup
+(`state.find_state`, never `get_or_create_state`) so an operator's mistyped/never-seen scope is a
+pure no-op, not a spurious state row with a freshly minted, never-corresponding `policy_id`
+(review L-5). `revoke_agent()` deletes the allow-list row; it does not retroactively kill
+anything (future events re-evaluate under the now-narrower allow-list, same as D-005's
+budget-raise path only takes effect going forward). Seeding is an internal function/CLI path,
+same convention as D-005's `create_budget` — a full admin UI is deferred (mirrors D-007 for
+budgets). `authorize_agent`/`clear_kill_switch` are transaction-scoped primitives only (no
+commit, no network); `authorize_agent_and_publish()` / `clear_kill_switch_and_publish()` are the
+real entry points — they commit and immediately call `drain_tenant` in the same call, so a
+decision is delivered without waiting for a new inbound event (review M-1).
 
 ### 3.7 Fail posture (mirrors ADR-0005 §3.5)
 
@@ -179,13 +188,22 @@ membership) — `delta_app` is granted `SELECT, INSERT, UPDATE` (`agent_authoriz
 | 8 | Un-kill publishes an invalid / unsigned record | reuses the proven D-002 emit path + D-005 signer; byte-valid against the UNMODIFIED locked schema | `test_kill_and_clear_payload_schema_valid` |
 | 9 | Allow-list opt-in tenant with zero rows gets bricked by the mere existence of the feature | `gated` check: zero `agent_authorizations` rows for a tenant = inert (no unauthorized-agent kill ever fires) | `test_ungated_tenant_never_killed_for_identity` |
 | 10 | Un-kill only checks the exact killed scope, missing sibling team/project kills for the same agent | `authorize_agent` clears EVERY `killed` row for `(tenant, agent_id)`, not just one | `test_authorize_clears_all_scopes_for_agent` |
+| 11 | Un-kill enqueues the unblocking decision but never delivers it (idle scope, no self-drain) | `authorize_agent_and_publish`/`clear_kill_switch_and_publish` commit AND drain in the same call | `test_authorize_and_publish_delivers_without_a_new_event` |
+| 12 | Allow-listing an agent for an unrelated identity issue silently also lifts a separate anomaly-triggered kill | `authorize_agent`'s clear is scoped to `reason=unauthorized_agent` only | `test_authorize_does_not_clear_anomalous_kill` |
+
+*(Vectors 11-12 added post independent security review — findings M-1/M-2; see `docs/audit/d-006-security-audit.md`.)*
 
 ## 7. Honesty boundary (what D-006 is NOT)
 
 - **Not** a statistical/ML anomaly detector — "anomalous" here is a deliberately simple, honest,
-  deterministic absolute per-transaction ceiling (opt-in, tunable), not a learned baseline. A
-  velocity/z-score detector is a natural D-011/D-012 (predictive optimization / anomaly detection)
-  follow-on, not claimed here.
+  deterministic absolute per-transaction ceiling, not a learned baseline. A velocity/z-score
+  detector is a natural D-011/D-012 (predictive optimization / anomaly detection) follow-on, not
+  claimed here. **The ceiling is a single deployment-wide setting** (`DELTA_KILL_SWITCH_MAX_TX_COST_CENTS`),
+  applied identically to every tenant — NOT a per-tenant configuration (independent security
+  review L-4 corrected this from an earlier, inaccurate "opt-in per tenant" framing). It is
+  opt-in only in the sense that an unset ceiling disables the trigger entirely; a deployment
+  that sets one imposes it on all tenants alike. A genuinely per-tenant ceiling (a config column
+  alongside `agent_authorizations`) is a natural follow-on, not built here.
 - **Not** a tenant-wide "block this agent everywhere" switch — the locked schema's `scope="agent"`
   is exact-match on team+project+agent (no wildcard for budget policies); D-006 kills the
   transaction's own scope, and a rogue agent operating under multiple team/project scopes
@@ -200,8 +218,13 @@ membership) — `delta_app` is granted `SELECT, INSERT, UPDATE` (`agent_authoriz
   ~90% of D-005's proven, audited machinery (signer, outbox pattern, O-004 publisher, emit
   vehicle) with a new, small, independently-testable detection layer; resolves D-005's own
   idle-tenant recovery gap for its own un-kill path.
-- **Negative / accepted:** the anomaly ceiling is a blunt absolute threshold, not adaptive; a
-  legitimate one-off large transaction can trip it (opt-in and tunable, so a tenant that does not
-  want this trades it off by leaving the env var unset). The unauthorized-agent allow-list is
-  opt-in per tenant (a tenant that never configures it gets no identity-based protection) — an
-  explicit choice to avoid silently bricking existing tenants (vector 9).
+- **Negative / accepted:** the anomaly ceiling is a blunt absolute threshold, not adaptive, and is
+  deployment-wide rather than per-tenant (§7) — a legitimate one-off large transaction at ANY
+  tenant can trip it once a deployment sets one (mitigated by leaving it unset unless genuinely
+  needed, and by the explicit `clear_kill_switch` operator override). The unauthorized-agent
+  allow-list IS genuinely opt-in per tenant (a tenant that never configures it gets no
+  identity-based protection) — an explicit choice to avoid silently bricking existing tenants
+  (vector 9). The inline-only drain (no background sweep) is the same accepted, bounded,
+  never-lost limitation ADR-0005 §12 deferred to ops/D-008 — a killed scope re-drains on its own
+  next event, and the `_and_publish` recovery entry points self-drain (vector 11), but an idle
+  tenant's OTHER still-pending decisions wait for its next event or a future periodic sweep.

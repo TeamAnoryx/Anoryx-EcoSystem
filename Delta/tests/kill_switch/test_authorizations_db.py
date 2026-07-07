@@ -112,6 +112,8 @@ async def test_kill_switch_policy_id_space_independent_of_budget_definitions(
 
 
 async def test_clear_kill_switch_on_a_never_killed_scope_is_a_noop(tenant_id, tenant_session):
+    """L-5: a mistyped/never-seen scope is a pure no-op — clear_kill_switch uses a
+    read-only lookup, so it must not create a spurious kill_switch_state row."""
     async with tenant_session(tenant_id) as s:
         cleared = await clear_kill_switch(
             s,
@@ -123,6 +125,11 @@ async def test_clear_kill_switch_on_a_never_killed_scope_is_a_noop(tenant_id, te
         )
         await s.commit()
     assert cleared is False
+    async with tenant_session(tenant_id) as s:
+        row_count = (
+            await s.execute(text("SELECT count(*) FROM delta.kill_switch_state"))
+        ).scalar_one()
+    assert row_count == 0  # no spurious row was created
 
 
 async def test_concurrent_authorize_agent_clears_a_scope_exactly_once(tenant_id, tenant_session):

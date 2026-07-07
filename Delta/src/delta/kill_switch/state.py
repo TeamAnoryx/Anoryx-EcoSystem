@@ -99,22 +99,46 @@ async def get_or_create_state(
 
 
 async def killed_scopes_for_agent(
-    session: AsyncSession, *, tenant_id: str, agent_id: str
+    session: AsyncSession, *, tenant_id: str, agent_id: str, reason: str | None = None
 ) -> list[KillSwitchState]:
     """Every currently-``killed`` scope for this ``(tenant, agent_id)`` — across ALL
-    team/project scopes that agent has ever offended under (ADR-0006 §3.6, vector 10)."""
-    rows = (
+    team/project scopes that agent has ever offended under (ADR-0006 §3.6, vector 10).
+
+    ``reason``, when given, narrows to kills triggered by that reason only — e.g.
+    allow-listing an agent (which remedies ``unauthorized_agent``) must NOT also lift an
+    unrelated ``anomalous_single_tx`` kill it has no authority over (security review M-2).
+    """
+    conds = [
+        _kss.c.tenant_id == tenant_id,
+        _kss.c.agent_id == agent_id,
+        _kss.c.state == "killed",
+    ]
+    if reason is not None:
+        conds.append(_kss.c.reason == reason)
+    rows = (await session.execute(select(_kss).where(and_(*conds)))).all()
+    return [_row_to_state(r) for r in rows]
+
+
+async def find_state(
+    session: AsyncSession, *, tenant_id: str, team_id: str, project_id: str, agent_id: str
+) -> KillSwitchState | None:
+    """Read-only lookup for this scope — unlike :func:`get_or_create_state`, never inserts
+    a row. Used by operator-facing paths (``clear_kill_switch``) so a mistyped/never-seen
+    scope is a pure no-op, not a spurious ``clear``-state row with a freshly minted, never
+    corresponding, ``policy_id`` (security review L-5)."""
+    row = (
         await session.execute(
             select(_kss).where(
                 and_(
                     _kss.c.tenant_id == tenant_id,
+                    _kss.c.team_id == team_id,
+                    _kss.c.project_id == project_id,
                     _kss.c.agent_id == agent_id,
-                    _kss.c.state == "killed",
                 )
             )
         )
-    ).all()
-    return [_row_to_state(r) for r in rows]
+    ).first()
+    return _row_to_state(row) if row is not None else None
 
 
 async def _conditional_transition(

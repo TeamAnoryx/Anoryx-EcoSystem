@@ -13,7 +13,12 @@ import pytest
 
 from delta.budget_engine.publisher import Distributed, PermanentPublishError, TransientPublishError
 from delta.kill_switch import drainer
-from delta.kill_switch.authorizations import authorize_agent, clear_kill_switch
+from delta.kill_switch.authorizations import (
+    authorize_agent,
+    authorize_agent_and_publish,
+    clear_kill_switch,
+    clear_kill_switch_and_publish,
+)
 from delta.kill_switch.config import KillSwitchSettings
 from delta.kill_switch.evaluator import evaluate_kill_switch
 from delta.persistence.database import get_tenant_session
@@ -286,3 +291,87 @@ async def test_clear_kill_switch_operator_override(
     assert states[0]["state"] == "clear"
     outbox = await read_outbox(tenant_id)
     assert [o["transition"] for o in outbox] == ["kill", "clear"]
+
+
+# ------------------------------------------------------- vector 11: self-delivering un-kill
+async def test_authorize_and_publish_delivers_without_a_new_event(
+    tenant_id,
+    tenant_session,
+    make_usage_payload,
+    post_debit,
+    kill_switch_settings,
+    stub_publish,
+    read_state,
+):
+    """authorize_agent_and_publish must deliver the unblocking decision itself — an idle,
+    killed scope generates no further events, so nothing else would ever drain it."""
+    await _authorize(tenant_session, tenant_id, "gateway-core")  # gate the tenant
+    rec = await post_debit(
+        make_usage_payload(tenant_id, agent_id="rogue-agent", cost=1)
+        | {"event_timestamp": _recent_ts()}
+    )
+    await evaluate_kill_switch(rec, kill_switch_settings)
+    assert (await read_state(tenant_id))[0]["state"] == "killed"
+
+    cleared = await authorize_agent_and_publish(
+        tenant_id=tenant_id, agent_id="rogue-agent", settings=kill_switch_settings
+    )
+    assert len(cleared) == 1
+    # No separate drain call here — authorize_agent_and_publish must have delivered it itself.
+    assert (await read_state(tenant_id))[0]["state"] == "clear"
+    clears = [c for c in stub_publish.calls if c.get("max_cost_cents_per_period", 0) > 0]
+    assert len(clears) == 1
+
+
+async def test_clear_kill_switch_and_publish_delivers_without_a_new_event(
+    tenant_id, make_usage_payload, post_debit, stub_publish, read_state
+):
+    settings = KillSwitchSettings(
+        enabled=True,
+        distribution_url="http://orch.invalid:9",
+        service_token="test-token",
+        max_single_tx_cost_cents=1000,
+    )
+    team = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    proj = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    rec = await post_debit(
+        make_usage_payload(tenant_id, team_id=team, project_id=proj, agent_id="bursty", cost=50_000)
+        | {"event_timestamp": _recent_ts()}
+    )
+    await evaluate_kill_switch(rec, settings)
+    assert (await read_state(tenant_id))[0]["state"] == "killed"
+
+    cleared = await clear_kill_switch_and_publish(
+        tenant_id=tenant_id, team_id=team, project_id=proj, agent_id="bursty", settings=settings
+    )
+    assert cleared is True
+    assert (await read_state(tenant_id))[0]["state"] == "clear"
+
+
+# --------------------------------------------------- vector 12: identity fix != anomaly clear
+async def test_authorize_does_not_clear_anomalous_kill(
+    tenant_id, tenant_session, make_usage_payload, post_debit, stub_publish, read_state
+):
+    """Allow-listing an agent must NOT lift an unrelated anomalous_single_tx kill — an
+    identity fix has no authority over a magnitude-based kill."""
+    settings = KillSwitchSettings(
+        enabled=True,
+        distribution_url="http://orch.invalid:9",
+        service_token="test-token",
+        max_single_tx_cost_cents=1000,
+    )
+    rec = await post_debit(
+        make_usage_payload(tenant_id, agent_id="bursty", cost=50_000)
+        | {"event_timestamp": _recent_ts()}
+    )
+    await evaluate_kill_switch(rec, settings)
+    assert (await read_state(tenant_id))[0]["reason"] == "anomalous_single_tx"
+    assert (await read_state(tenant_id))[0]["state"] == "killed"
+
+    async with get_tenant_session(tenant_id) as s:
+        cleared = await authorize_agent(
+            s, tenant_id=tenant_id, agent_id="bursty", now=datetime.now(timezone.utc)
+        )
+        await s.commit()
+    assert cleared == []  # nothing cleared — wrong reason
+    assert (await read_state(tenant_id))[0]["state"] == "killed"  # still killed
