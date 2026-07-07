@@ -23,6 +23,7 @@ spec:
       labels:
         {{- include "sentinel.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: worker
+        {{- include "sentinel.regionLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "sentinel.serviceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
@@ -68,6 +69,8 @@ spec:
             # worker runs the same inspection hooks as the gateway.
             - name: PII_DETECTION_ENABLED
               value: {{ .Values.piiDetectionEnabled | quote }}
+            # Region identity (F-022, ADR-0028 D1) — gated on region.enabled.
+            {{- include "sentinel.regionEnv" . | nindent 12 }}
             {{- range .Values.env }}
             - name: {{ .name }}
               value: {{ .value | quote }}

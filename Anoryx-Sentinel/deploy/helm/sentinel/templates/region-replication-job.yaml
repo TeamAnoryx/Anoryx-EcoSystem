@@ -1,0 +1,91 @@
+{{- if and .Values.region.enabled .Values.region.replication.enabled .Values.region.replication.bootstrapJob.enabled -}}
+# OPT-IN replication bootstrap Job (F-022, ADR-0028 D3). Applies the rendered SQL
+# against the LOCAL region DB with psql. OFF by default — cross-region networking +
+# credentials are operator-owned. Wired for the bundled Postgres (its in-cluster
+# superuser). For a MANAGED database, leave this off and apply the ConfigMap SQL with
+# your own tooling instead (CREATE SUBSCRIPTION needs elevated privileges).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "sentinel.fullname" . }}-region-replication
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: region-replication
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "sentinel.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: region-replication
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "sentinel.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        {{- include "sentinel.waitForPostgres" . | nindent 8 }}
+      containers:
+        - name: apply-replication
+          image: {{ .Values.postgres.image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              {{- if eq .Values.region.role "active" }}
+              echo "region-replication: creating publication on active region {{ .Values.region.name }}"
+              psql -v ON_ERROR_STOP=1 -f /sql/publication.sql
+              {{- else if eq .Values.region.role "passive" }}
+              echo "region-replication: creating subscription on passive region {{ .Values.region.name }}"
+              # REPLICATION_PASSWORD is operator-supplied via the app envSecret; it never
+              # lands in the repo or the rendered SQL (only the placeholder does). Fail hard
+              # if it is unset OR empty rather than creating a passwordless subscription.
+              : "${REPLICATION_PASSWORD:?REPLICATION_PASSWORD must be set (app envSecret) for the passive subscription}"
+              sed "s|\${REPLICATION_PASSWORD}|${REPLICATION_PASSWORD}|g" /sql/subscription.sql \
+                | psql -v ON_ERROR_STOP=1
+              {{- else }}
+              {{- fail (printf "region.role must be 'active' or 'passive', got %q" .Values.region.role) }}
+              {{- end }}
+              echo "region-replication: done"
+          env:
+            # psql reads PG* — point it at the bundled Postgres.
+            - name: PGHOST
+              value: {{ include "sentinel.postgresFullname" . | quote }}
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              value: {{ .Values.postgres.auth.username | quote }}
+            - name: PGDATABASE
+              value: {{ .Values.postgres.auth.database | quote }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.auth.existingSecret | default (include "sentinel.postgresFullname" .) }}
+                  key: POSTGRES_PASSWORD
+          {{- if or .Values.envSecret .Values.createEnvSecret }}
+          # Passive subscription reads REPLICATION_PASSWORD from the app envSecret.
+          envFrom:
+            - secretRef:
+                name: {{ include "sentinel.envSecretName" . }}
+          {{- end }}
+          volumeMounts:
+            - name: replication-sql
+              mountPath: /sql
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: replication-sql
+          configMap:
+            name: {{ include "sentinel.fullname" . }}-region-replication
+        - name: tmp
+          emptyDir: {}
+{{- end }}

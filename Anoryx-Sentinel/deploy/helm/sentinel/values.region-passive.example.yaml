@@ -1,0 +1,36 @@
+# Example PASSIVE-region overlay (F-022, ADR-0028). A passive region runs a
+# read-only replica of the global stores + a serve stack that can be PROMOTED on
+# failover (runbook-driven — deploy/MULTI-REGION.md). It SUBSCRIBES to the active
+# region's publication. Writes route to the active region until promotion.
+# Layer on top of your base values:
+#   helm install sentinel-eu deploy/helm/sentinel \
+#     -f deploy/helm/sentinel/values.yaml \
+#     -f deploy/helm/sentinel/values.region-passive.example.yaml
+region:
+  enabled: true
+  name: eu-west-1
+  role: passive
+  residency: eu
+  replication:
+    enabled: true
+    subscriptionName: sentinel_global_sub
+    publicationName: sentinel_global
+    tables:
+      - policies
+      - policy_versions
+      - events_audit_log
+    # libpq conninfo to the ACTIVE region's primary, WITHOUT the password. The
+    # password is supplied at apply time from a Secret (envSecret key
+    # REPLICATION_PASSWORD) — NEVER commit it here.
+    activePrimaryConninfo: "host=us-east-1.db.example.com port=5432 dbname=sentinel_dev user=replicator sslmode=require"
+    bootstrapJob:
+      enabled: false
+  topologySpread:
+    enabled: true
+    maxSkew: 1
+    whenUnsatisfiable: ScheduleAnyway
+  geoRouting:
+    annotations:
+      external-dns.alpha.kubernetes.io/hostname: api.sentinel.example.com
+      # 0 weight until promoted; a failover raises this (see the runbook).
+      anoryx.io/geo-weight: "0"

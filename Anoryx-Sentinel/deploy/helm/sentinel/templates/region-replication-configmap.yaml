@@ -1,0 +1,40 @@
+{{- if and .Values.region.enabled .Values.region.replication.enabled -}}
+# Cross-region logical-replication bootstrap SQL (F-022, ADR-0028 D3). RENDERED,
+# not auto-applied by default — an operator reviews + applies it (or opts into the
+# bootstrap Job, region.replication.bootstrapJob.enabled). Replicates ONLY the
+# globally-uniform stores (policies, policy_versions, events_audit_log) active ->
+# passive. Logical (not physical) replication so nothing residency-bound is copied;
+# row-faithful so the audit hash chain + policy signatures survive; the passive copy
+# is read-only so the chain cannot fork. The generated SQL is append-only safe: it
+# only CREATEs a publication/subscription — it never drops, deletes, or rewrites data.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sentinel.fullname" . }}-region-replication
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: region-replication
+data:
+{{- $tables := join ", " .Values.region.replication.tables }}
+{{- if eq .Values.region.role "active" }}
+  publication.sql: |
+    -- ACTIVE region ({{ .Values.region.name }}): run ONCE on the primary.
+    -- Prerequisite: wal_level=logical on the publisher (server config — see
+    -- deploy/MULTI-REGION.md). Every replicated table needs a primary key /
+    -- REPLICA IDENTITY (policies, policy_versions, events_audit_log all have one).
+    CREATE PUBLICATION {{ .Values.region.replication.publicationName }}
+      FOR TABLE {{ $tables }};
+{{- else if eq .Values.region.role "passive" }}
+  {{- $conn := .Values.region.replication.activePrimaryConninfo | trim }}
+  subscription.sql: |
+    -- PASSIVE region ({{ .Values.region.name }}): run ONCE on this region's primary.
+    -- Substitute ${REPLICATION_PASSWORD} at apply time from a Secret — NEVER commit
+    -- the password (the bootstrap Job seds it in from the app envSecret key
+    -- REPLICATION_PASSWORD; a manual apply substitutes it yourself).
+    CREATE SUBSCRIPTION {{ .Values.region.replication.subscriptionName }}
+      CONNECTION '{{ if $conn }}{{ $conn }} password=${REPLICATION_PASSWORD}{{ else }}host=<ACTIVE_REGION_DB_HOST> port=5432 dbname={{ .Values.postgres.auth.database }} user=replicator password=${REPLICATION_PASSWORD} sslmode=require{{ end }}'
+      PUBLICATION {{ .Values.region.replication.publicationName }};
+{{- else }}
+{{- fail (printf "region.role must be 'active' or 'passive', got %q" .Values.region.role) }}
+{{- end }}
+{{- end }}
