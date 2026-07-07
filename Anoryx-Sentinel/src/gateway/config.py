@@ -52,6 +52,12 @@ class GatewaySettings(BaseSettings):
     redis_connection_timeout: float = 2.0
     redis_pool_size: int = 10
 
+    # --- F-023 policy-eval cache (ADR-0029) ---
+    # Short TTL is a fail-safe backstop only — the primary invalidation path is
+    # an immediate per-tenant version bump on every accepted F-008 policy write
+    # (policy/eval_cache.py). 0 disables caching (every request re-evaluates).
+    policy_eval_cache_ttl_seconds: float = 5.0
+
     # --- F-009 Observability (ADR-0011 §4-§5) ---
     # Per-tenant metrics gate: default False to avoid linear cardinality growth
     # with tenant count. Enable only when operationally needed.
