@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from .huddle import Huddle
 from .inspector import InspectionOutcome
 from .message import Message
 
@@ -104,6 +105,60 @@ class PresenceSetFrame(BaseModel):
     model_config = ConfigDict(extra="forbid")
     msg_type: Literal["presence.set"]
     status: Literal["online", "away", "busy", "offline"]
+
+
+# --- R-007: huddle / signaling inbound frames (contracts/messages.schema.json) ---------
+
+_MAX_SDP_LEN = 65536  # Signal.offer/answer.sdp maxLength
+_MAX_CANDIDATE_LEN = 1024  # Signal.ice-candidate.candidate maxLength
+_SdpStr = Annotated[str, StringConstraints(max_length=_MAX_SDP_LEN)]
+
+
+class HuddleInviteFrame(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    msg_type: Literal["huddle.invite"]
+    peer_user_id: _Uuid
+    channel_id: _Uuid | None = None
+
+
+class HuddleHangupFrame(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    msg_type: Literal["huddle.hangup"]
+    huddle_id: _Uuid
+
+
+class SignalOffer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["offer"]
+    sdp: _SdpStr
+
+
+class SignalAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["answer"]
+    sdp: _SdpStr
+
+
+class SignalIceCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["ice-candidate"]
+    candidate: Annotated[str, StringConstraints(max_length=_MAX_CANDIDATE_LEN)]
+    sdp_mid: Annotated[str, StringConstraints(max_length=64)] | None = None
+    sdp_mline_index: Annotated[int, Field(ge=0, le=1024)] | None = None
+
+
+# Dispatch by the `kind` const (mirrors contracts/messages.schema.json Signal oneOf) — a
+# discriminated union so an unknown/mismatched `kind` is a single closed-schema validation error.
+SignalPayload = Annotated[
+    Union[SignalOffer, SignalAnswer, SignalIceCandidate], Field(discriminator="kind")
+]
+
+
+class SignalSendFrame(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    msg_type: Literal["signal.send"]
+    huddle_id: _Uuid
+    signal: SignalPayload
 
 
 # --- server->client frame builders -----------------------------------------------------
@@ -219,6 +274,59 @@ def build_presence_update(*, tenant_id: str, user_id: str, status: str) -> dict:
         "tenant_id": tenant_id,
         "user_id": user_id,
         "status": status,
+    }
+
+
+def _huddle_archival_meta(huddle: Huddle, *, seq: int) -> dict:
+    # Same DEFINE-ONLY posture as chat's _archival_meta: record_id = huddle_id, created_at + seq
+    # populated; the hash fields are RESERVED (always null until R-009 builds the chain).
+    return {
+        "schema_version": "1",
+        "record_id": huddle.huddle_id,
+        "created_at": _iso(huddle.created_at),
+        "seq": seq,
+        "prev_record_hash": None,
+        "content_hash": None,
+    }
+
+
+def build_huddle_update(
+    *,
+    huddle_id: str,
+    tenant_id: str,
+    peer_user_id: str,
+    state: str,
+    huddle: Huddle | None = None,
+    seq: int | None = None,
+) -> dict:
+    """The server->client huddle.update frame. ``peer_user_id`` is relative to the RECIPIENT.
+
+    ``archival`` is attached IFF both ``huddle`` and ``seq`` are given — the caller only supplies
+    them once the huddle reaches its durable ``ended`` state (contracts/messages.schema.json
+    HuddleUpdate description), matching the chat.message archival posture.
+    """
+    frame = {
+        "msg_type": "huddle.update",
+        "huddle_id": huddle_id,
+        "tenant_id": tenant_id,
+        "peer_user_id": peer_user_id,
+        "state": state,
+    }
+    if huddle is not None and seq is not None:
+        frame["archival"] = _huddle_archival_meta(huddle, seq=seq)
+    return frame
+
+
+def build_signal_relay(
+    *, tenant_id: str, huddle_id: str, from_user_id: str, signal: SignalPayload
+) -> dict:
+    """The server->client signal.relay frame — the peer's Signal payload, relayed verbatim."""
+    return {
+        "msg_type": "signal.relay",
+        "tenant_id": tenant_id,
+        "huddle_id": huddle_id,
+        "from_user_id": from_user_id,
+        "signal": signal.model_dump(mode="json"),
     }
 
 

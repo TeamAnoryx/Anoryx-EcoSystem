@@ -1,4 +1,5 @@
-"""The minimal chat REST surface (R-005) + role-based authorization & manual team mapping (R-006).
+"""The minimal chat REST surface (R-005) + role-based authorization & manual team mapping (R-006)
++ the 1-on-1 huddle ICE bootstrap (R-007).
 
 Implements the contract-locked endpoints that operate on the entities R-005 persists, so the
 WebSocket chat is human-demoable with no test-only backdoors:
@@ -8,6 +9,9 @@ WebSocket chat is human-demoable with no test-only backdoors:
   * ``DELETE /v1/channels/{channel_id}/members/{user_id}``  (scope ``channels:admin`` + channel owner/admin)
   * ``PUT    /v1/channels/{channel_id}/team``               (scope ``channels:admin`` + channel owner/admin) — R-006
   * ``GET    /v1/channels/{channel_id}/messages``           (scope ``chat:read`` + channel membership)
+  * ``GET    /v1/huddles/ice-servers``                       (scope ``huddle:initiate``) — R-007, no channel/DB
+    involvement at all: self-hosted ICE/TURN bootstrap only (``realtime/ice.py``); the actual
+    offer/answer/ICE signaling flows over the WebSocket (``realtime/pipeline.py``).
 
 All run on the ASYNC chat engine (FORK A1) and the R-003 ``get_principal`` / ``require_scope``
 auth — identity (tenant/user) is read SOLELY off the verified token, never request input, so RLS
@@ -47,6 +51,7 @@ from ..persistence import chat_repo
 from ..persistence.async_database import get_tenant_session
 from .authz import AuthzPrincipal, ChannelAction, authorize
 from .frames import to_message_record
+from .ice import IceServerEntry
 
 _UUID_PATTERN = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 _ChannelIdPath = Annotated[str, Path(pattern=_UUID_PATTERN, max_length=64)]
@@ -333,3 +338,25 @@ async def list_messages(
         )
     next_cursor = str(messages[-1].seq) if len(messages) == limit else None
     return {"messages": [to_message_record(m) for m in messages], "next_cursor": next_cursor}
+
+
+def _ice_server_dict(entry: IceServerEntry) -> dict:
+    return {"urls": list(entry.urls), "username": entry.username, "credential": entry.credential}
+
+
+@router.get("/huddles/ice-servers", status_code=200)
+async def get_ice_servers(
+    request: Request,
+    principal: AccessTokenClaims = Depends(require_scope("huddle:initiate")),
+) -> dict:
+    """Self-hosted ICE/TURN configuration for a 1-on-1 huddle (R-007). See ``realtime/ice.py``.
+
+    ``huddle:initiate`` gates fetching this exactly as it gates ``huddle.invite`` on the
+    WebSocket — both are "starting a huddle" capabilities.
+    """
+    provider = request.app.state.realtime_ctx.ice_provider
+    config = await provider.get_ice_servers(tenant_id=principal.tenant_id, user_id=principal.sub)
+    return {
+        "ice_servers": [_ice_server_dict(e) for e in config.ice_servers],
+        "ttl_seconds": config.ttl_seconds,
+    }

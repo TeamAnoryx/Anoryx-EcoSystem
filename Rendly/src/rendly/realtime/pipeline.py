@@ -1,10 +1,10 @@
 """Inbound frame dispatch + the chat.send pipeline (R-005 core, FORK D placement).
 
-The dispatcher maps ``msg_type`` -> async handler. R-005 registers the FOUR client->server chat
-handlers (``chat.send``, ``chat.read``, ``typing.set``, ``presence.set``); the 1-on-1
-huddle/signaling handlers are R-007 and ADD to this same table with no rearchitecting (a
-``huddle.*`` / ``signal.*`` frame received in R-005 is answered ``huddle_unavailable``, not
-silently dropped). Any other / malformed frame is answered with a single ``error`` frame.
+The dispatcher maps ``msg_type`` -> async handler. R-005 registered the FOUR client->server chat
+handlers (``chat.send``, ``chat.read``, ``typing.set``, ``presence.set``); R-007 ADDS the three
+1-on-1 huddle/signaling handlers (``huddle.invite``, ``huddle.hangup``, ``signal.send``) to this
+SAME table, exactly the extension point ADR-0005 built for it — no rearchitecting. Any other /
+malformed frame is answered with a single ``error`` frame.
 
 THE SEND PIPELINE (FORK D — the seam is strictly BEFORE persist + fan-out):
   1. validate the frame (correlation fields, closed shape, content bound);
@@ -13,6 +13,15 @@ THE SEND PIPELINE (FORK D — the seam is strictly BEFORE persist + fan-out):
   4. on PASS only: persist (assign message_id + per-channel seq), ack ``accepted``, fan out
      ``chat.message``. A ``blocked`` / ``seam_unavailable`` / raising inspector yields a
      ``chat.ack`` ``blocked`` and the message is NEVER persisted and NEVER delivered (fail-closed).
+
+THE HUDDLE/SIGNALING SURFACE (R-007, ADR-0007): ephemeral, single-instance, NOT persisted (see
+``realtime/huddle.py``). ``huddle:initiate`` gates STARTING a huddle (``huddle.invite``) and
+fetching ICE config; a caller who is not that huddle's participant is denied continuing it
+(``signal.send`` / ``huddle.hangup``) via ``HuddleManager.get(...).peer_of(...)`` — no separate
+scope check, because holding a valid ``huddle_id`` the manager recognizes for THIS user already
+proves participation (it was minted server-side and handed only to the two peers). huddle MEDIA
+never rides this pipeline — only signaling metadata (SDP/ICE) does, and it is never
+content-inspected (R-001 D4 honesty boundary).
 """
 
 from __future__ import annotations
@@ -27,19 +36,26 @@ from ..persistence.async_database import get_tenant_session
 from .frames import (
     MAX_CONTENT_LEN,
     ChatReadFrame,
+    HuddleHangupFrame,
+    HuddleInviteFrame,
     PresenceSetFrame,
+    SignalSendFrame,
     TypingSetFrame,
     build_chat_ack_accepted,
     build_chat_ack_blocked,
     build_chat_message,
     build_error,
+    build_huddle_update,
     build_presence_update,
+    build_signal_relay,
     build_typing_update,
     valid_client_msg_id,
     valid_content_type,
     valid_uuid,
 )
 from .authz import AuthzPrincipal, ChannelAction, authorize
+from .huddle import Huddle, HuddleManager, HuddleState, new_huddle_id
+from .ice import IceCredentialProvider
 from .inspector import InspectionOutcome, MessageInspector
 from .message import new_message_id
 from .registry import Connection, ConnectionRegistry
@@ -54,20 +70,21 @@ _CHAT_SEND_KEYS = {"msg_type", "client_msg_id", "channel_id", "content", "conten
 # limit. An oversized frame -> message_too_large (no expensive parse of attacker-sized input).
 MAX_FRAME_BYTES = 65536
 
-# Catalog frames that belong to the 1-on-1 huddle/signaling surface (R-007). Received in R-005
-# they are a valid-but-unsupported frame -> huddle_unavailable (never a silent drop).
-_SIGNALING_MSG_TYPES = frozenset(
-    {"huddle.invite", "huddle.update", "huddle.hangup", "signal.send", "signal.relay"}
-)
-
 
 @dataclass
 class RuntimeContext:
-    """Per-app runtime collaborators handed to every frame handler."""
+    """Per-app runtime collaborators handed to every frame handler.
+
+    ``ice_provider`` is consumed only by the REST ``GET /huddles/ice-servers`` route
+    (``realtime/rest.py``), not by this module's frame handlers, but it lives here alongside
+    ``huddles`` so the app assembler (``realtime/app.py``) has ONE runtime-context object to wire.
+    """
 
     registry: ConnectionRegistry
     inspector: MessageInspector
     resolver: TeamMembershipResolver
+    huddles: HuddleManager
+    ice_provider: IceCredentialProvider
 
 
 # --- chat.send (the FORK D pipeline) ---------------------------------------------------
@@ -260,15 +277,185 @@ async def handle_presence_set(conn: Connection, data: dict, ctx: RuntimeContext)
         await other.send(update)
 
 
+# --- huddle.invite (start a 1-on-1 huddle; ringing/busy fan-out) -----------------------
+
+
+async def handle_huddle_invite(conn: Connection, data: dict, ctx: RuntimeContext) -> None:
+    try:
+        frame = HuddleInviteFrame(**data)
+    except Exception:  # noqa: BLE001 - any closed-schema violation -> one error frame
+        await conn.send(build_error(error_code="invalid_message", request_id=new_request_id()))
+        return
+    # huddle:initiate gates STARTING a huddle (matches contracts/openapi.yaml's scope
+    # description); continuing an existing one (signal.send/huddle.hangup) is gated by
+    # participation, not this scope.
+    if "huddle:initiate" not in conn.scopes:
+        await conn.send(build_error(error_code="unauthorized", request_id=new_request_id()))
+        return
+    tenant_id = conn.tenant_id
+    peer_user_id = frame.peer_user_id
+    if peer_user_id == conn.user_id:
+        # Structurally 1-on-1 with exactly one OTHER peer — self-invite is a malformed request.
+        await conn.send(build_error(error_code="invalid_message", request_id=new_request_id()))
+        return
+
+    peer_conns = ctx.registry.user_connections(tenant_id, peer_user_id)
+    if not peer_conns:
+        # No live connection for this (tenant, user) -> cannot ring them. Fail-closed and
+        # non-oracle: this is indistinguishable from "peer_user_id does not exist in this
+        # tenant" (no separate DB lookup is made), matching the REST 404 no-existence-oracle
+        # posture elsewhere in R-006.
+        await conn.send(build_error(error_code="huddle_unavailable", request_id=new_request_id()))
+        return
+
+    if ctx.huddles.active_huddle_id(tenant_id, conn.user_id) is not None or (
+        ctx.huddles.active_huddle_id(tenant_id, peer_user_id) is not None
+    ):
+        # Ordinary phone-call semantics: you can't place, or be placed into, a second call
+        # while already ringing/accepted/active in one. Feedback is CALLER-ONLY (a throwaway
+        # huddle_id — nothing is registered) — the busy party is never notified of the attempt.
+        await conn.send(
+            build_huddle_update(
+                huddle_id=new_huddle_id(),
+                tenant_id=tenant_id,
+                peer_user_id=peer_user_id,
+                state=HuddleState.BUSY.value,
+            )
+        )
+        return
+
+    huddle = ctx.huddles.start(
+        tenant_id=tenant_id,
+        caller_id=conn.user_id,
+        callee_id=peer_user_id,
+        now=datetime.now(timezone.utc),
+    )
+    await _broadcast_huddle_update(ctx, huddle, HuddleState.RINGING)
+
+
+# --- signal.send (relay WebRTC offer/answer/ICE to the single peer; infer accept/active) -
+
+
+async def handle_signal_send(conn: Connection, data: dict, ctx: RuntimeContext) -> None:
+    try:
+        frame = SignalSendFrame(**data)
+    except Exception:  # noqa: BLE001
+        await conn.send(build_error(error_code="invalid_message", request_id=new_request_id()))
+        return
+    huddle, peer_id = _authorized_huddle(ctx, conn, frame.huddle_id)
+    if huddle is None or peer_id is None:
+        await conn.send(build_error(error_code="huddle_unavailable", request_id=new_request_id()))
+        return
+
+    # Relay FIRST (the direct effect of this frame), THEN announce any state transition — so the
+    # peer's SDP/ICE payload is never held up behind the (equally informative but secondary)
+    # huddle.update broadcast.
+    relay = build_signal_relay(
+        tenant_id=conn.tenant_id,
+        huddle_id=huddle.huddle_id,
+        from_user_id=conn.user_id,
+        signal=frame.signal,
+    )
+    for peer_conn in ctx.registry.user_connections(conn.tenant_id, peer_id):
+        await peer_conn.send(relay)
+
+    # Signaling-liveness heuristic (see realtime/huddle.py honesty boundary): the CALLEE's first
+    # signal after `ringing` is treated as their accept; the CALLER's first signal after
+    # `accepted` is treated as the session going active. Neither observes real ICE/DTLS state.
+    if huddle.state is HuddleState.RINGING and conn.user_id == huddle.callee_id:
+        ctx.huddles.transition(huddle, HuddleState.ACCEPTED)
+        await _broadcast_huddle_update(ctx, huddle, HuddleState.ACCEPTED)
+    elif huddle.state is HuddleState.ACCEPTED and conn.user_id == huddle.caller_id:
+        ctx.huddles.transition(huddle, HuddleState.ACTIVE)
+        await _broadcast_huddle_update(ctx, huddle, HuddleState.ACTIVE)
+
+
+# --- huddle.hangup (end or decline the huddle; terminal, releases it from the manager) -
+
+
+async def handle_huddle_hangup(conn: Connection, data: dict, ctx: RuntimeContext) -> None:
+    try:
+        frame = HuddleHangupFrame(**data)
+    except Exception:  # noqa: BLE001
+        await conn.send(build_error(error_code="invalid_message", request_id=new_request_id()))
+        return
+    huddle, peer_id = _authorized_huddle(ctx, conn, frame.huddle_id)
+    if huddle is None or peer_id is None:
+        await conn.send(build_error(error_code="huddle_unavailable", request_id=new_request_id()))
+        return
+
+    # The callee hanging up a still-ringing invite is a DECLINE; every other hangup (the caller
+    # retracting a ring, or either side leaving an accepted/active session) is an END.
+    if huddle.state is HuddleState.RINGING and conn.user_id == huddle.callee_id:
+        end_state = HuddleState.DECLINED
+    else:
+        end_state = HuddleState.ENDED
+    seq = ctx.huddles.next_seq(conn.tenant_id) if end_state is HuddleState.ENDED else None
+    ctx.huddles.transition(huddle, end_state)
+    await _broadcast_huddle_update(ctx, huddle, end_state, seq=seq)
+
+
+# --- huddle helpers ----------------------------------------------------------------------
+
+
+def _authorized_huddle(
+    ctx: RuntimeContext, conn: Connection, huddle_id: str
+) -> tuple[Huddle | None, str | None]:
+    """Resolve ``huddle_id`` for this connection's tenant + confirm it is a live participant.
+
+    Holding a ``huddle_id`` the manager recognizes for THIS (tenant, user) pair is itself the
+    authorization — huddle ids are server-minted and handed only to the two peers (``start`` /
+    the ringing fan-out), so there is no separate scope check here (mirrors the channel-authz
+    seam's fail-closed "not a participant -> deny", but the "membership" is the manager's live
+    state, not a DB row). A terminal huddle is already released from the manager, so re-acting on
+    it (e.g. a duplicate hangup) resolves the same as an unknown id — idempotently non-oracle.
+    """
+    huddle = ctx.huddles.get(conn.tenant_id, huddle_id)
+    if huddle is None:
+        return None, None
+    peer_id = huddle.peer_of(conn.user_id)
+    if peer_id is None:
+        return None, None
+    return huddle, peer_id
+
+
+async def _broadcast_huddle_update(
+    ctx: RuntimeContext, huddle: Huddle, state: HuddleState, *, seq: int | None = None
+) -> None:
+    """Send huddle.update to EVERY live connection of BOTH participants.
+
+    ``peer_user_id`` on each recipient's frame is relative to THAT recipient (mirrors
+    ``typing.update``/``presence.update`` — the field always identifies "the other party"), so
+    the caller's own sockets and the callee's own sockets converge on the same session state.
+    """
+    for user_id, peer_id in (
+        (huddle.caller_id, huddle.callee_id),
+        (huddle.callee_id, huddle.caller_id),
+    ):
+        frame = build_huddle_update(
+            huddle_id=huddle.huddle_id,
+            tenant_id=huddle.tenant_id,
+            peer_user_id=peer_id,
+            state=state.value,
+            huddle=huddle if seq is not None else None,
+            seq=seq,
+        )
+        for conn in ctx.registry.user_connections(huddle.tenant_id, user_id):
+            await conn.send(frame)
+
+
 # --- the dispatch table + entry point --------------------------------------------------
 
-# R-005 registers ONLY the chat-family inbound handlers. R-007 adds huddle.invite / huddle.hangup
-# / signal.send here (the extension point) without touching the dispatcher.
+# R-005 registered the chat-family inbound handlers; R-007 adds the huddle/signaling family here
+# (the extension point ADR-0005 built for it) with no change to the dispatcher below.
 CHAT_HANDLERS = {
     "chat.send": handle_chat_send,
     "chat.read": handle_chat_read,
     "typing.set": handle_typing_set,
     "presence.set": handle_presence_set,
+    "huddle.invite": handle_huddle_invite,
+    "huddle.hangup": handle_huddle_hangup,
+    "signal.send": handle_signal_send,
 }
 
 
@@ -289,9 +476,8 @@ async def dispatch_frame(conn: Connection, raw_text: str, ctx: RuntimeContext) -
     msg_type = data.get("msg_type")
     handler = CHAT_HANDLERS.get(msg_type)
     if handler is None:
-        # A valid-but-unsupported huddle/signaling frame -> huddle_unavailable (R-007); anything
-        # else -> invalid_message. Never a silent drop.
-        code = "huddle_unavailable" if msg_type in _SIGNALING_MSG_TYPES else "invalid_message"
-        await conn.send(build_error(error_code=code, request_id=new_request_id()))
+        # server->client-only frame types (huddle.update, signal.relay, session.welcome, etc.)
+        # and anything unrecognized both land here -> invalid_message. Never a silent drop.
+        await conn.send(build_error(error_code="invalid_message", request_id=new_request_id()))
         return
     await handler(conn, data, ctx)
