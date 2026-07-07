@@ -49,10 +49,30 @@ to a ledger, or bill anyone — enforcement lives in D-003 / D-005.
 no schema change. Proven by `tests/test_budget_variant_roundtrip.py`, which
 validates a Delta-emitted `budget_limit` record against that locked schema.
 
+## D-007 — Budget Allocation Admin (API + console)
+
+D-007 turns D-005's internal-only `budget_engine.definitions.create_budget` seam into an
+authenticated, auditable admin workflow: propose an allocation (a tenant total distributed
+across scope targets) -> an explicit approve/reject decision -> approve materializes each
+target into a real budget cap, reject has no side effect. Every transition is appended to a
+plain (not hash-chained — that's D-009) change-history log. See
+[`docs/adr/0007-delta-budget-allocation-ui.md`](docs/adr/0007-delta-budget-allocation-ui.md).
+
+- **Backend:** `src/delta/allocation_admin/` — a FastAPI admin app (`/v1/admin/*`), separate
+  from the D-004 ingest app. Single break-glass bearer auth (`DELTA_ADMIN_TOKEN`, mirrors
+  Sentinel F-012a). Run it with `uvicorn "delta.allocation_admin.app:create_app" --factory`.
+- **Frontend:** `frontend/` — a Next.js admin console, BFF-only (mirrors
+  `Anoryx-Sentinel/frontend/`: the browser only ever holds a signed session cookie, never the
+  bearer token). See [`frontend/README.md`](frontend/README.md).
+- **Not** wired into `docker-compose.yml` — no Delta HTTP app is (D-004's ingest app and
+  D-005/D-006's engines ship the same way); full service wiring is D-010 (Deployment).
+
 ## Layout
 
 ```
 src/delta/        Pydantic v2 domain types + validators (the invariants)
+src/delta/allocation_admin/  D-007 budget-allocation admin API (propose/approve/reject, history)
+frontend/         D-007 Next.js admin console (BFF-only, see frontend/README.md)
 contracts/        Delta-owned JSON Schemas (Draft 2020-12, additionalProperties:false)
 tests/            non-stubbed proofs of every invariant + the Budget round-trip
 docs/adr/         Delta architecture decision records
@@ -65,4 +85,17 @@ docs/audit/       security audit records
 pip install -e ".[dev]"
 python -m pytest -q --cov=src --cov-report=term-missing
 ruff check . && black --check .
+```
+
+Allocation-admin API (D-007), against a migrated DB (see `alembic upgrade head` above):
+
+```bash
+export DELTA_ADMIN_TOKEN=<a-local-dev-token>
+uvicorn "delta.allocation_admin.app:create_app" --factory --port 8010
+```
+
+Frontend console (D-007) — see [`frontend/README.md`](frontend/README.md) for the full env list:
+
+```bash
+cd frontend && npm install && npm run dev
 ```

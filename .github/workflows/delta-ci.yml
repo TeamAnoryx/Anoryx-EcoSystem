@@ -108,6 +108,16 @@ jobs:
             --cov-fail-under=90 \
             --cov-report=term-missing \
             tests/kill_switch
+      - name: Allocation-admin core coverage floor (>=90%)
+        # The D-007 admin surface (config, auth, schemas, store, service, router, app) —
+        # calls the D-005 create_budget seam unchanged, so that stays covered by the
+        # budget-engine floor above, not re-counted here.
+        run: |
+          pytest -q \
+            --cov=delta.allocation_admin \
+            --cov-fail-under=90 \
+            --cov-report=term-missing \
+            tests/allocation_admin
 
   # Migration reversibility: upgrade -> downgrade -> upgrade on a fresh DB, then a
   # full drop-schema rebuild (a true fresh build, not a downgrade-base reset).
