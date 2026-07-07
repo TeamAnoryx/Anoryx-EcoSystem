@@ -4,6 +4,12 @@ metadata:
   name: {{ include "sentinel.fullname" . }}
   labels:
     {{- include "sentinel.labels" . | nindent 4 }}
+  {{- if and .Values.region.enabled .Values.region.geoRouting.annotations }}
+  # Geo-routing hints for an external global load balancer / GeoDNS (F-022,
+  # ADR-0028 D4). The chart SURFACES these; it does NOT provision the GSLB.
+  annotations:
+    {{- toYaml .Values.region.geoRouting.annotations | nindent 4 }}
+  {{- end }}
 spec:
   type: {{ .Values.service.type }}
   selector:

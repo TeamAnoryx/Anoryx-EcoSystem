@@ -146,9 +146,16 @@ pod-to-pod on Windows), or run on a Linux host / cloud cluster.
   to `minioadmin/minioadmin` (NOTES.txt warns). The demo path always supplies the
   Secret via `gen-k8s-secret.sh`, so the bucket is owned by random keys.
 
-## Out of scope — F-022 / later (named, not half-built)
+## Beyond a single cluster
 
-Multi-region / active-active / geo-routing · Vault / KMS (this Part uses K8s
-Secrets) · public TLS / cert-manager / hardened production Ingress (demo uses
-port-forward) · HPA / autoscaling (the `hpa.yaml` template exists but stays
-`autoscaling.enabled=false`).
+**Multi-region / active-passive / geo-routing / cross-region replication** is
+delivered by **F-022** as a gated overlay on this same chart (`region.enabled`,
+default off — this single-cluster guide is unchanged when it is off). See
+[MULTI-REGION.md](MULTI-REGION.md) and ADR-0028.
+
+## Still out of scope — later (named, not half-built)
+
+Vault / KMS (this Part uses K8s Secrets) · public TLS / cert-manager / hardened
+production Ingress (demo uses port-forward) · HPA / autoscaling (the `hpa.yaml`
+template exists but stays `autoscaling.enabled=false`) · automated failover /
+promotion controller (F-022 promotion is runbook-driven).

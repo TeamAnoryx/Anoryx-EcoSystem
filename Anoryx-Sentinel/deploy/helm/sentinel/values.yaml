@@ -70,6 +70,69 @@ piiDetectionEnabled: false
 env: []                        # list of {name, value}
 extraEnv: []
 
+# --- Multi-region (F-022, ADR-0028) ------------------------------------------ #
+# OFF by default: with region.enabled=false the chart renders byte-identically to
+# the single-cluster ADR-0027 chart (nothing below is emitted). Turn on per region
+# (one active, N passive) to surface region identity, residency labels, geo-routing
+# annotations, cross-region replication of ONLY the global stores, and HA topology
+# spread. See deploy/MULTI-REGION.md for the active/passive deploy + failover runbook.
+region:
+  enabled: false
+  # Region identifier — SENTINEL_REGION env + topology.kubernetes.io/region label,
+  # e.g. "us-east-1". Required when enabled.
+  name: ""
+  # "active"  — the SOLE writer for the policy store + audit log (ADR-0028 D2).
+  # "passive" — read-only replica + failover standby (promote via the runbook).
+  role: active
+  # Data-residency jurisdiction label — SENTINEL_DATA_RESIDENCY env +
+  # anoryx.io/data-residency label, e.g. "us" / "eu". Informational at the
+  # deployment tier; app-tier residency ENFORCEMENT is a named deferral (ADR-0028).
+  residency: ""
+
+  # Cross-region logical replication of ONLY the globally-uniform stores
+  # (policies, policy_versions, events_audit_log). Renders publication SQL on the
+  # active region and subscription SQL on a passive region into a ConfigMap the
+  # operator applies (ADR-0028 D3). Logical replication is row-faithful, so the
+  # audit hash chain + policy signatures survive intact; the passive copy is
+  # read-only so the chain cannot fork. Physical replication is deliberately NOT
+  # used — it would clone residency-bound rows across regions.
+  replication:
+    enabled: false
+    # The exact tables to replicate. Defaults = the two global stores only.
+    tables:
+      - policies
+      - policy_versions
+      - events_audit_log
+    # Logical-replication publication / subscription names.
+    publicationName: sentinel_global
+    subscriptionName: sentinel_global_sub
+    # PASSIVE only: libpq conninfo to the ACTIVE region's primary, WITHOUT the
+    # password (the password is supplied by the operator from a Secret at apply
+    # time — never commit it). e.g.
+    #   "host=active.db.example.com port=5432 dbname=sentinel user=replicator sslmode=require"
+    # Empty renders the conninfo with a ${REPLICATION_PASSWORD} placeholder to
+    # substitute at apply time.
+    activePrimaryConninfo: ""
+    # Opt-in Job that APPLIES the rendered SQL against the local DB. OFF by default
+    # — cross-region networking + credentials are operator-owned, so by default the
+    # SQL is rendered for manual review + apply (ADR-0028 D3).
+    bootstrapJob:
+      enabled: false
+
+  # Geo-routing: annotations surfaced onto the gateway Service (and Ingress when
+  # enabled) so an operator wires a global load balancer / GeoDNS to route users
+  # to the nearest healthy region with failover to active. The chart does NOT
+  # provision the GSLB — it is edge/account-owned (ADR-0028 D4).
+  geoRouting:
+    annotations: {}
+
+  # Intra-region HA: spread gateway replicas across zones. Additive + gated.
+  topologySpread:
+    enabled: false
+    maxSkew: 1
+    # DoNotSchedule (hard) | ScheduleAnyway (soft).
+    whenUnsatisfiable: ScheduleAnyway
+
 # --- Workers / probes -------------------------------------------------------- #
 workers: 1                     # SENTINEL_WORKERS
 

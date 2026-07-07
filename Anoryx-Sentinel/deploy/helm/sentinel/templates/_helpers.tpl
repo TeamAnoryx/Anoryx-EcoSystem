@@ -173,6 +173,56 @@ Bundled-mode only; external endpoints are assumed already up.
 {{- end -}}
 
 {{/*
+Region identity env (F-022, ADR-0028 D1). Emitted only when region.enabled.
+GatewaySettings uses extra="ignore" (src/gateway/config.py), so these are accepted
+today without a code change and are available to logging / OTel resource
+attributes. App-tier residency ENFORCEMENT is a named deferral — this is
+deployment-provided region CONTEXT, not enforcement.
+*/}}
+{{- define "sentinel.regionEnv" -}}
+{{- if .Values.region.enabled }}
+{{- if not (has .Values.region.role (list "active" "passive")) }}{{- fail (printf "region.role must be 'active' or 'passive', got %q" .Values.region.role) }}{{- end }}
+{{- $_ := required "region.name is required when region.enabled=true" .Values.region.name }}
+- name: SENTINEL_REGION
+  value: {{ .Values.region.name | quote }}
+- name: SENTINEL_REGION_ROLE
+  value: {{ .Values.region.role | quote }}
+- name: SENTINEL_DATA_RESIDENCY
+  value: {{ .Values.region.residency | quote }}
+{{- end }}
+{{- end -}}
+
+{{/*
+Region pod labels (F-022, ADR-0028 D1). Standard k8s topology label plus Anoryx
+role/residency labels. Empty when region disabled. Applied to POD templates only,
+never to a Deployment's immutable selector.matchLabels.
+*/}}
+{{- define "sentinel.regionLabels" -}}
+{{- if .Values.region.enabled }}
+topology.kubernetes.io/region: {{ .Values.region.name | quote }}
+anoryx.io/region-role: {{ .Values.region.role | quote }}
+{{- if .Values.region.residency }}
+anoryx.io/data-residency: {{ .Values.region.residency | quote }}
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{/*
+Gateway topology spread across zones (F-022, ADR-0028 D5). Emits the constraint
+list unguarded; the call site guards on region.enabled AND
+region.topologySpread.enabled. Scoped to THIS release's gateway pods.
+*/}}
+{{- define "sentinel.regionTopologySpread" -}}
+- maxSkew: {{ .Values.region.topologySpread.maxSkew }}
+  topologyKey: topology.kubernetes.io/zone
+  whenUnsatisfiable: {{ .Values.region.topologySpread.whenUnsatisfiable }}
+  labelSelector:
+    matchLabels:
+      {{- include "sentinel.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
+{{- end -}}
+
+{{/*
 wait-for-migrate initContainer (ADR-0027 D1 — the serve/seed gate). Blocks until
 the schema is at head by polling `alembic current` via the entrypoint shim (which
 assembles DATABASE_URL from pgEnv + envSecret). Decoupled from the migrate Job

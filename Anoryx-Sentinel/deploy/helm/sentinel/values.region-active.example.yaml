@@ -1,0 +1,35 @@
+# Example ACTIVE-region overlay (F-022, ADR-0028). The active region is the SOLE
+# writer for the policy store + audit log and PUBLISHES them to passive regions.
+# Layer on top of your base values:
+#   helm install sentinel deploy/helm/sentinel \
+#     -f deploy/helm/sentinel/values.yaml \
+#     -f deploy/helm/sentinel/values.region-active.example.yaml
+# See deploy/MULTI-REGION.md for the full active/passive runbook.
+region:
+  enabled: true
+  name: us-east-1
+  role: active
+  residency: us
+  replication:
+    enabled: true
+    publicationName: sentinel_global
+    tables:
+      - policies
+      - policy_versions
+      - events_audit_log
+    # Requires wal_level=logical on this region's Postgres (server config).
+    # Apply the rendered publication SQL once (or set bootstrapJob.enabled=true
+    # for the bundled-store demo):
+    #   kubectl get cm <release>-sentinel-region-replication -o jsonpath='{.data.publication\.sql}' | psql ...
+    bootstrapJob:
+      enabled: false
+  topologySpread:
+    enabled: true
+    maxSkew: 1
+    whenUnsatisfiable: ScheduleAnyway
+  geoRouting:
+    annotations:
+      # Provider-specific GSLB / GeoDNS hints — replace with your own. The chart
+      # only surfaces these onto the Service; it does not provision a global LB.
+      external-dns.alpha.kubernetes.io/hostname: api.sentinel.example.com
+      anoryx.io/geo-weight: "100"
