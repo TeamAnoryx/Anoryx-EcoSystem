@@ -20,7 +20,7 @@ from typing import Annotated, Literal, Union
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from .huddle import Huddle
-from .inspector import InspectionOutcome
+from .inspector import DetectorFinding, InspectionOutcome
 from .message import Message
 
 PROTOCOL_VERSION = "1"
@@ -196,8 +196,20 @@ def _archival_meta(msg: Message) -> dict:
     }
 
 
-def _inspection_obj(*, status: str, evaluated_at: datetime) -> dict:
-    return {"status": status, "evaluated_at": _iso(evaluated_at)}
+def _detector_dicts(detectors: tuple[DetectorFinding, ...]) -> list[dict]:
+    return [{"category": f.category, "outcome": f.outcome} for f in detectors]
+
+
+def _inspection_obj(
+    *,
+    status: str,
+    evaluated_at: datetime,
+    detectors: tuple[DetectorFinding, ...] = (),
+) -> dict:
+    obj: dict = {"status": status, "evaluated_at": _iso(evaluated_at)}
+    if detectors:
+        obj["detectors"] = _detector_dicts(detectors)
+    return obj
 
 
 def build_chat_message(msg: Message) -> dict:
@@ -211,8 +223,12 @@ def build_chat_message(msg: Message) -> dict:
         "content": msg.content,
         "content_type": msg.content_type,
         "archival": _archival_meta(msg),
-        # On a DELIVERED message the seam status is always pass (fail-closed pre-send).
-        "inspection": _inspection_obj(status="pass", evaluated_at=msg.inspection_evaluated_at),
+        # On a DELIVERED message the seam status is always pass (fail-closed pre-send); R-008
+        # populates the per-category findings evaluated for THIS message (all "pass" by
+        # construction — any "block" would have blocked the whole send).
+        "inspection": _inspection_obj(
+            status="pass", evaluated_at=msg.inspection_evaluated_at, detectors=msg.detectors
+        ),
     }
 
 
@@ -253,7 +269,9 @@ def build_chat_ack_blocked(
     }
     if inspection is not None:
         frame["inspection"] = _inspection_obj(
-            status=inspection.status, evaluated_at=inspection.evaluated_at
+            status=inspection.status,
+            evaluated_at=inspection.evaluated_at,
+            detectors=inspection.detectors,
         )
     return frame
 
