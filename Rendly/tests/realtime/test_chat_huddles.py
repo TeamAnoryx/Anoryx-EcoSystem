@@ -55,8 +55,26 @@ def test_invite_rings_both_sides_then_signal_send_accepts_then_activates_then_ha
         assert ring2["peer_user_id"] == u1
         assert "archival" not in ring1  # in-flight state -> no archival yet
 
-        # The inviter signals first (e.g. sends the SDP offer) — relayed, but still "ringing"
-        # (the callee has not responded yet; see the state-transition heuristic in huddle.py).
+        # The callee signals FIRST (e.g. an early trickle-ICE candidate, before answering) ->
+        # ringing -> accepted only (the inviter has not signaled yet, so "both have signaled"
+        # is not yet true).
+        ws2.send_json(
+            {
+                "msg_type": "signal.send",
+                "huddle_id": huddle_id,
+                "signal": {
+                    "kind": "ice-candidate",
+                    "candidate": "candidate:0 1 UDP 1 9.9.9.9 9 typ host",
+                },
+            }
+        )
+        recv_until(ws1, "signal.relay")
+        accepted1 = recv_until(ws1, "huddle.update")
+        accepted2 = recv_until(ws2, "huddle.update")
+        assert accepted1["state"] == accepted2["state"] == "accepted"
+
+        # The inviter's first signal (the SDP offer) -> both sides have now signaled ->
+        # accepted -> active, in this SAME call (not a separate third signal).
         ws1.send_json(
             {
                 "msg_type": "signal.send",
@@ -68,35 +86,6 @@ def test_invite_rings_both_sides_then_signal_send_accepts_then_activates_then_ha
         assert relayed_offer["from_user_id"] == u1
         assert relayed_offer["huddle_id"] == huddle_id
         assert relayed_offer["signal"] == {"kind": "offer", "sdp": "v=0 offer-from-u1"}
-
-        # The callee (peer) answers -> ringing -> accepted, both notified.
-        ws2.send_json(
-            {
-                "msg_type": "signal.send",
-                "huddle_id": huddle_id,
-                "signal": {"kind": "answer", "sdp": "v=0 answer-from-u2"},
-            }
-        )
-        relayed_answer = recv_until(ws1, "signal.relay")
-        assert relayed_answer["from_user_id"] == u2
-        assert relayed_answer["signal"]["kind"] == "answer"
-        accepted1 = recv_until(ws1, "huddle.update")
-        accepted2 = recv_until(ws2, "huddle.update")
-        assert accepted1["state"] == accepted2["state"] == "accepted"
-
-        # The inviter's second signal (an ICE candidate) -> both sides have now signaled ->
-        # accepted -> active.
-        ws1.send_json(
-            {
-                "msg_type": "signal.send",
-                "huddle_id": huddle_id,
-                "signal": {
-                    "kind": "ice-candidate",
-                    "candidate": "candidate:1 1 UDP 1 1.2.3.4 1 typ host",
-                },
-            }
-        )
-        recv_until(ws2, "signal.relay")
         active1 = recv_until(ws1, "huddle.update")
         active2 = recv_until(ws2, "huddle.update")
         assert active1["state"] == active2["state"] == "active"
@@ -121,6 +110,59 @@ def test_invite_rings_both_sides_then_signal_send_accepts_then_activates_then_ha
         assert ended1["state"] == ended2["state"] == "ended"
         assert ended1["archival"]["record_id"] == huddle_id
         assert ended2["archival"]["record_id"] == huddle_id
+
+
+def test_inviter_signals_first_then_callees_first_signal_jumps_straight_to_active(
+    make_client, seed_user, mint_token, new_uuid
+):
+    """Regression: when the INVITER signals first (e.g. the SDP offer right after inviting — a
+    common, contract-anticipated ordering) and the callee's first signal arrives second, BOTH
+    "callee has now signaled" (-> accepted) and "both participants have signaled" (-> active)
+    become true in that SAME signal.send call. The session must jump straight to "active" (there
+    was never a real moment where only "accepted" held) rather than getting stuck at "accepted"
+    until an unrelated third signal arrives."""
+    tenant = new_uuid()
+    u1, u2 = new_uuid(), new_uuid()
+    seed_user(tenant_id=tenant, user_id=u1)
+    seed_user(tenant_id=tenant, user_id=u2)
+    client = make_client()
+    t1 = mint_token(user_id=u1, tenant_id=tenant, scope="chat:read chat:write huddle:initiate")
+    t2 = mint_token(user_id=u2, tenant_id=tenant, scope="chat:read chat:write huddle:initiate")
+
+    with (
+        client.websocket_connect(_REALTIME, headers=auth(t2)) as ws2,
+        client.websocket_connect(_REALTIME, headers=auth(t1)) as ws1,
+    ):
+        ws2.receive_json()
+        ws1.receive_json()
+        ws1.send_json({"msg_type": "huddle.invite", "peer_user_id": u2})
+        ring1 = recv_until(ws1, "huddle.update")
+        recv_until(ws2, "huddle.update")
+        huddle_id = ring1["huddle_id"]
+
+        # Inviter signals first — still ringing (the callee has not responded yet).
+        ws1.send_json(
+            {
+                "msg_type": "signal.send",
+                "huddle_id": huddle_id,
+                "signal": {"kind": "offer", "sdp": "v=0 offer-from-u1"},
+            }
+        )
+        recv_until(ws2, "signal.relay")
+
+        # Callee's first signal (the answer) -> both have now signaled -> straight to "active",
+        # with NO intervening "accepted" huddle.update.
+        ws2.send_json(
+            {
+                "msg_type": "signal.send",
+                "huddle_id": huddle_id,
+                "signal": {"kind": "answer", "sdp": "v=0 answer-from-u2"},
+            }
+        )
+        recv_until(ws1, "signal.relay")
+        active1 = recv_until(ws1, "huddle.update")
+        active2 = recv_until(ws2, "huddle.update")
+        assert active1["state"] == active2["state"] == "active"
 
 
 def test_callee_hangup_while_ringing_is_declined(make_client, seed_user, mint_token, new_uuid):

@@ -519,13 +519,22 @@ async def handle_signal_send(conn: Connection, data: dict, ctx: RuntimeContext) 
         return
 
     huddle.signaled_by.add(conn.user_id)
-    new_state: str | None = None
-    if huddle.state == "ringing" and conn.user_id == huddle.peer_user_id:
-        new_state = "accepted"
-    elif huddle.state == "accepted" and len(huddle.signaled_by) == 2:
-        new_state = "active"
-    if new_state is None:
+    # Compute the EFFECTIVE state after both rules, not just the first one to match: if the
+    # inviter signals first (e.g. sends the SDP offer right after inviting — a common ordering)
+    # and the callee's first signal arrives second, both "callee has now signaled" (-> accepted)
+    # and "both participants have signaled" (-> active) become true in this SAME call. A plain
+    # if/elif would stop at "accepted" and require an unrelated third signal to reach "active",
+    # contradicting the documented heuristic (huddle.py / ADR-0007 Fork C). Chaining the checks
+    # against the updated `signaled_by` lets a single signal jump straight to "active" when both
+    # conditions land together — there was never a real moment where only "accepted" held.
+    effective_state = huddle.state
+    if effective_state == "ringing" and conn.user_id == huddle.peer_user_id:
+        effective_state = "accepted"
+    if effective_state == "accepted" and len(huddle.signaled_by) == 2:
+        effective_state = "active"
+    if effective_state == huddle.state:
         return  # no lifecycle change on this signal -> relay only, no huddle.update
+    new_state = effective_state
     ctx.huddles.transition(huddle.huddle_id, new_state)
 
     for c in ctx.registry.user_connections(conn.tenant_id, conn.user_id):
