@@ -164,6 +164,18 @@ tags:
       registered, enabled, healthy Sentinels whose declared capabilities cover the policy.
       Best-effort per target (a per-target failure does not roll back the others); mTLS
       provisioning to the targets is DEFERRED to O-008.
+  - name: admin
+    description: |
+      O-007 operator fleet-triage reads: cross-tenant, operator-scoped summaries of
+      recently ingested events and recent policy distributions across ALL tenants. These
+      are the deliberate INVERSE of the O-006 PER-TENANT read seams (/v1/events,
+      /v1/bus/dlq): an operator triaging the whole fleet, not a tenant reading its own
+      slice. Gated by the operator bearer token (env ORCH_ADMIN_TOKEN), the SAME credential
+      as the registry seams, DISTINCT from the peer service token. METADATA-ONLY, mirroring
+      the query honesty boundary: the event view reuses the EventMetadata projection (never
+      a payload) and the distribution view never returns the signed policy body. Both are a
+      single bounded "recent N" page (no cursor pagination in v1) — a deliberate
+      simplification for a triage surface, not an omission.
 
 paths:
   /v1/ingest/events:
@@ -948,6 +960,123 @@ paths:
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
 
+  /v1/admin/events/recent:
+    get:
+      operationId: listRecentEventsAdmin
+      tags: [admin]
+      summary: List recently ingested events across ALL tenants (operator-scoped)
+      description: |
+        Returns a metadata-only view of the most recently ingested events across ALL
+        tenants for operator fleet triage. This is CROSS-TENANT BY DESIGN — the deliberate
+        INVERSE of the O-006 PER-TENANT `/v1/events` seam: `/v1/events` derives a single
+        tenant principal from a per-tenant service token and reads under that tenant's RLS
+        session; this seam is gated by the OPERATOR bearer token and reads across every
+        tenant so an operator can see the whole fleet at once.
+
+        METADATA-ONLY: it reuses the SAME EventMetadata projection (join keys + type + time)
+        as `/v1/events` and NEVER returns a full event payload (mirrors query honesty
+        boundary c).
+
+        NO CURSOR PAGINATION: this is a single bounded "recent N" page, newest-first,
+        capped by `limit`. The absence of a cursor is a DELIBERATE SIMPLIFICATION for a
+        triage surface, not an omission — an operator scanning recent activity does not
+        page a full history here; deep, filtered, paginated reads remain the per-tenant
+        `/v1/events` seam.
+
+        Auth: mTLS (operator host) AND an operator bearer token.
+      security:
+        - mutualTLS: []
+          operatorBearer: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A single bounded page of recent event metadata across all tenants (newest-first).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminEventMetadataPage'
+              examples:
+                recent:
+                  value:
+                    data:
+                      - event_id: "c1d2e3f4-5678-4abc-9def-0123456789ab"
+                        event_type: policy_decision_deny
+                        event_timestamp: "2026-06-26T12:00:00Z"
+                        tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+                        team_id: "7d9e2f3a-1234-5c6b-8def-0123456789ab"
+                        project_id: "b3c4d5e6-abcd-1234-ef01-234567890abc"
+                        agent_id: "gateway-core"
+                        request_id: "req-o001-ingest-example-01"
+                      - event_id: "d2e3f4a5-6789-4bcd-8ef0-123456789abc"
+                        event_type: usage_recorded
+                        event_timestamp: "2026-06-26T11:59:58Z"
+                        tenant_id: "9f8e7d6c-5b4a-4039-8281-706f5e4d3c2b"
+                        team_id: "1a2b3c4d-5e6f-4708-8192-a3b4c5d6e7f8"
+                        project_id: "0f1e2d3c-4b5a-4697-8586-7574635241f0"
+                        agent_id: "gateway-core"
+                        request_id: "req-o007-admin-example-02"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/admin/distributions/recent:
+    get:
+      operationId: listRecentDistributionsAdmin
+      tags: [admin]
+      summary: List recent policy distributions across ALL tenants (operator-scoped)
+      description: |
+        Returns a cross-tenant SUMMARY view of the most recent policy distributions across
+        ALL tenants for operator fleet triage. CROSS-TENANT BY DESIGN and gated by the
+        OPERATOR bearer token, the fleet-wide counterpart to the per-distribution
+        `GET /v1/policies/distributions/{distribution_id}` status seam.
+
+        This view NEVER returns the signed policy body — no `signed_record`, no
+        `content_hash` — mirroring the "no payload" discipline of the event reads. It
+        exposes only join-key + classification + lifecycle-state summary fields.
+
+        NO CURSOR PAGINATION: a single bounded "recent N" page, newest-first, capped by
+        `limit` — a deliberate simplification for a triage surface, not an omission. To see
+        one distribution's FULL per-target delivery status, an operator drills into the
+        EXISTING `GET /v1/policies/distributions/{distribution_id}` seam, which is UNCHANGED
+        and still gated by the peer service token (the coarse `ORCH_SERVICE_TOKEN`), NOT
+        this operator token.
+
+        Auth: mTLS (operator host) AND an operator bearer token.
+      security:
+        - mutualTLS: []
+          operatorBearer: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A single bounded page of recent distribution summaries across all tenants (newest-first).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDistributionSummaryPage'
+              examples:
+                recent:
+                  value:
+                    data:
+                      - distribution_id: "a7b8c9d0-1234-4ef0-9abc-def012345678"
+                        policy_id: "e5f6a7b8-0123-4cde-9f01-23456789abcd"
+                        tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+                        policy_type: budget_limit
+                        state: partial
+                        created_at: "2026-06-26T12:00:05Z"
+                      - distribution_id: "b8c9d0e1-2345-4f01-8abc-ef0123456789"
+                        policy_id: "f6a7b8c9-1234-4def-8012-3456789abcde"
+                        tenant_id: "9f8e7d6c-5b4a-4039-8281-706f5e4d3c2b"
+                        policy_type: model_approval
+                        state: distributed
+                        created_at: "2026-06-26T11:58:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
 components:
 
   securitySchemes:
@@ -1285,6 +1414,61 @@ components:
           items:
             $ref: '#/components/schemas/DistributionTargetStatus'
 
+    AdminDistributionSummary:
+      type: object
+      additionalProperties: false
+      required: [distribution_id, policy_id, tenant_id, policy_type, state, created_at]
+      description: |
+        A cross-tenant SUMMARY of one policy distribution, for the O-007 operator
+        fleet-triage view (GET /v1/admin/distributions/recent). Join key + classification +
+        lifecycle state ONLY. It NEVER carries the signed policy body (no signed_record, no
+        content_hash) — mirroring the "no payload" discipline of the event reads. Full
+        per-target delivery status is read via the existing
+        GET /v1/policies/distributions/{distribution_id} seam.
+      properties:
+        distribution_id:
+          type: string
+          format: uuid
+          maxLength: 64
+        policy_id:
+          type: string
+          format: uuid
+          maxLength: 64
+        tenant_id:
+          type: string
+          format: uuid
+          maxLength: 64
+        policy_type:
+          type: string
+          maxLength: 32
+          description: |
+            One of the six locked policy_type values (membership only; the locked
+            policy.schema.json enum is CLOSED and is not redefined here).
+        state:
+          type: string
+          enum: [pending, distributed, partial, failed]
+          description: Aggregate distribution state (mirrors DistributionStatus.state).
+        created_at:
+          type: string
+          format: date-time
+          maxLength: 64
+
+    AdminDistributionSummaryPage:
+      type: object
+      additionalProperties: false
+      required: [data]
+      description: |
+        A single bounded "recent N" page of cross-tenant distribution summaries, for the
+        O-007 operator fleet-triage view (GET /v1/admin/distributions/recent). Newest-first;
+        NO cursor pagination in v1 — a DELIBERATE SIMPLIFICATION for a triage surface, not
+        an omission.
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/AdminDistributionSummary'
+
     EventMetadata:
       type: object
       additionalProperties: false
@@ -1346,6 +1530,25 @@ components:
           type: [string, "null"]
           maxLength: 512
           description: Opaque cursor for the next page, or null when no more pages.
+
+    AdminEventMetadataPage:
+      type: object
+      additionalProperties: false
+      required: [data]
+      description: |
+        A single bounded "recent N" page of event metadata across ALL tenants, for the
+        O-007 operator fleet-triage view (GET /v1/admin/events/recent). Reuses the SAME
+        EventMetadata projection as EventMetadataPage (join keys + type + time, never a
+        payload). Unlike EventMetadataPage there is NO `next_cursor` field: this triage
+        surface returns one newest-first page and does NOT paginate in v1 — a DELIBERATE
+        SIMPLIFICATION, not an omission (deep, filtered, paginated reads remain the
+        per-tenant /v1/events seam).
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/EventMetadata'
 
     Error:
       type: object
