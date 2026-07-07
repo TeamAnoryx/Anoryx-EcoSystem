@@ -177,3 +177,56 @@ kill_switch_outbox = sa.Table(
     sa.Column("last_error", sa.String(512), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
+
+# --- D-007 budget allocation admin (migration 0005) --------------------------------
+# A proposed distribution of a tenant total across scope targets — the D-001
+# `delta.allocation.Allocation` shape, made durable and given an approval workflow.
+# Never auto-applied: `status` starts 'requested' and only an explicit admin decision
+# moves it to 'approved' (materializing each target as a budget_definitions row via
+# the existing D-005 create_budget seam) or 'rejected' (no side effects).
+allocations = sa.Table(
+    "allocations",
+    metadata,
+    sa.Column("allocation_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("total_minor_units", sa.BigInteger, nullable=False),
+    sa.Column("currency", sa.String(3), nullable=False),
+    sa.Column("period", sa.String(8), nullable=False),
+    sa.Column("status", sa.String(16), nullable=False),
+    sa.Column("requested_by", sa.String(128), nullable=False),
+    sa.Column("requested_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("decided_by", sa.String(128), nullable=True),
+    sa.Column("decided_at", sa.DateTime(timezone=True), nullable=True),
+)
+
+# One row per AllocationTarget. `budget_id` is NULL until the target is materialized
+# (set at approval time); it names the budget_definitions row this target became.
+allocation_targets = sa.Table(
+    "allocation_targets",
+    metadata,
+    sa.Column("target_id", sa.String(64), primary_key=True),
+    sa.Column("allocation_id", sa.String(64), nullable=False),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("scope", sa.String(8), nullable=False),
+    sa.Column("team_id", sa.String(64), nullable=False),
+    sa.Column("project_id", sa.String(64), nullable=False),
+    sa.Column("agent_id", sa.String(64), nullable=False),
+    sa.Column("amount_minor_units", sa.BigInteger, nullable=False),
+    sa.Column("budget_id", sa.String(64), nullable=True),
+)
+
+# Plain append-only change-history log for allocation lifecycle transitions. NOT
+# hash-chained (that tamper-evident layer is D-009, applied ecosystem-wide to Delta's
+# financial workflows) — this is its un-hash-chained precursor, honestly scoped.
+change_history = sa.Table(
+    "change_history",
+    metadata,
+    sa.Column("history_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("entity_type", sa.String(32), nullable=False),
+    sa.Column("entity_id", sa.String(64), nullable=False),
+    sa.Column("action", sa.String(32), nullable=False),
+    sa.Column("actor", sa.String(128), nullable=False),
+    sa.Column("note", sa.String(1024), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
