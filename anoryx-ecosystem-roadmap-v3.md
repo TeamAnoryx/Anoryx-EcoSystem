@@ -1,8 +1,8 @@
 # Anoryx Ecosystem — Complete Build Roadmap (v3)
 
 **Owner:** Affu (TeamAnoryx)
-**Last updated:** 2026-06-25
-**Status:** Sentinel Phase 1–3 substantially shipped — F-001 through F-021 merged to main (22 features incl. F-003b). F-010 (deployment) is the active next build. Orchestrator / Delta / Rendly not yet started.
+**Last updated:** 2026-07-07
+**Status:** Sentinel MVP complete — F-001 through F-021 merged incl. F-007 (ML classifier) + F-010 (deployment, both parts). Downstream MVPs underway: Orchestrator O-001→O-006 shipped (O-007/O-008 remain); Delta D-001→D-005 shipped; Rendly R-001→R-006 shipped. Cross-product (X-) not yet started.
 **Replaces:** anoryx-ecosystem-roadmap-v2.md (2026-06-18)
 
 ---
@@ -23,7 +23,7 @@ v2 (2026-06-18) was accurate as of F-008. Between then and 2026-06-25, the Senti
 
 ---
 
-## Verified shipped state (Sentinel, on main as of 2026-06-25)
+## Verified shipped state (Sentinel, on main as of 2026-07-07)
 
 | ID | Feature | Status | Merge / PR |
 |----|---------|--------|-----------|
@@ -34,8 +34,10 @@ v2 (2026-06-18) was accurate as of F-008. Between then and 2026-06-25, the Senti
 | F-004 | Gateway core | ✅ SHIPPED | — |
 | F-005 | Orchestration hooks + 4 detectors | ✅ SHIPPED | — |
 | F-006 | Multi-provider model router (native) | ✅ SHIPPED | — |
+| F-007 | ML injection classifier (LLM-as-judge) | ✅ SHIPPED | PR #12 `6a386c3` (+#31 thresholds, +#34 FU `d7f1505`) |
 | F-008 | Policy intake + ECDSA-signed enforcement | ✅ SHIPPED | PR #11 |
 | F-009 | Rate limiting + observability | ✅ SHIPPED | — |
+| F-010 | Deployment (Docker compose + Helm) | ✅ SHIPPED | PR #27 `6907b9a` (Part 1) + PR #38 `743ee52` (Part 2) |
 | F-011 | Compliance engine (SOC 2 + GDPR) | ✅ SHIPPED | PR #15 `ff46ea9` |
 | F-012a | Admin console API | ✅ SHIPPED | PR #16 `2226bb2` |
 | F-012 | Admin console frontend | ✅ SHIPPED | PR #17 `a987a89` |
@@ -49,7 +51,35 @@ v2 (2026-06-18) was accurate as of F-008. Between then and 2026-06-25, the Senti
 | F-020 | Integration suite (Slack/Jira/Splunk) | ✅ SHIPPED | PR #25 `eb281a8` |
 | F-021 | Advanced governance UI | ✅ SHIPPED | PR #26 `d044ed6` |
 
-**Not yet shipped (Sentinel):** F-007 (ML injection classifier), F-010 (deployment — **active next build**), F-022–F-036.
+**Not yet shipped (Sentinel):** F-022–F-036 only (Phase 4/5 scale/polish — all 🔮 SPECULATIVE). Every Phase 0–3 feature F-001→F-021 (incl. F-007 + F-010 both parts) is shipped.
+
+---
+
+## Verified shipped state (Orchestrator / Delta / Rendly, on main as of 2026-07-07)
+
+v3's original "Orchestrator / Delta / Rendly not yet started" is obsolete — all three MVP tracks are underway and partly shipped.
+
+| ID | Task | Status | Merge / PR |
+|----|------|--------|-----------|
+| O-001 | Internal API contract | ✅ SHIPPED | PR #28 `7d5986d` |
+| O-002 | Ecosystem event bus contract | ✅ SHIPPED | PR #35 `3fe98a3` |
+| O-003 | Event ingest pipeline | ✅ SHIPPED | PR #37 `156c554` |
+| O-004 | Policy distribution engine | ✅ SHIPPED | PR #42 `9f101b0` |
+| O-005 | Multi-Sentinel coordination | ✅ SHIPPED | PR #43 `e9762db` |
+| O-006 | Persistence consolidation + tenant-scoped read seams | ✅ SHIPPED | PR #47 `10f58c8` |
+| D-001 | Financial domain model | ✅ SHIPPED | PR #30 `19bd41b` |
+| D-002 | Budget policy schema | ✅ SHIPPED | PR #33 `c327b7e` |
+| D-003 | Double-entry ledger persistence | ✅ SHIPPED | PR #39 `41848a2` |
+| D-004 | Event ingest from Orchestrator | ✅ SHIPPED | PR #41 `49d7175` |
+| D-005 | Budget engine (spend-vs-budget enforcement) | ✅ SHIPPED | PR #45 `04b893b` |
+| R-001 | Core platform API contract | ✅ SHIPPED | PR #29 `309d6fc` |
+| R-002 | Internal domain model | ✅ SHIPPED | PR #32 `182298c` |
+| R-003 | Authentication (OAuth2 + JWT ES256) | ✅ SHIPPED | PR #36 `57b883f` |
+| R-004 | User profiles + persistence | ✅ SHIPPED | PR #40 `382bcd1` |
+| R-005 | Real-time chat (WebSocket) | ✅ SHIPPED | PR #44 `8351955` |
+| R-006 | Role-based secure channels + manual team map | ✅ SHIPPED | PR #46 `a86f30b` |
+
+**Remaining MVP:** Orchestrator O-007/O-008 · Delta D-006→D-012 · Rendly R-007→R-010 · all Cross-product X-001→X-006. Post-investment (🏦) tier unchanged. (D-006 kill-switch is in a worktree, ADR gate pending — NOT yet merged.)
 
 ---
 
@@ -109,18 +139,18 @@ These are hard-won from the F-001→F-021 sprint. A fresh session should treat t
 
 | Product            | Tasks | Shipped | Remaining | Notes |
 |--------------------|-------|---------|-----------|-------|
-| Anoryx Sentinel    | 37    | 21      | 16        | F-007 + F-010 + Phase 4/5 |
-| AI Orchestrator    | 14    | 0       | 14        | MVP + ecosystem-integration layer + post-investment |
-| Delta              | 28    | 0       | 28        | AI-FinOps MVP + Enterprise-OS vision (post-investment) |
-| Rendly             | 30    | 0       | 30        | Secure-comms MVP + culture/streaming vision (post-investment) + B2C |
-| Cross-integration  | 6     | 0       | 6         | — |
-| **Total**          | **115**| **21** | **94**    | — |
+| Anoryx Sentinel    | 37    | 23      | 14        | F-007 + F-010 shipped; remaining = Phase 4/5 (F-022–F-036) |
+| AI Orchestrator    | 14    | 6       | 8         | O-001→O-006 shipped; O-007/O-008 + ecosystem-integration + post-investment |
+| Delta              | 28    | 5       | 23        | D-001→D-005 shipped; D-006→D-012 MVP + Enterprise-OS vision |
+| Rendly             | 30    | 6       | 24        | R-001→R-006 shipped; R-007→R-010 MVP + culture/streaming/B2C vision |
+| Cross-integration  | 6     | 0       | 6         | X-001→X-003 next (killer MVP loop) |
+| **Total**          | **115**| **40** | **75**    | — |
 
-**Current true state:** 21 Sentinel features merged. The system runs feature-by-feature but is **not yet standable as one stack** — F-010 (deployment) is the gap between "21 features built" and "a design partner can run it." That is the single highest-leverage next build.
+**Current true state:** Sentinel MVP fully merged (F-001→F-021 incl. F-007 + F-010) — the stack is standable as one unit via `docker compose up` (F-010 Part 1) and Helm (Part 2). Orchestrator (O-001→O-006), Delta (D-001→D-005), and Rendly (R-001→R-006) MVP tracks are underway. Highest-leverage next: the X-001→X-003 cross-product killer loop (budget enforcement) — needs D-006 kill-switch to land first.
 
-**Demo-readiness milestone:** F-010 (compose `docker compose up` end-to-end) + F-007 (classifier depth) = the design-partner-ready bar. Most of the compliance/enterprise surface (F-011–F-021) is already shipped.
+**Demo-readiness milestone:** REACHED for Sentinel — F-010 (`docker compose up` end-to-end) + F-007 (classifier depth) both shipped, atop the full F-011–F-021 compliance/enterprise surface. Design-partner-ready bar met.
 
-**Known open gaps (non-feature):** (a) F-010 deploy-wiring; (b) F-007 ML classifier still unbuilt; (c) the most security-critical shipped code (F-012a/F-014/F-015/F-016) has audits that the owner has not yet personally read; (d) F-013.1 — compliance dashboard evidence-pack download was deferred (`docs/followups/f-013-deferred-backend.md`).
+**Known open gaps (non-feature):** (a) ~~F-010 deploy-wiring~~ — SHIPPED (#27 + #38); (b) ~~F-007 ML classifier~~ — SHIPPED (#12); (c) the most security-critical shipped code (F-012a/F-014/F-015/F-016 + the new O/D/R auth + RLS surfaces) has audits the owner has not yet personally read; (d) F-013.1 — compliance dashboard evidence-pack download deferred (`docs/followups/f-013-deferred-backend.md`).
 
 ---
 
@@ -155,8 +185,8 @@ Hook framework (pre/post), PII (Presidio), injection (regex), secret detector, s
 ### F-006 — Multi-provider model router ✅ SHIPPED ❓ RE-SCOPED
 Native router (no LiteLLM — ADR-0008). OpenAI/Anthropic/Bedrock adapters. Per-tenant `tenant_routing_policy` w/ RLS. Security-aware fallback. Stream-time cost enforcement. `routing_decision` event.
 
-### F-007 — ML injection classifier 🔄 NEXT (still unbuilt)
-**Status:** Planned, slim scope (Option A). The one remaining Phase-1 backend feature.
+### F-007 — ML injection classifier ✅ SHIPPED
+**Status:** SHIPPED — core PR #12 `6a386c3`, per-tenant thresholds PR #31 `d0a822c` (ADR-0025), double-begin fail-open fix PR #34 `d7f1505` (ADR-0026).
 **Description:** LLM-as-judge classification step on the existing F-005 injection detector. Two preset adapters (Anthropic Haiku, OpenAI gpt-4o-mini), tenant-configurable. Regex pre-filter + structured output forcing + system-prompt hardening + advisory threshold. Final score = max(regex, judge).
 **Realistic:** 12-16h (Tricky-Complex) · **Depends on:** F-006, F-008 · **Builder:** orchestration-hooks · **Risk:** Medium (recursive injection is the novel threat).
 
@@ -166,8 +196,8 @@ Native router (no LiteLLM — ADR-0008). OpenAI/Anthropic/Bedrock adapters. Per-
 ### F-009 — Rate limiting + observability ✅ SHIPPED
 Redis-backed rate limiting (moved off in-memory). Prometheus metrics (rps, error rate, p95, PII blocks/min, policy violations/min, classifier latency, `sentinel_audit_write_failures_total`). OpenTelemetry traces. Grafana JSON committed.
 
-### F-010 — Deployment (Docker + Helm + self-host) 🔄 NEXT — ACTIVE BUILD
-**Status:** The design-partner unlock. Stepped over for 13 features; now the highest-leverage build. **Recommend splitting into Part 1 (compose) then Part 2 (Helm/K8s).**
+### F-010 — Deployment (Docker + Helm + self-host) ✅ SHIPPED
+**Status:** SHIPPED both parts — Part 1 compose PR #27 `6907b9a` (`docker compose up` end-to-end), Part 2 Helm single-cluster PR #38 `743ee52` (ADR-0027, mirrors compose).
 **Part 1 (compose — build first):** Multi-stage Dockerfiles (gateway/worker/frontend), root `docker-compose.yml` standing up gateway + console + worker + Postgres + Redis + MinIO, migrations auto-run to head on a fresh volume, healthchecks + dependency order, `.env.example` + gitignored `.env`, SECURITY.md, DEPLOY walkthrough. **Demo bar:** `docker compose up` → all healthy → console reachable + operator login → a real `/v1` request flows gateway→policy→DB and is governed → `down -v && up` reproduces clean.
 **Part 2 (post-Part-1):** K8s manifests, Helm chart (managed-cloud + self-hosted VPC), Vault/KMS secrets, mTLS provisioning.
 **Realistic:** Part 1 ~12-16h · Part 2 ~12-16h · **Depends on:** F-004/F-005/F-006/F-008 (+ all shipped features) · **Builder:** platform-infra · **Risk:** Medium (deployment reveals environmental assumptions).
@@ -270,7 +300,7 @@ Third-party pen test of production + findings cycle. **Depends on:** F-010, F-01
 ### F-036 — Self-Hosted / Air-Gapped Enterprise Deployment 🔮 SPECULATIVE
 Air-gapped (no internet): offline install packages, internal mirrors, offline license validation. **Depends on:** F-010, F-027 · 22-30h.
 
-**Sentinel grand total: 37 tasks (21 shipped + 16 remaining). Remaining near-term: F-007 + F-010. Rest are Phase 4/5.**
+**Sentinel grand total: 37 tasks (23 shipped + 14 remaining). F-007 + F-010 now shipped; all remaining are Phase 4/5 (F-022→F-036, 🔮).**
 
 ---
 
@@ -278,34 +308,34 @@ Air-gapped (no internet): offline install packages, internal mirrors, offline li
 
 The ecosystem connector and broker. Sentinel emits events up; Delta pushes policies down; Rendly hooks in for safety; the Orchestrator routes between them. **Vision:** the central nervous system of the ecosystem — every inter-app data flow passes through it, governed by Sentinel.
 
-**Build timing:** Orchestrator MVP begins after Sentinel is deployable (F-010) and the first cross-product loop is wanted. The ecosystem-integration layer (O-011→O-014) is the *vision* — committed, but most of it is post-MVP and partly post-investment.
+**Build timing:** Orchestrator MVP is underway — O-001→O-006 shipped (Sentinel now deployable via F-010); O-007/O-008 remain. The ecosystem-integration layer (O-009→O-014) is the *vision* — committed, post-investment.
 
 ## Phase 0 — Orchestrator contracts (MVP)
 
-### O-001 — Internal API contract 📋 PLANNED
+### O-001 — Internal API contract ✅ SHIPPED (PR #28 `7d5986d`)
 OpenAPI for: event ingest from Sentinel, policy distribution to Sentinel, query API for Delta. mTLS between products.
 **Realistic:** 6-8h (Easy-Tricky) · **Depends on:** F-002 · **Builder:** api-architect · **Risk:** Medium.
 **Parallelizable?** Yes — pure contract work, depends only on shipped F-002. Safe to run in its own session alongside D-001/R-001. *Caveat: O-001 defines the inter-product seam, so D-002/R-008 that consume it must align after it lands.*
 
-### O-002 — Ecosystem event bus contract 📋 PLANNED
+### O-002 — Ecosystem event bus contract ✅ SHIPPED (PR #35 `3fe98a3`)
 Standard cross-product event envelope, replay semantics, dead-letter, schema versioning.
 **Realistic:** 6-8h · **Depends on:** O-001, F-002 · **Builder:** api-architect · **Risk:** Medium.
 
 ## Phase 1 — Orchestrator MVP
 
-### O-003 — Event ingest pipeline 📋 PLANNED
+### O-003 — Event ingest pipeline ✅ SHIPPED (PR #37 `156c554`)
 Consumer for Sentinel's event stream (Redis Streams/webhook per F-009/F-020). Validates against `events.schema.json`, persists w/ audit, forwards to subscribers.
 **Realistic:** 12-16h · **Depends on:** O-001, F-005, F-009 · **Builder:** orchestration-hooks · **Risk:** Medium.
 
-### O-004 — Policy distribution engine 📋 PLANNED
+### O-004 — Policy distribution engine ✅ SHIPPED (PR #42 `9f101b0`)
 Receives policies from Delta, validates against locked `policy.schema.json`, signs on Delta's behalf if needed, distributes to target Sentinels via the F-012a admin API. Tracks status, retries, alerts.
 **Realistic:** 12-16h · **Depends on:** O-001, F-008, F-012a · **Builder:** orchestration-hooks · **Risk:** High.
 
-### O-005 — Multi-Sentinel coordination 📋 PLANNED
+### O-005 — Multi-Sentinel coordination ✅ SHIPPED (PR #43 `e9762db`)
 Registry of all Sentinel instances, health checks, coordinated push, capability discovery.
 **Realistic:** 12-16h · **Depends on:** O-003, O-004 · **Builder:** platform-infra · **Risk:** Medium.
 
-### O-006 — Persistence + audit 📋 PLANNED
+### O-006 — Persistence consolidation + tenant-scoped read seams ✅ SHIPPED (PR #47 `10f58c8`)
 Postgres schema (events, versioned policies, distribution status, registry) + hash-chained audit (reuse Sentinel F-003 pattern).
 **Realistic:** 6-10h · **Depends on:** O-001 · **Builder:** persistence · **Risk:** Low.
 
@@ -347,7 +377,7 @@ Comprehensive command center (system health, API loads, governance metrics acros
 ### O-015 — Predictive scaling 🔮 SPECULATIVE
 Telemetry analysis from the registry, traffic-spike prediction ("Algorithmic CFO"). **Depends on:** O-003, D-005 · 16-22h.
 
-**Orchestrator total: 15 tasks (8 MVP + 6 post-investment vision + 1 speculative). MVP ~16-20 days.**
+**Orchestrator total: 15 tasks (8 MVP + 6 post-investment vision + 1 speculative). O-001→O-006 shipped; O-007/O-008 remain in MVP.**
 
 ---
 
@@ -359,26 +389,26 @@ Telemetry analysis from the registry, traffic-spike prediction ("Algorithmic CFO
 
 ## Phase 0 — Delta contracts (MVP)
 
-### D-001 — Financial domain model 📋 PLANNED
+### D-001 — Financial domain model ✅ SHIPPED (PR #30 `19bd41b`)
 Tokens, budgets, allocations, ledger entries, departments, projects, cost centers. Double-entry schema, reconciliation rules, time-series for burn rate.
 **Realistic:** 10-14h · **Depends on:** F-001 · **Builder:** api-architect · **Risk:** Medium.
 **Parallelizable?** Yes — depends only on shipped F-001. Safe in its own session alongside O-001/R-001.
 
-### D-002 — Budget policy schema 📋 PLANNED
+### D-002 — Budget policy schema ✅ SHIPPED (PR #33 `c327b7e`)
 Hard limits, soft warnings, escalation, windows, scopes. MUST round-trip through locked `policy.schema.json` as BudgetLimitPolicy variants.
 **Realistic:** 6-10h · **Depends on:** D-001, F-002, O-001 · **Builder:** api-architect · **Risk:** Medium.
 
 ## Phase 1 — Delta MVP (AI Financial Governance)
 
-### D-003 — Sub-second double-entry ledger 📋 PLANNED
+### D-003 — Sub-second double-entry ledger ✅ SHIPPED (PR #39 `41848a2`)
 High-throughput ledger (Postgres + Redis), atomic reversible entries, sub-second commit under load, append-only for audit.
 **Realistic:** 20-28h (Complex) · **Depends on:** D-001 · **Builder:** persistence · **Risk:** High — ledger correctness is non-negotiable.
 
-### D-004 — Event ingest from Orchestrator 📋 PLANNED
+### D-004 — Event ingest from Orchestrator ✅ SHIPPED (PR #41 `49d7175`)
 Consumer for Sentinel usage events (via Orchestrator) → ledger debits, idempotent.
 **Realistic:** 12-16h · **Depends on:** D-003, O-003 · **Builder:** orchestration-hooks · **Risk:** Medium.
 
-### D-005 — Budget engine (the killer-feature half) 📋 PLANNED
+### D-005 — Budget engine (the killer-feature half) ✅ SHIPPED (PR #45 `04b893b`)
 Real-time spend-vs-budget eval, threshold alerts, sub-second enforcement: cap hit → publish deny policy via Orchestrator → Sentinel blocks via F-008. **Autonomous enforcement of enterprise financial guardrails.**
 **Realistic:** 16-22h (Complex) · **Depends on:** D-002, D-003, D-004, O-004, F-008 · **Builder:** policy-engine · **Risk:** High.
 
@@ -448,7 +478,7 @@ Top-level executive financial view across the OS. **Realistic:** 12-16h · **Dep
 ### D-025 — Privacy-first multi-bank financial data aggregation 🏦 POST-INVESTMENT
 **B2C track (D-021→D-025):** ~12-16h each · **Depends on:** D-003 + the B2C onboarding shell · **Risk:** Medium-High (consumer financial data + open-banking compliance).
 
-**Delta total: 28 tasks (12 MVP/MVP+ + 16 post-investment vision incl. B2C). MVP ~30 days.**
+**Delta total: 28 tasks (12 MVP/MVP+ + 16 post-investment vision incl. B2C). D-001→D-005 shipped; D-006→D-012 remain in MVP (D-006 kill-switch in worktree, not merged).**
 
 ---
 
@@ -460,26 +490,26 @@ Top-level executive financial view across the OS. **Realistic:** 12-16h · **Dep
 
 ## Phase 0 — Rendly contracts (MVP)
 
-### R-001 — Core platform API contract 📋 PLANNED
+### R-001 — Core platform API contract ✅ SHIPPED (PR #29 `309d6fc`)
 **Realistic:** 10-14h · **Depends on:** F-001 · **Builder:** api-architect · **Risk:** Medium.
 **Parallelizable?** Yes — depends only on shipped F-001. Safe in its own session alongside O-001/D-001.
 
-### R-002 — Intent + matching domain model 📋 PLANNED
+### R-002 — Internal domain model (types, schema, invariants) ✅ SHIPPED (PR #32 `182298c`)
 **Realistic:** 6-10h · **Depends on:** R-001 · **Risk:** Low.
 
 ## Phase 1 — Rendly secure-comms MVP
 
-### R-003 — Authentication (OAuth + JWT) 📋 PLANNED
+### R-003 — Authentication (OAuth2 + JWT ES256) ✅ SHIPPED (PR #36 `57b883f`)
 **Realistic:** 10-14h · **Depends on:** R-001 · **Risk:** Medium.
 
-### R-004 — User profiles + persistence 📋 PLANNED
+### R-004 — User profiles + persistence ✅ SHIPPED (PR #40 `382bcd1`)
 **Realistic:** 10-14h · **Depends on:** R-002, R-003 · **Risk:** Medium.
 
-### R-005 — Real-time chat (WebSocket) 📋 PLANNED
+### R-005 — Real-time chat (WebSocket) ✅ SHIPPED (PR #44 `8351955`)
 Secure team chat. Foundation for role-based channels.
 **Realistic:** 12-16h · **Depends on:** R-004 · **Risk:** Medium.
 
-### R-006 — Role-based secure channels auto-mapped to Delta project teams 📋 PLANNED ➕
+### R-006 — Role-based secure channels + manual team mapping ✅ SHIPPED (PR #46 `a86f30b`) ➕
 Instantaneous role-based chat groups + secure channels mapped automatically to active Delta project teams. (The Delta↔Rendly culture wiring — MVP-level if Delta team data is available; degrades gracefully to manual channels if not.)
 **Realistic:** 12-16h · **Depends on:** R-005, D-016 (or manual fallback) · **Risk:** Medium.
 
@@ -538,7 +568,7 @@ AI summaries of executive comms/transcripts; smart scheduling vs corporate calen
 ### R-030 — Public embedding API + developer portal 🏦 POST-INVESTMENT
 **PaaS track (R-027→R-030):** ~12-22h each · **Depends on:** R-005/R-007/R-008 + Delta · **Risk:** Medium-High.
 
-**Rendly total: 30 tasks (10 secure-comms MVP + 20 post-investment vision incl. culture/events/B2C/PaaS). MVP ~42 days.**
+**Rendly total: 30 tasks (10 secure-comms MVP + 20 post-investment vision incl. culture/events/B2C/PaaS). R-001→R-006 shipped; R-007→R-010 remain in MVP.**
 
 ---
 
@@ -618,7 +648,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 
 # CHECKLIST
 
-## Sentinel — 37 tasks (21 shipped + 16 remaining)
+## Sentinel — 37 tasks (23 shipped + 14 remaining)
 
 - [x] F-001 OpenAPI contract
 - [x] F-002 Event + policy schemas
@@ -627,10 +657,10 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] F-004 Gateway core
 - [x] F-005 Orchestration hooks + 4 detectors
 - [x] F-006 Multi-provider router
-- [ ] F-007 ML injection classifier — Tricky-Complex (12-16h) 🔄 NEXT (depth)
+- [x] F-007 ML injection classifier ✅ (#12, +#31 thresholds, +#34 FU)
 - [x] F-008 Policy intake + ECDSA-signed enforcement
 - [x] F-009 Rate limiting + observability
-- [ ] F-010 Deployment — Part 1 compose (12-16h) 🔄 **ACTIVE** · Part 2 Helm (12-16h)
+- [x] F-010 Deployment ✅ — Part 1 compose (#27) + Part 2 Helm (#38)
 - [x] F-011 Compliance engine (SOC 2 + GDPR) *(F-013.1 follow-up open)*
 - [x] F-012a Admin console API
 - [x] F-012 Admin console frontend
@@ -659,14 +689,14 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [ ] F-035 External Pen-Test Pass 🔮 (external)
 - [ ] F-036 Self-Hosted / Air-Gapped Deployment 🔮
 
-## Orchestrator — 15 tasks (8 MVP + 6 vision + 1 speculative)
+## Orchestrator — 15 tasks (8 MVP + 6 vision + 1 speculative) — 6 shipped
 
-- [ ] O-001 Internal API contract — Easy-Tricky (6-8h) *(parallelizable now)*
-- [ ] O-002 Ecosystem event bus contract — Easy-Tricky (6-8h)
-- [ ] O-003 Event ingest pipeline — Tricky (12-16h)
-- [ ] O-004 Policy distribution engine — Tricky (12-16h)
-- [ ] O-005 Multi-Sentinel coordination — Tricky (12-16h)
-- [ ] O-006 Persistence + audit — Easy-Tricky (6-10h)
+- [x] O-001 Internal API contract ✅ (#28)
+- [x] O-002 Ecosystem event bus contract ✅ (#35)
+- [x] O-003 Event ingest pipeline ✅ (#37)
+- [x] O-004 Policy distribution engine ✅ (#42)
+- [x] O-005 Multi-Sentinel coordination ✅ (#43)
+- [x] O-006 Persistence consolidation + tenant-scoped read seams ✅ (#47)
 - [ ] O-007 Admin API + minimal UI — Tricky (16-20h)
 - [ ] O-008 Deployment — Easy-Tricky (6-10h)
 - [ ] O-009 Centralized Sentinel proxy for all inter-app traffic — Heavy 🏦
@@ -677,13 +707,13 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [ ] O-014 Command dashboard + automated rollback — Complex 🏦
 - [ ] O-015 Predictive scaling — Complex 🔮
 
-## Delta — 28 tasks (12 MVP/MVP+ + 16 vision)
+## Delta — 28 tasks (12 MVP/MVP+ + 16 vision) — 5 shipped
 
-- [ ] D-001 Financial domain model — Tricky (10-14h) *(parallelizable now)*
-- [ ] D-002 Budget policy schema — Easy-Tricky (6-10h)
-- [ ] D-003 Sub-second double-entry ledger — Complex (20-28h)
-- [ ] D-004 Event ingest from Orchestrator — Tricky (12-16h)
-- [ ] D-005 Budget engine (killer-feature half) — Complex (16-22h)
+- [x] D-001 Financial domain model ✅ (#30)
+- [x] D-002 Budget policy schema ✅ (#33)
+- [x] D-003 Sub-second double-entry ledger ✅ (#39)
+- [x] D-004 Event ingest from Orchestrator ✅ (#41)
+- [x] D-005 Budget engine (killer-feature half) ✅ (#45)
 - [ ] D-006 Kill-switch for unauthorized AI agent txns — Tricky (12-16h) ➕
 - [ ] D-007 Budget allocation UI — Tricky (12-16h)
 - [ ] D-008 Live cost-to-value dashboards (param-driven) — Tricky (12-16h)
@@ -705,14 +735,14 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [ ] D-024 B2C real-time micro-transactions 🏦
 - [ ] D-025 B2C privacy-first multi-bank aggregation 🏦
 
-## Rendly — 30 tasks (10 secure-comms MVP + 20 vision)
+## Rendly — 30 tasks (10 secure-comms MVP + 20 vision) — 6 shipped
 
-- [ ] R-001 Core platform API contract — Tricky (10-14h) *(parallelizable now)*
-- [ ] R-002 Intent + matching domain model — Easy-Tricky (6-10h)
-- [ ] R-003 Authentication (OAuth + JWT) — Tricky (10-14h)
-- [ ] R-004 User profiles + persistence — Tricky (10-14h)
-- [ ] R-005 Real-time chat (WebSocket) — Tricky (12-16h)
-- [ ] R-006 Role-based channels auto-mapped to Delta teams — Tricky (12-16h) ➕
+- [x] R-001 Core platform API contract ✅ (#29)
+- [x] R-002 Internal domain model ✅ (#32)
+- [x] R-003 Authentication (OAuth2 + JWT ES256) ✅ (#36)
+- [x] R-004 User profiles + persistence ✅ (#40)
+- [x] R-005 Real-time chat (WebSocket) ✅ (#44)
+- [x] R-006 Role-based secure channels + manual team map ✅ (#46) ➕
 - [ ] R-007 Low-latency voice/video huddles (1-on-1, no external links) — Complex (22-30h)
 - [ ] R-008 Sentinel safety + data sovereignty — Tricky (12-16h)
 - [ ] R-009 Immutable comms + video-log archiving — Tricky (12-16h) ➕
@@ -754,8 +784,8 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 | Category | Sentinel | Orchestrator | Delta | Rendly | Cross | **Total** |
 |----------|----------|--------------|-------|--------|-------|-----------|
 | **Tasks** | 37 | 15 | 28 | 30 | 6 | **116** |
-| **Shipped** | 21 | 0 | 0 | 0 | 0 | **21** |
-| **Remaining** | 16 | 15 | 28 | 30 | 6 | **95** |
+| **Shipped** | 23 | 6 | 5 | 6 | 0 | **40** |
+| **Remaining** | 14 | 9 | 23 | 24 | 6 | **76** |
 
 **Committed near-term (MVP, not 🏦/🔮):** Sentinel F-007 + F-010 · Orchestrator O-001→O-008 · Delta D-001→D-012 · Rendly R-001→R-010 · Cross X-001→X-003. That MVP slice is the realistic next ~4-6 months of build; the 🏦 post-investment vision tier is everything beyond it.
 
