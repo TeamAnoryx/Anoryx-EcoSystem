@@ -1,0 +1,17 @@
+apiVersion: v2
+name: orchestrator
+description: Anoryx-AI-Orchestrator — central AI orchestration layer (O-008, ADR-0008)
+type: application
+# Chart version is independent of the app version (SemVer for the chart itself).
+version: 0.1.0
+# appVersion tracks the Orchestrator release (single source of truth: pyproject.toml).
+appVersion: "0.1.0"
+keywords:
+  - ai-orchestrator
+  - event-bus
+  - policy-distribution
+home: https://github.com/TeamAnoryx/anoryx-ecosystem
+sources:
+  - https://github.com/TeamAnoryx/anoryx-ecosystem
+maintainers:
+  - name: Anoryx

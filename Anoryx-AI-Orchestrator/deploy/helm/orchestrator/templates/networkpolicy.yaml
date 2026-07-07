@@ -1,0 +1,101 @@
+{{- if .Values.networkPolicy.enabled -}}
+# Restrictive-by-default NetworkPolicy. policyTypes lists both Ingress and
+# Egress, so anything NOT explicitly allowed below is DENIED — except where an
+# honest limitation forces an open rule (documented inline).
+#
+# Honest limitation: plain Kubernetes NetworkPolicy cannot match by hostname, so
+# (a) egress to arbitrary Sentinel instances (the O-005 dynamic registry) is
+# expressed as :443 to any IP — restrict via networkPolicy.sentinelEgressCIDRs;
+# (b) ingress on the ingest port from Sentinel instances outside this namespace
+# is open by default — restrict via networkPolicy.ingressCIDRs. Defense-in-depth
+# for both is the app-layer HMAC signature check (ADR-0002/0008), not this policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "orchestrator.fullname" . }}
+  labels:
+    {{- include "orchestrator.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "orchestrator.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Same-namespace traffic (e.g. an ingress controller) — http port only.
+    - from:
+        - podSelector: {}
+      ports:
+        - port: http
+          protocol: TCP
+    # Prometheus scrape of /metrics + probes from the monitoring namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.monitoringNamespace }}
+      ports:
+        - port: http
+          protocol: TCP
+    {{- if .Values.networkPolicy.ingressCIDRs }}
+    # Restricted external ingress (Sentinel instances) by IP block.
+    - from:
+        {{- range .Values.networkPolicy.ingressCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - port: http
+          protocol: TCP
+    {{- else }}
+    # No CIDRs configured — open ingress on the http port (honest limitation
+    # above). Sentinel instances calling POST /v1/ingest/events may live outside
+    # this namespace/cluster and are not known at chart-render time.
+    - ports:
+        - port: http
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  egress:
+    # DNS resolution.
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- if .Values.postgres.bundled }}
+    # Bundled Postgres (same namespace) — port 5432 only.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "orchestrator.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+    {{- end }}
+    # Sentinel registry / admin-intake egress over HTTPS (:443). FQDN
+    # restriction needs a FQDN-aware CNI; set sentinelEgressCIDRs to restrict by
+    # IP block.
+    {{- if .Values.networkPolicy.sentinelEgressCIDRs }}
+    - to:
+        {{- range .Values.networkPolicy.sentinelEgressCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - port: 443
+          protocol: TCP
+    {{- else }}
+    - ports:
+        - port: 443
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    # Operator-supplied egress rules — REQUIRED for external managed Postgres
+    # (bundled=false). See deploy/DEPLOY-K8s.md.
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
