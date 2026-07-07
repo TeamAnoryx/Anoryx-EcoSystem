@@ -194,10 +194,20 @@ def _get_app_engine():  # type: ignore[return]
         from sqlalchemy.ext.asyncio import create_async_engine as _cae
 
         url = _app_database_url()
+        # F-023 (ADR-0029) connection-pool audit: this engine serves ALL tenant
+        # request traffic, one checkout per request (selection.py's tenant
+        # session). The prior pool_size=5/max_overflow=10 (15 total) was sized
+        # well below the perf budget's 100-concurrent-request load test —
+        # requests beyond 15 in flight would queue on checkout, inflating p95
+        # independent of DB or provider latency. Tunable via env for operators
+        # who need to match their Postgres max_connections budget across
+        # SENTINEL_WORKERS processes; pool_timeout bounds the checkout queue so
+        # a saturated pool fails fast (fail-safe 500) instead of hanging.
         _app_engine = _cae(
             url,
-            pool_size=5,
-            max_overflow=10,
+            pool_size=int(os.environ.get("DB_APP_POOL_SIZE", "20")),
+            max_overflow=int(os.environ.get("DB_APP_MAX_OVERFLOW", "20")),
+            pool_timeout=float(os.environ.get("DB_APP_POOL_TIMEOUT", "10.0")),
             pool_pre_ping=True,
             echo=False,
         )

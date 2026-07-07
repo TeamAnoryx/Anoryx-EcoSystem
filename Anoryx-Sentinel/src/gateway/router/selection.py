@@ -31,7 +31,7 @@ from typing import AsyncIterator
 
 import structlog
 
-from gateway.config import GatewaySettings
+from gateway.config import GatewaySettings, get_settings
 from gateway.context import TenantContext
 from gateway.exceptions import GatewayError
 from gateway.middleware.audit import emit_routing_decision
@@ -40,6 +40,7 @@ from gateway.router.context import RoutingContext
 from gateway.router.cost import estimate_pre_request
 from gateway.router.exceptions import ProviderError, RoutingBlockedError
 from gateway.router.registry import ProviderRegistry
+from policy import eval_cache
 from policy.audit_events import emit_policy_decision
 from policy.enforcement import (
     BudgetExceeded,
@@ -182,16 +183,32 @@ async def _enforce_policies_pre_request(tenant_context: TenantContext, body):
     Returns (model_decision, budget_decision, budgets). Raises on infra error so
     the caller can fail-safe BLOCK (R8). Reads on a tenant session (RLS + explicit
     tenant predicate inside the repository).
+
+    F-023 (ADR-0029): the model decision (not the budget "used" totals, which
+    must stay live — see policy/eval_cache.py docstring) is looked up in the
+    Redis-backed policy-eval cache first. A cache MISS/error falls through to
+    the exact same DB-backed evaluate_model_policies() call as before — the
+    cache can only ever save a repeat of an already-computed decision, never
+    substitute for one. Kept a 2-arg function (no threaded settings param) so
+    existing test doubles that stub this whole function keep working unchanged.
     """
     from persistence.database import get_tenant_session
 
     scope = scope_from_context(tenant_context)
+    cached_decision, cache_version = await eval_cache.get_cached_decision(scope, body.model)
     async with get_tenant_session(tenant_context.tenant_id) as session:
         # get_tenant_session autobegins (its set_config opens the tx). These are
         # READS, so no nested begin() — a nested session.begin() here raises
         # "transaction already begun" and the request fails closed with 500
         # (F-019 vector-12 caught this latent F-008 double-begin; ADR-0022 §9 note).
-        model_decision = await evaluate_model_policies(session, scope, body.model)
+        if cached_decision is not None:
+            model_decision = cached_decision
+        else:
+            model_decision = await evaluate_model_policies(session, scope, body.model)
+            ttl = get_settings().policy_eval_cache_ttl_seconds
+            await eval_cache.set_cached_decision(
+                scope, body.model, model_decision, cache_version, ttl_seconds=ttl
+            )
         budgets = await load_active_budgets(session, scope)
     # Scale the cost estimate by n too (conservative — slightly over-counts shared
     # input cost, but the budget gate must not under-count n>1 parallel completions).

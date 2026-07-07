@@ -147,9 +147,14 @@ line-length = 100
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# perf tests are timing-threshold assertions (F-023, ADR-0029) — noisier on a
+# shared/loaded CI runner than the rest of the suite, so they are excluded from
+# the default run and invoked explicitly: `pytest -m perf tests/gateway/`.
+addopts = "-m 'not perf'"
 markers = [
     "integration: marks tests as integration tests (require live DB and migrations)",
     "redis_integration: marks tests that require a live Redis instance (F-009)",
+    "perf: marks performance/load tests with wall-clock latency budgets (not run by default)",
 ]
 
 [tool.coverage.run]

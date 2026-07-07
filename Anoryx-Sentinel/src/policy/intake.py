@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from persistence.database import get_privileged_session
 from persistence.repositories.policy_repository import PolicyRepository
+from policy import eval_cache
 from policy.audit_events import (
     append_policy_event,
     build_policy_event,
@@ -70,6 +71,9 @@ log = structlog.get_logger(__name__)
 _ACTION_LOGGED = "logged"
 _ACTION_BLOCKED = "blocked"
 _SCOPE_ID_FIELDS = ("tenant_id", "team_id", "project_id", "agent_id")
+# F-023 (ADR-0029): policy types evaluate_model_policies() reads — the only
+# ones a cached ModelDecision can go stale against.
+_MODEL_DECISION_POLICY_TYPES = frozenset({"model_allowlist", "model_denylist", "model_approval"})
 
 
 async def intake_policy(
@@ -253,6 +257,12 @@ async def _run_intake(
         policy_version=version,
         policy_type=policy_type,
     )
+    if policy_type in _MODEL_DECISION_POLICY_TYPES:
+        # F-023 (ADR-0029): only these policy types feed evaluate_model_policies()
+        # / the eval_cache decision cache — a budget_limit/code_scan/data_lock
+        # write can never change a cached model decision, so skip the Redis
+        # round trip for it. Best-effort (never raises into this pipeline).
+        await eval_cache.invalidate_tenant(resolved["tenant_id"])
     return Accepted(policy_id=policy_id, policy_version=version, policy_type=policy_type)
 
 

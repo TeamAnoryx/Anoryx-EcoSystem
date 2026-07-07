@@ -1,5 +1,9 @@
 """Redis connection pool + health-loop for distributed rate limiting (F-009, ADR-0011).
 
+policy/eval_cache.py (F-023, ADR-0029) also reuses this same pool + the
+is_degraded() flag for its policy-decision cache — no second Redis connection
+pool is created for it.
+
 Single entry points:
   - init(settings)   — called from _lifespan startup; stores pool on app.state.
   - shutdown()       — called from _lifespan teardown; closes pool + cancels health task.
