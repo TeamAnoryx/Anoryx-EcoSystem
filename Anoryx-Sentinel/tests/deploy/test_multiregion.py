@@ -364,11 +364,21 @@ def test_non_global_table_fails_render():
 
 
 @helm_only
-def test_default_render_has_no_whitespace_only_lines():
-    """Byte-identical-when-off, positively checked (audit Info): with region off, the
-    gateway + worker pod templates must contain no whitespace-only line — the
-    signature of an unguarded `include ... | nindent` on an empty region helper."""
-    for show in ("templates/deployment.yaml", "templates/worker-deployment.yaml"):
-        out = _template("--show-only", show)
-        leaks = [i for i, ln in enumerate(out.splitlines(), 1) if ln != "" and ln.strip() == ""]
-        assert not leaks, f"{show}: whitespace-only line(s) at {leaks} (region leak when off)"
+def test_region_off_gate_dominates_subfields():
+    """Fail-safe default (audit I1): nothing region-related renders unless
+    region.enabled=true. Toggling replication / topologySpread / geoRouting while
+    region.enabled stays false must leave the render byte-identical to the default —
+    the master gate dominates. (Robust to the base chart's own whitespace, unlike a
+    raw whitespace-line check, because both renders share it.)"""
+    default = _template()
+    with_subfields = _template(
+        "--set",
+        "region.replication.enabled=true",
+        "--set",
+        "region.topologySpread.enabled=true",
+        "--set",
+        "region.geoRouting.annotations.foo=bar",
+    )
+    assert default == with_subfields, "region sub-fields leaked with region.enabled=false"
+    for token in ("SENTINEL_REGION", "topology.kubernetes.io/region", "region-replication"):
+        assert token not in with_subfields

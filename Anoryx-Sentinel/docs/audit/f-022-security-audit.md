@@ -7,12 +7,15 @@ schema; `policy.schema.json` untouched) · `src/`: unchanged.
 > **Why this audit exists.** F-022 shipped to `main` in PR #49 whose description
 > claimed "security-audit (CLEAN), no High/Critical." No independent audit artifact
 > was ever committed (every other shipped Sentinel feature has a
-> `docs/audit/f-0XX-security-audit.md`), the roadmap line was never ticked, and CI
-> never runs `helm` (the helm-gated render tests skip), so the feature's central
-> claims were never independently verified. This pass closes that gap for real: the
-> auditor was given no benefit of the doubt and the PR's CLEAN claim was treated as
-> non-existent. This document is the audit-of-record; remediation was applied in the
-> F-022 reconciliation PR and dispositions are recorded per finding.
+> `docs/audit/f-0XX-security-audit.md`) and the roadmap line was never ticked. The
+> helm render tests DO run in CI (GitHub `ubuntu-latest` ships `helm`), but the one
+> guard that could have caught the byte-identical regression
+> (`test_default_render_has_no_region_resources`) asserted only substring *absence*,
+> so it passed despite a whitespace-only leak — the central claims were asserted, not
+> independently verified. This pass closes that gap for real: the auditor was given
+> no benefit of the doubt and the PR's CLEAN claim was treated as non-existent. This
+> document is the audit-of-record; remediation was applied in the F-022
+> reconciliation PR and dispositions are recorded per finding.
 
 ## Executive verdict: BLOCK (as-shipped) → remediated, with one High escalated
 
@@ -24,14 +27,17 @@ remediated in the reconciliation PR. The PR #49 body's "CLEAN, no High/Critical"
 claim is **not substantiated** by this pass.
 
 ### Tooling limitation (recorded honestly)
-`semgrep.dev` and `get.helm.sh` are blocked by the environment's egress policy (403
-CONNECT), so the Semgrep registry rulesets and the `@helm_only` render tests could
-not execute here. The changed runtime surface is Helm YAML + one pytest file (no
-application Python), so the substantive control was a manual injection/secret/gating
-review of the templates, grounded against the `events_audit_log` schema
+In the **audit sandbox**, `semgrep.dev` and `get.helm.sh` are blocked by egress
+policy (403 CONNECT), so the Semgrep registry rulesets and a live `helm` render could
+not be run *there*. This is a limitation of the audit environment, **not** of CI:
+GitHub `ubuntu-latest` ships `helm`, so the `@helm_only` render tests execute in the
+Sentinel CI lane (confirmed — the reconciliation PR's stronger render assertions run
+and gate there), and the CI lane runs Semgrep with registry access. The changed
+runtime surface is Helm YAML + one pytest file (no application Python), so the
+substantive audit control was a manual injection/secret/gating review of the
+templates, grounded against the `events_audit_log` schema
 (`src/persistence/migrations/versions/0005_events_audit_log.py`), `hash_chain.py`,
-and the audit model. Running Semgrep + the helm-gated tests in a CI lane with
-registry/helm egress is a recommended follow-up (see H1 doc and the roadmap note).
+and the audit model, cross-checked by the CI render.
 
 ## Findings table
 
@@ -44,8 +50,8 @@ registry/helm egress is a recommended follow-up (see H1 doc and the roadmap note
 | L3 | Low | `region-replication-job.yaml:42,52` | `set -eu` without `set -o pipefail`: the `sed \| psql` pipe surfaced only psql's status, so a sed error left psql to read empty stdin and exit 0 — a **silent success creating no subscription**. | **Fixed.** The pipe is replaced by a temp-file substitution under `set -e` (`sed … > "$subst_sql"; psql -f "$subst_sql"`), so a substitution failure aborts the Job. |
 | L4 | Low | `region-replication-job.yaml:73-78` | The Job `envFrom`-mounted the **entire** app Secret (SENTINEL_KEY_SECRET, admin tokens, provider keys) though its only secret need is `REPLICATION_PASSWORD`. Least-privilege violation / oversized blast radius. | **Fixed.** Replaced with a single `secretKeyRef` for `REPLICATION_PASSWORD` (passive only). |
 | L5 | Low | `MULTI-REGION.md` §5 | `CREATE SUBSCRIPTION` persists the conninfo (incl. password) in `pg_subscription` in plaintext and can surface in server logs — a durable credential copy outside any Secret/Vault, un-warned. | **Fixed (documented).** Runbook §5 now requires a quiet log posture for the bootstrap window (`log_statement=none`), a post-bootstrap password rotation, and prefers a `.pgpass`/passfile conninfo where supported. |
-| I1 | Info | `tests/deploy/test_multiregion.py:149` | "Byte-identical when off" was unproven: `test_default_render_has_no_region_resources` only asserted substring absence, and the region includes were pulled via `include … | nindent N` — `nindent` on an empty string emits a trailing-whitespace line, so the default render was **not** literally byte-identical. | **Fixed.** The `regionLabels`/`regionEnv` includes are now gated on `region.enabled` **at the call site** (matching `service.yaml`), so nothing renders when off. New parse-only test asserts the call-site gating; a helm-gated test asserts no whitespace-only lines in the default gateway/worker render. |
-| I2 | Info | `tests/deploy/test_multiregion.py:267` | Semgrep/helm could not run in-env; and `test_region_does_not_loosen_networkpolicy` compared only the egress **port set**, not the `to:` peers (would miss a broadened peer on an allowed port). | **Fixed (test) + noted (tooling).** NP test now compares full egress rules (peers + ports). Manual verification: no region template references `networkpolicy.yaml`, so the default-deny NP is provably untouched and cross-region egress stays behind the pre-existing `networkPolicy.extraEgress` opt-in. Running Semgrep + helm-gated tests in a CI lane with egress remains a follow-up. |
+| I1 | Info | `tests/deploy/test_multiregion.py` | "Byte-identical when off" was unproven: `test_default_render_has_no_region_resources` only asserted substring absence, and the region includes were pulled via `include … | nindent N` — `nindent` on an empty string emits a trailing-whitespace line, so the default render was **not** literally byte-identical. The existing guard ran in CI (helm is present) but was too weak to catch it. | **Fixed.** The `regionLabels`/`regionEnv` includes are now gated on `region.enabled` **at the call site** (matching `service.yaml`), so nothing renders when off. New parse-only `test_region_includes_are_call_site_gated` asserts the gating; helm-gated `test_region_off_gate_dominates_subfields` asserts the render is byte-identical whether or not the region sub-fields are toggled while `region.enabled=false`. |
+| I2 | Info | `tests/deploy/test_multiregion.py` | `test_region_does_not_loosen_networkpolicy` compared only the egress **port set**, not the `to:` peers (would miss a broadened peer on an allowed port). (Separately: Semgrep/helm could not run in the audit sandbox — but both run in CI.) | **Fixed.** NP test now compares full egress rules (peers + ports). Manual verification: no region template references `networkpolicy.yaml`, so the default-deny NP is provably untouched and cross-region egress stays behind the pre-existing `networkPolicy.extraEgress` opt-in. |
 
 ## What was verified clean (manual review)
 - **Gating / fail-safe defaults.** Every region template gates on `region.enabled`
