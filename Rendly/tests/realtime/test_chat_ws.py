@@ -356,20 +356,8 @@ def test_message_too_large_is_blocked(make_client, seed_user, mint_token, new_uu
         assert ack["error_code"] == "message_too_large"
 
 
-def test_unsupported_huddle_frame_answered_unavailable(
-    make_client, seed_user, mint_token, new_uuid
-):
-    """A valid-but-unsupported huddle frame (R-007) is answered huddle_unavailable, not dropped."""
-    tenant = new_uuid()
-    u1 = new_uuid()
-    seed_user(tenant_id=tenant, user_id=u1)
-    client = make_client()
-    tok = mint_token(user_id=u1, tenant_id=tenant, scope="chat:read chat:write")
-    with client.websocket_connect(_REALTIME, headers=_auth(tok)) as ws:
-        assert ws.receive_json()["msg_type"] == "session.welcome"
-        ws.send_json({"msg_type": "huddle.invite", "peer_user_id": str(uuid.uuid4())})
-        err = recv_until(ws, "error")
-        assert err["error_code"] == "huddle_unavailable"
+# Huddle/signaling frame handling (R-007: huddle.invite/hangup/signal.send) is exercised in
+# test_huddle_ws.py, not here — this file stays chat-only (R-005/R-006).
 
 
 def test_all_block_inspector_blocks_every_message(make_client, seed_user, mint_token, new_uuid):
