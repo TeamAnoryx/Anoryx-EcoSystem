@@ -7,7 +7,11 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "sentinel.fullname" . }}-region-replication
+  # Revision-suffixed like the migrate / seed / minio-init Jobs: a Job's spec.template
+  # is immutable, so a re-`helm upgrade` with any pod-template change (image, secret,
+  # securityContext) on a fixed name fails with "field is immutable" (the class of bug
+  # documented in migration-job.yaml). The ConfigMap it mounts keeps its stable name.
+  name: {{ include "sentinel.fullname" . }}-region-replication-{{ .Release.Revision }}
   labels:
     {{- include "sentinel.labels" . | nindent 4 }}
     app.kubernetes.io/component: region-replication
@@ -49,8 +53,16 @@ spec:
               # lands in the repo or the rendered SQL (only the placeholder does). Fail hard
               # if it is unset OR empty rather than creating a passwordless subscription.
               : "${REPLICATION_PASSWORD:?REPLICATION_PASSWORD must be set (app envSecret) for the passive subscription}"
-              sed "s|\${REPLICATION_PASSWORD}|${REPLICATION_PASSWORD}|g" /sql/subscription.sql \
-                | psql -v ON_ERROR_STOP=1
+              # Substitute into a temp file, NOT a `sed | psql` pipe. Under `set -e` a
+              # failed substitution now aborts the Job; the old pipe surfaced only psql's
+              # status, so a sed error (e.g. a metacharacter in the password) left psql to
+              # read empty stdin and exit 0 — a silent no-op that reported success while
+              # creating no subscription. The temp file is pod-local (emptyDir /tmp) and
+              # removed on exit.
+              subst_sql="$(mktemp)"
+              trap 'rm -f "$subst_sql"' EXIT
+              sed "s|\${REPLICATION_PASSWORD}|${REPLICATION_PASSWORD}|g" /sql/subscription.sql > "$subst_sql"
+              psql -v ON_ERROR_STOP=1 -f "$subst_sql"
               {{- else }}
               {{- fail (printf "region.role must be 'active' or 'passive', got %q" .Values.region.role) }}
               {{- end }}
@@ -70,12 +82,17 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.postgres.auth.existingSecret | default (include "sentinel.postgresFullname" .) }}
                   key: POSTGRES_PASSWORD
-          {{- if or .Values.envSecret .Values.createEnvSecret }}
-          # Passive subscription reads REPLICATION_PASSWORD from the app envSecret.
-          envFrom:
-            - secretRef:
-                name: {{ include "sentinel.envSecretName" . }}
-          {{- end }}
+            {{- if and (eq .Values.region.role "passive") (or .Values.envSecret .Values.createEnvSecret) }}
+            # Least privilege: inject ONLY the single REPLICATION_PASSWORD key from the
+            # app envSecret. The prior `envFrom: secretRef` handed this psql Job the WHOLE
+            # app Secret (SENTINEL_KEY_SECRET, SENTINEL_ADMIN_TOKEN, SESSION_SECRET,
+            # provider keys) though its only secret need is the replication password.
+            - name: REPLICATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sentinel.envSecretName" . }}
+                  key: REPLICATION_PASSWORD
+            {{- end }}
           volumeMounts:
             - name: replication-sql
               mountPath: /sql

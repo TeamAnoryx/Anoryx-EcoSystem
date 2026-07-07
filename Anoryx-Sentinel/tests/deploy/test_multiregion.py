@@ -31,6 +31,8 @@ _PASSIVE = _CHART / "values.region-passive.example.yaml"
 _REPL_CM = _TEMPLATES / "region-replication-configmap.yaml"
 _REPL_JOB = _TEMPLATES / "region-replication-job.yaml"
 _HELPERS = _TEMPLATES / "_helpers.tpl"
+_GATEWAY_DEPLOY = _TEMPLATES / "deployment.yaml"
+_WORKER_DEPLOY = _TEMPLATES / "worker-deployment.yaml"
 
 # The two globally-uniform stores replicated across regions (ADR-0028 D3). The
 # policy store must be uniform everywhere it is enforced; the audit log is one
@@ -45,6 +47,12 @@ _DESTRUCTIVE_SQL = ("drop table", "drop database", "delete from", "truncate", "a
 
 def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _noncomment(path: Path) -> str:
+    """Template/script text with comment lines (YAML `#` and shell `#`) removed, so a
+    substring assertion checks real directives, not prose that mentions the token."""
+    return "\n".join(ln for ln in _text(path).splitlines() if not ln.lstrip().startswith("#"))
 
 
 # --------------------------------------------------------------------------- #
@@ -128,6 +136,64 @@ def test_example_overlays_are_wellformed():
     # A passive region must know where the active primary is (sans password).
     conninfo = passive["replication"]["activePrimaryConninfo"]
     assert "host=" in conninfo and "password" not in conninfo.lower()
+
+
+# --- F-022 audit remediation (parse-only, run in CI) ----------------------- #
+def test_replication_table_allowlist_is_enforced_at_render():
+    """Residency safety is ENFORCED, not conventional (audit H1 / code-review High):
+    the ConfigMap fails the render if region.replication.tables includes anything
+    outside the approved global stores."""
+    cm = _text(_REPL_CM)
+    assert "{{- fail" in cm, "configmap must fail-fast on a non-allowlisted table"
+    # The guard iterates the tables and checks membership in the global-store list.
+    assert 'has . (list "policies" "policy_versions" "events_audit_log")' in cm
+
+
+def test_region_includes_are_call_site_gated():
+    """Byte-identical-when-off (audit Info / code-review Medium): the region label +
+    env includes must be wrapped in `if .Values.region.enabled` AT THE CALL SITE, not
+    only self-gated inside the helper — `nindent` on an empty string still emits a
+    whitespace-only line, so an unguarded call leaks into the default render."""
+    for path in (_GATEWAY_DEPLOY, _WORKER_DEPLOY):
+        text = _text(path)
+        for include in ("sentinel.regionLabels", "sentinel.regionEnv"):
+            idx = text.index(f'include "{include}"')
+            # The 120 chars before the include must open an region.enabled guard.
+            preceding = text[max(0, idx - 120) : idx]
+            assert (
+                "if .Values.region.enabled" in preceding
+            ), f"{path.name}: include {include} is not call-site gated on region.enabled"
+
+
+def test_bootstrap_job_uses_least_privilege_secret():
+    """The replication Job must NOT envFrom the whole app Secret (audit Low): it
+    injects only the single REPLICATION_PASSWORD key."""
+    job = _noncomment(_REPL_JOB)
+    assert "envFrom:" not in job, "replication Job must not mount the whole app Secret"
+    assert "key: REPLICATION_PASSWORD" in job
+
+
+def test_bootstrap_job_name_is_revision_suffixed():
+    """A Job's spec.template is immutable → the name must be revision-suffixed like
+    the migrate/seed/minio-init Jobs (audit/code-review Medium)."""
+    job = _text(_REPL_JOB)
+    assert "-region-replication-{{ .Release.Revision }}" in job
+
+
+def test_bootstrap_job_has_no_silent_pipe_failopen():
+    """The `sed | psql` pipe let a sed error leave psql to exit 0 on empty input
+    (silent no-op). The fix substitutes into a temp file under `set -e` instead."""
+    job = _noncomment(_REPL_JOB)
+    assert "| psql" not in job, "no sed|psql pipe (it fails open on a sed error)"
+    assert "psql -v ON_ERROR_STOP=1 -f" in job
+
+
+def test_passive_example_pins_replication_tls():
+    """Cross-region replication carries signed policies + the audit log → the example
+    conninfo must verify the server cert, not merely encrypt (audit Medium)."""
+    conninfo = yaml.safe_load(_text(_PASSIVE))["region"]["replication"]["activePrimaryConninfo"]
+    assert "sslmode=verify-full" in conninfo
+    assert "sslrootcert=" in conninfo
 
 
 # --------------------------------------------------------------------------- #
@@ -242,11 +308,12 @@ def test_region_name_required_when_enabled():
 
 def _replication_jobs(rendered: str) -> list:
     """Only the region-replication Job (the base chart has its own migrate / seed /
-    minio-init Jobs, which are irrelevant here)."""
+    minio-init Jobs, which are irrelevant here). The Job name is revision-suffixed
+    (immutability — matches migrate/seed/minio-init), so match by substring."""
     return [
         d
         for d in yaml.safe_load_all(rendered)
-        if d and d["kind"] == "Job" and d["metadata"]["name"].endswith("-region-replication")
+        if d and d["kind"] == "Job" and "-region-replication-" in d["metadata"]["name"]
     ]
 
 
@@ -265,14 +332,43 @@ def test_bootstrap_job_is_opt_in():
 
 @helm_only
 def test_region_does_not_loosen_networkpolicy():
-    """Enabling region must NOT add egress ports to the default-deny NetworkPolicy
-    — cross-region replication egress goes through networkPolicy.extraEgress
-    (ADR-0028 D6). Compare the egress port set with region off vs on."""
+    """Enabling region must NOT loosen the default-deny NetworkPolicy — cross-region
+    replication egress goes through networkPolicy.extraEgress (ADR-0028 D6). Compare
+    the FULL egress rule set (peers + ports) with region off vs on, so a future
+    change that broadens a `to:` peer on an already-allowed port is also caught
+    (audit Info)."""
 
-    def _np_ports(rendered: str) -> set[int]:
+    def _np_egress(rendered: str):
         np = next(d for d in yaml.safe_load_all(rendered) if d and d["kind"] == "NetworkPolicy")
-        return {p.get("port") for rule in np["spec"]["egress"] for p in rule.get("ports", [])}
+        # Canonical, order-independent representation of every egress rule.
+        return sorted(yaml.safe_dump(rule, sort_keys=True) for rule in np["spec"].get("egress", []))
 
-    off = _np_ports(_template("--show-only", "templates/networkpolicy.yaml"))
-    on = _np_ports(_template("-f", str(_ACTIVE), "--show-only", "templates/networkpolicy.yaml"))
-    assert off == on, f"region overlay changed the default NetworkPolicy egress: {off} -> {on}"
+    off = _np_egress(_template("--show-only", "templates/networkpolicy.yaml"))
+    on = _np_egress(_template("-f", str(_ACTIVE), "--show-only", "templates/networkpolicy.yaml"))
+    assert off == on, "region overlay changed the default NetworkPolicy egress rules"
+
+
+@helm_only
+def test_non_global_table_fails_render():
+    """A residency-bound / tenant-scoped table in region.replication.tables must FAIL
+    the render (allowlist enforcement — audit H1 / code-review High), not silently
+    replicate across regions."""
+    r = _render_result(
+        "-f",
+        str(_ACTIVE),
+        "--set",
+        "region.replication.tables={policies,requests}",
+    )
+    assert r.returncode != 0, "a non-global table must fail the render"
+    assert "not an approved global store" in r.stderr
+
+
+@helm_only
+def test_default_render_has_no_whitespace_only_lines():
+    """Byte-identical-when-off, positively checked (audit Info): with region off, the
+    gateway + worker pod templates must contain no whitespace-only line — the
+    signature of an unguarded `include ... | nindent` on an empty region helper."""
+    for show in ("templates/deployment.yaml", "templates/worker-deployment.yaml"):
+        out = _template("--show-only", show)
+        leaks = [i for i, ln in enumerate(out.splitlines(), 1) if ln != "" and ln.strip() == ""]
+        assert not leaks, f"{show}: whitespace-only line(s) at {leaks} (region leak when off)"
