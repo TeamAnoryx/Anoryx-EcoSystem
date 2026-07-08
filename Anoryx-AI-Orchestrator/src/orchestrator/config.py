@@ -239,6 +239,122 @@ DEFAULT_HEALTH_STALENESS_SECONDS: int = 300
 DEFAULT_HEALTH_UNREACHABLE_THRESHOLD: int = 3
 
 
+# =========================================================================== #
+# Governed relay configuration (O-009, ADR-0009) — ADDITIVE, embedded in
+# CoordinationSettings below (the relay reuses the registry's SSRF gate + health
+# staleness rule the same way CoordinationSettings already embeds DistributionSettings).
+# Resolved NON-FATALLY: absence is not fatal — a deployment that never enables the relay
+# must not be forced to configure it. source_tokens defaults to {} ⇒ the relay seam
+# fail-closed-401s every request (no configured source can ever match). Tokens are never
+# logged.
+# =========================================================================== #
+
+#: The only source_products the relay recognises (Delta / Rendly per the ecosystem data-flow
+#: diagram, CLAUDE.md). A configured ORCH_RELAY_SOURCE_TOKENS key outside this set is a loud
+#: misconfiguration, not a silent no-op.
+KNOWN_RELAY_SOURCE_PRODUCTS: frozenset[str] = frozenset({"delta", "rendly"})
+
+#: Default relay-eligible Sentinel paths — Sentinel's shipped OpenAI-compatible surface
+#: (F-001). Deliberately a closed allowlist, not an open passthrough: the relay is a governed
+#: seam onto Sentinel's real gateway, not a general-purpose reverse proxy to any Sentinel path.
+DEFAULT_RELAY_ALLOWED_PATHS: frozenset[str] = frozenset(
+    {"/v1/chat/completions", "/v1/completions", "/v1/models"}
+)
+
+#: Default per-request outbound HTTP timeout (seconds) for a relay dispatch.
+DEFAULT_RELAY_HTTP_TIMEOUT_SECONDS: float = 30.0
+
+#: Default request-body size cap (bytes). Chat-completions payloads run larger than the
+#: registry's 64 KiB operator-body cap, so the relay gets its own, more generous ceiling.
+DEFAULT_RELAY_MAX_BODY_BYTES: int = 1_048_576
+
+
+@dataclass(frozen=True, slots=True)
+class RelaySettings:
+    """Resolved governed-relay configuration (O-009, ADR-0009).
+
+    source_tokens maps source_product ("delta" | "rendly") -> its shared bearer token; the
+    relay router resolves source_product FROM the presented token (server-resolved, never
+    client-claimed), mirroring the ingest seam's source_product discipline. allowed_paths is
+    the closed set of Sentinel paths the relay may dispatch to. Tokens are never logged.
+    """
+
+    source_tokens: dict[str, str]
+    allowed_paths: frozenset[str]
+    http_timeout_seconds: float
+    max_body_bytes: int
+
+
+def _relay_source_tokens() -> dict[str, str]:
+    """Parse ORCH_RELAY_SOURCE_TOKENS (a JSON object: source_product -> bearer token).
+
+    Unset/empty → {} (absence is not fatal; the seam is then fail-closed-401 for everyone).
+    A non-JSON value, a non-object, a non-string key/value, an empty token, or a key outside
+    KNOWN_RELAY_SOURCE_PRODUCTS → ConfigError (misconfiguration is loud).
+    """
+    raw = os.environ.get("ORCH_RELAY_SOURCE_TOKENS", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ConfigError(
+            "ORCH_RELAY_SOURCE_TOKENS is not valid JSON. It must be a JSON object mapping "
+            "source_product -> bearer token."
+        ) from exc
+    if not isinstance(parsed, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) and v for k, v in parsed.items()
+    ):
+        raise ConfigError(
+            "ORCH_RELAY_SOURCE_TOKENS must be a JSON object mapping a string source_product "
+            "to a non-empty string bearer token."
+        )
+    if not set(parsed) <= KNOWN_RELAY_SOURCE_PRODUCTS:
+        raise ConfigError(
+            "ORCH_RELAY_SOURCE_TOKENS keys must be drawn from "
+            f"{sorted(KNOWN_RELAY_SOURCE_PRODUCTS)}."
+        )
+    return parsed
+
+
+def _relay_allowed_paths() -> frozenset[str]:
+    """Parse ORCH_RELAY_ALLOWED_PATHS (comma-separated paths). Unset/empty → the default set."""
+    raw = os.environ.get("ORCH_RELAY_ALLOWED_PATHS", "").strip()
+    if not raw:
+        return DEFAULT_RELAY_ALLOWED_PATHS
+    paths = frozenset(p.strip() for p in raw.split(",") if p.strip())
+    if not paths:
+        return DEFAULT_RELAY_ALLOWED_PATHS
+    for p in paths:
+        if not p.startswith("/"):
+            raise ConfigError("ORCH_RELAY_ALLOWED_PATHS entries must start with '/'.")
+    return paths
+
+
+def get_relay_settings() -> RelaySettings:
+    """Resolve relay settings from the environment (NON-FATAL on absence).
+
+    Env vars:
+      ORCH_RELAY_SOURCE_TOKENS    JSON object {"delta"|"rendly": bearer_token} ({} if unset).
+      ORCH_RELAY_ALLOWED_PATHS    comma-separated Sentinel path allowlist (default the three
+                                  shipped OpenAI-compatible paths).
+      ORCH_RELAY_HTTP_TIMEOUT     per-dispatch outbound HTTP timeout seconds (default 30.0).
+      ORCH_RELAY_MAX_BODY_BYTES   request-body size cap in bytes (default 1 MiB, >= 1).
+
+    Tokens are never logged.
+    """
+    return RelaySettings(
+        source_tokens=_relay_source_tokens(),
+        allowed_paths=_relay_allowed_paths(),
+        http_timeout_seconds=_env_float(
+            "ORCH_RELAY_HTTP_TIMEOUT", DEFAULT_RELAY_HTTP_TIMEOUT_SECONDS, minimum=0.0
+        ),
+        max_body_bytes=_env_int(
+            "ORCH_RELAY_MAX_BODY_BYTES", DEFAULT_RELAY_MAX_BODY_BYTES, minimum=1
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CoordinationSettings:
     """Resolved multi-Sentinel coordination configuration (O-005, ADR-0005).
@@ -247,7 +363,10 @@ class CoordinationSettings:
     presence fail-closed. endpoint_allowlist is the SSRF host/host:port allowlist (empty ⇒ only
     public https passes). distribution is the embedded O-004 distribution settings the
     coordinated push consumes unchanged (its `.targets` is overridden per-push from the
-    registry). admin_token is never logged.
+    registry). relay is the embedded O-009 governed-relay settings (ADR-0009); the relay reuses
+    THIS struct's endpoint_allowlist / allow_http / staleness_seconds for its own registry-driven
+    SSRF + health gating, the same way the coordinated push reuses distribution. admin_token is
+    never logged.
     """
 
     admin_token: str | None
@@ -258,6 +377,7 @@ class CoordinationSettings:
     staleness_seconds: int
     unreachable_threshold: int
     distribution: DistributionSettings
+    relay: RelaySettings
 
 
 def _endpoint_allowlist() -> frozenset[str]:
@@ -305,4 +425,5 @@ def get_coordination_settings() -> CoordinationSettings:
             "ORCH_HEALTH_UNREACHABLE_THRESHOLD", DEFAULT_HEALTH_UNREACHABLE_THRESHOLD, minimum=1
         ),
         distribution=get_distribution_settings(),
+        relay=get_relay_settings(),
     )

@@ -14,6 +14,8 @@ It is ITSELF a security product. Its own code is a target. Build accordingly.
 - src/orchestration/    — event bus emitter, policy intake, internal mTLS
 - src/bulk/             — async bulk batch pipeline
 - src/persistence/      — Postgres schema, RBAC, audit log
+- src/dr/               — disaster recovery: Postgres backup/restore + hash-chain
+                           integrity verification (operator CLI, no HTTP endpoints)
 - frontend/             — Next.js admin/compliance console
 - infra/                — Docker, K8s, Helm, CI/CD
 - contracts/            — API/event/policy schemas (api-architect owns, hook-protected)

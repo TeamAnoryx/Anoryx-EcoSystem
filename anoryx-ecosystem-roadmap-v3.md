@@ -675,7 +675,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] F-021 Advanced governance UI
 - [x] F-022 Multi-region deployment — merged #49; reconciled + independently audited (PR #50): allowlist-enforced residency scope, call-site-gated byte-identical render, fail-hard replication bootstrap, least-privilege secret, verify-full TLS. ⚠️ 1 High open (passive read-only NOT enforced — docs/audit/f-022-security-audit.md, docs/followups/f-022-passive-readonly-enforcement.md) → human remediation required before operating a serving passive region.
 - [x] F-023 Performance hardening 🔮 (shipped PR #52)
-- [ ] F-024 Disaster recovery 🔮
+- [x] F-024 Disaster recovery 🔮 (shipped PR #59)
 - [ ] F-025 Self-serve onboarding 🔮
 - [ ] F-026 MCP & Third-Party Integration Layer 🔮
 - [ ] F-027 Provider Key Vaulting 🔮
@@ -699,7 +699,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] O-006 Persistence consolidation + tenant-scoped read seams ✅ (#47)
 - [x] O-007 Admin API + minimal UI ✅ (shipped PR #51)
 - [x] O-008 Deployment ✅ (shipped PR #55)
-- [ ] O-009 Centralized Sentinel proxy for all inter-app traffic — Heavy 🏦
+- [x] O-009 Centralized Sentinel proxy for all inter-app traffic — Heavy 🏦 ✅ (shipped PR #60, scoped to a governed dispatch+audit seam — see ADR-0009)
 - [ ] O-010 Unified identity + cross-platform access mgmt — Heavy 🏦
 - [ ] O-011 Event-driven cross-module automation engine — Complex 🏦
 - [ ] O-012 Sub-ms agent-to-agent messaging backbone + state-sync — Heavy 🏦

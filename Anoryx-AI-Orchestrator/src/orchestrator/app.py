@@ -11,7 +11,8 @@ coordination seams (registry CRUD /v1/registry/sentinels, /v1/registry/health-ch
 coordinated push /v1/policies/coordinate — O-005, ADR-0005), the tenant-scoped query/bus read
 seams (GET /v1/events, /v1/bus/dlq, /v1/bus/schema-versions — O-006, ADR-0006), the
 operator-scoped admin API + minimal UI (GET /v1/admin/events/recent,
-/v1/admin/distributions/recent, /admin — O-007, ADR-0007), plus a health probe. The
+/v1/admin/distributions/recent, /admin — O-007, ADR-0007), the governed relay for inter-app
+AI traffic (POST /v1/relay/dispatch — O-009, ADR-0009), plus a health probe. The
 query/distribution seams derive a per-tenant principal (require_tenant_principal); a
 missing/invalid token → a uniform 401. mTLS termination is O-008.
 """
@@ -33,6 +34,7 @@ from orchestrator.coordination.router import router as coordination_router
 from orchestrator.distribution.router import router as distribution_router
 from orchestrator.ingest.router import router as ingest_router
 from orchestrator.query.router import router as query_router
+from orchestrator.relay.router import router as relay_router
 from orchestrator.security import PrincipalAuthError
 
 
@@ -114,4 +116,5 @@ def create_app() -> FastAPI:
     app.include_router(coordination_router)
     app.include_router(query_router)
     app.include_router(admin_router)
+    app.include_router(relay_router)
     return app

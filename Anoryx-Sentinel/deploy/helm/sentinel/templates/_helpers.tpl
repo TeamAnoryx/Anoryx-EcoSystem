@@ -123,6 +123,42 @@ only the endpoint + bucket are emitted here.
 {{- end -}}
 
 {{/*
+F-024 (ADR-0030) non-secret backup-sink config. The S3 access/secret keys are
+sensitive and come from the app envSecret (DR_S3_ACCESS_KEY / DR_S3_SECRET_KEY,
+mirroring sentinel.minioCredsEnv's pattern below) — only the sink selection,
+retention, and (for "local") the mount path are emitted here.
+*/}}
+{{- define "sentinel.drEnv" -}}
+- name: DR_BACKUP_SINK
+  value: {{ .Values.backup.sink | quote }}
+- name: DR_RETENTION_DAYS
+  value: {{ .Values.backup.retentionDays | quote }}
+{{- if eq .Values.backup.sink "local" }}
+- name: DR_LOCAL_BACKUP_DIR
+  value: {{ .Values.backup.local.dir | quote }}
+{{- else }}
+- name: DR_S3_ENDPOINT
+  value: {{ .Values.backup.s3.endpoint | quote }}
+- name: DR_S3_BUCKET
+  value: {{ .Values.backup.s3.bucket | quote }}
+- name: DR_S3_REGION
+  value: {{ .Values.backup.s3.region | quote }}
+{{- if or .Values.envSecret .Values.createEnvSecret }}
+- name: DR_S3_ACCESS_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "sentinel.envSecretName" . }}
+      key: DR_S3_ACCESS_KEY
+- name: DR_S3_SECRET_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "sentinel.envSecretName" . }}
+      key: DR_S3_SECRET_KEY
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{/*
 MinIO root creds = the bulk-storage access/secret keys, so the bucket the gateway
 and worker use is owned by the same credentials (compose: MINIO_ROOT_USER ==
 BULK_STORAGE_ACCESS_KEY). Sourced from the app envSecret; falls back to the
