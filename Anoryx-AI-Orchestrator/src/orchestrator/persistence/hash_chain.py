@@ -507,3 +507,61 @@ def compute_state_row_hash(data: dict[str, Any]) -> str:
 def verify_state_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
     """Recompute and compare the state row_hash for a single row. True iff it matches."""
     return compute_state_row_hash(row_data) == stored_hash
+
+
+# =========================================================================== #
+# External-gateway audit chain (O-013, ADR-0013) — ADDITIVE, parallel to every chain
+# above. Same canonicalization discipline over a distinct field set and a
+# domain-separated genesis so this chain can never be confused with any other. The
+# chains above are untouched (byte-identical). Records every request attempt for which a
+# key resolved to a tenant — 'allowed', 'scope_denied', 'rate_limited', and 'revoked' all
+# get a chain link (mirrors the messaging chain's "every attempt" semantics — see
+# ADR-0013). A wholly unknown/malformed key resolves no tenant and is never chain-audited
+# here (mirrors PrincipalAuthError's identical non-audited-401 precedent).
+# =========================================================================== #
+
+# Domain-separated genesis constant, distinct from every other chain's genesis.
+EXTERNAL_GATEWAY_GENESIS_HASH = hashlib.sha256(
+    b"anoryx-orchestrator:external-gateway-audit:genesis:v1"
+).hexdigest()
+
+# Fields folded into the canonical hash content, in a fixed documented order.
+# prev_hash MUST be last to surface ordering issues clearly.
+EXTERNAL_GATEWAY_CANONICAL_FIELDS = [
+    "tenant_id",
+    "key_id",
+    "route",
+    "outcome",
+    # Chain field — last.
+    "prev_hash",
+]
+
+
+def canonical_external_gateway_json(data: dict[str, Any]) -> bytes:
+    """Serialize external-gateway audit row data to canonical JSON: sorted keys, no
+    whitespace, UTF-8.
+
+    Only EXTERNAL_GATEWAY_CANONICAL_FIELDS are included (missing -> None, to prevent
+    omission attacks). There are no opt-in-when-present fields for this chain — every
+    field is always present on every outcome.
+    """
+    filtered: dict[str, Any] = {k: data.get(k) for k in EXTERNAL_GATEWAY_CANONICAL_FIELDS}
+    return json.dumps(filtered, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+
+
+def compute_external_gateway_row_hash(data: dict[str, Any]) -> str:
+    """Return the 64-char lowercase SHA-256 hex digest of the canonical JSON of *data*.
+
+    *data* MUST include 'prev_hash'.
+    """
+    if "prev_hash" not in data:
+        raise ValueError("row data must include 'prev_hash' to compute row_hash")
+    return hashlib.sha256(canonical_external_gateway_json(data)).hexdigest()
+
+
+def verify_external_gateway_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
+    """Recompute and compare the external-gateway row_hash for a single row. True iff it
+    matches."""
+    return compute_external_gateway_row_hash(row_data) == stored_hash

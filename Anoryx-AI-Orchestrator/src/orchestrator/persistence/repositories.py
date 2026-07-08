@@ -2063,3 +2063,268 @@ async def validate_state_chain(session: AsyncSession) -> bool:
             return False
         expected_prev = row.row_hash
     return True
+
+
+# =========================================================================== #
+# Third-party external gateway (O-013, ADR-0013). third_party_api_keys is
+# OPERATOR-GLOBAL (no RLS, mirrors query_service_tokens) — every function below runs on
+# the PRIVILEGED session. The gated read itself (GET /v1/external/events) reuses
+# list_events above on a get_tenant_session(key.tenant_id), exactly like the tenant
+# principal path.
+# =========================================================================== #
+
+
+async def insert_third_party_api_key(session: AsyncSession, row: dict[str, Any]) -> dict[str, Any]:
+    """INSERT one third_party_api_keys row (privileged session) and return the full
+    persisted row (never including anything beyond what was passed in — the plaintext
+    secret is never a column here, only key_hash)."""
+    from orchestrator.persistence.models.third_party_api_key import ThirdPartyApiKey
+
+    stmt = insert(ThirdPartyApiKey).values(**row).returning(ThirdPartyApiKey)
+    result = await session.execute(stmt)
+    inserted = result.scalar_one()
+    return {c.name: getattr(inserted, c.name) for c in ThirdPartyApiKey.__table__.columns}
+
+
+async def get_third_party_api_key_by_hash(
+    session: AsyncSession, key_hash: str
+) -> dict[str, Any] | None:
+    """Resolve a presented key's SHA-256 hash to its full row (PRIVILEGED session).
+
+    The auth bootstrap must resolve the tenant BEFORE any tenant GUC is set (mirrors
+    resolve_principal_tenant). Returns None for an unknown hash — indistinguishable from
+    a revoked key at THIS layer (the router decides revoked vs. unknown after resolving,
+    since a revoked key's tenant IS known and its rejection IS chain-audited, unlike an
+    unknown key's — see external_gateway/router.py).
+    """
+    from orchestrator.persistence.models.third_party_api_key import ThirdPartyApiKey
+
+    result = await session.execute(
+        select(ThirdPartyApiKey).where(ThirdPartyApiKey.key_hash == key_hash)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    return {c.name: getattr(row, c.name) for c in ThirdPartyApiKey.__table__.columns}
+
+
+async def get_third_party_api_key(session: AsyncSession, key_id: str) -> dict[str, Any] | None:
+    """Fetch one third_party_api_keys row by key_id (PRIVILEGED session), or None."""
+    from orchestrator.persistence.models.third_party_api_key import ThirdPartyApiKey
+
+    result = await session.execute(
+        select(ThirdPartyApiKey).where(ThirdPartyApiKey.key_id == key_id)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    return {c.name: getattr(row, c.name) for c in ThirdPartyApiKey.__table__.columns}
+
+
+async def list_third_party_api_keys(
+    session: AsyncSession, *, tenant_id: str | None
+) -> list[dict[str, Any]]:
+    """List third_party_api_keys metadata (PRIVILEGED session, operator fleet view).
+
+    NEVER projects key_hash — callers must additionally strip it before returning to an
+    HTTP response (the router's own allow-list projection is the actual boundary; this
+    reads the full row for internal use, e.g. the revoke flow's existence check)."""
+    from orchestrator.persistence.models.third_party_api_key import ThirdPartyApiKey
+
+    stmt = select(ThirdPartyApiKey).order_by(ThirdPartyApiKey.created_at.desc())
+    if tenant_id is not None:
+        stmt = stmt.where(ThirdPartyApiKey.tenant_id == tenant_id)
+    result = await session.execute(stmt)
+    return [
+        {c.name: getattr(row, c.name) for c in ThirdPartyApiKey.__table__.columns}
+        for row in result.scalars()
+    ]
+
+
+async def revoke_third_party_api_key(session: AsyncSession, key_id: str) -> dict[str, Any] | None:
+    """Set status='revoked' + revoked_at=now() for one key (PRIVILEGED session).
+
+    Idempotent: revoking an already-revoked key re-applies the same UPDATE (revoked_at is
+    refreshed to now(), status stays 'revoked') and returns the row — never an error.
+    Returns None if key_id does not exist. Caller commits.
+    """
+    from sqlalchemy import update
+
+    from orchestrator.persistence.models.third_party_api_key import ThirdPartyApiKey
+
+    stmt = (
+        update(ThirdPartyApiKey)
+        .where(ThirdPartyApiKey.key_id == key_id)
+        .values(status="revoked", revoked_at=text("now()"))
+        .returning(ThirdPartyApiKey)
+    )
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    return {c.name: getattr(row, c.name) for c in ThirdPartyApiKey.__table__.columns}
+
+
+# Distinct transaction-scoped advisory-lock NAMESPACE for the per-tenant
+# third_party_api_keys row-count cap (mirrors _MESSAGING_MESSAGE_CAP_LOCK_NAMESPACE /
+# _AUTOMATION_RULE_CAP_LOCK_NAMESPACE exactly — a fixed namespace plus a per-tenant
+# hashtext(...) key, distinct from every other lock namespace/key in this module).
+_EXTERNAL_GATEWAY_KEY_CAP_LOCK_NAMESPACE = int.from_bytes(
+    hashlib.sha256(b"anoryx-orchestrator:external-gateway-key-cap").digest()[:4],
+    "big",
+)
+
+
+async def lock_external_gateway_key_cap(session: AsyncSession, tenant_id: str) -> None:
+    """Take a transaction-scoped, PER-TENANT advisory lock before the key-cap COUNT.
+
+    third_party_api_keys carries NO RLS (operator-global), so — unlike the tenant-scoped
+    caps elsewhere in this module — the COUNT below filters WHERE tenant_id = :tenant_id
+    explicitly rather than relying on an already-scoped session. The caller MUST call this
+    INSIDE the same transaction as the subsequent COUNT + INSERT (TOCTOU fix, mirrors
+    lock_messaging_message_cap).
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:ns, hashtext(:tenant_id))"),
+        {"ns": _EXTERNAL_GATEWAY_KEY_CAP_LOCK_NAMESPACE, "tenant_id": tenant_id},
+    )
+
+
+async def count_third_party_api_keys(session: AsyncSession, tenant_id: str) -> int:
+    """Count this tenant's third_party_api_keys rows (PRIVILEGED session, explicit filter).
+
+    Used at key-issuance time to enforce ORCH_EXTERNAL_GATEWAY_MAX_KEYS_PER_TENANT BEFORE
+    the insert — exceeding it is a 422 `key_limit_exceeded`, never a 5xx. The caller takes
+    lock_external_gateway_key_cap in the SAME transaction immediately before calling this.
+    Counts revoked keys too (a revoke does not delete the row, so it does not free the cap
+    — an operator wanting headroom must be aware revocation alone does not reclaim it;
+    named here rather than silently surprising).
+    """
+    result = await session.execute(
+        text("SELECT count(*) FROM third_party_api_keys WHERE tenant_id = :tenant_id"),
+        {"tenant_id": tenant_id},
+    )
+    return int(result.scalar_one())
+
+
+_EXTERNAL_GATEWAY_CHAIN_LOCK_KEY = int.from_bytes(
+    hashlib.sha256(b"anoryx-orchestrator:external-gateway-audit-chain").digest()[:8],
+    "big",
+    signed=True,
+)
+
+
+async def external_gateway_chain_tip_hash(session: AsyncSession) -> str:
+    """Return the most-recent external_gateway_audit_log row_hash, or the genesis hash."""
+    result = await session.execute(
+        text(
+            "SELECT row_hash FROM external_gateway_audit_log "
+            "ORDER BY sequence_number DESC LIMIT 1"
+        )
+    )
+    tip = result.scalar_one_or_none()
+    return tip if tip is not None else hash_chain.EXTERNAL_GATEWAY_GENESIS_HASH
+
+
+async def append_external_gateway_audit_link(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    key_id: str,
+    route: str,
+    outcome: str,
+) -> str:
+    """Append one hash-chained external_gateway_audit_log link (privileged session).
+
+    Caller opens the privileged transaction (`async with session.begin()`). A
+    transaction-scoped advisory lock (own key) serialises concurrent appends so prev_hash
+    always references the true tip. Returns the new row_hash. Records every attempt for
+    which a key resolved to a tenant — 'allowed', 'scope_denied', 'rate_limited', and
+    'revoked' all get a link (mirrors append_messaging_audit_link's "every attempt"
+    semantics; see ADR-0013).
+    """
+    from orchestrator.persistence.models.external_gateway_audit_log import ExternalGatewayAuditLog
+
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:k)"), {"k": _EXTERNAL_GATEWAY_CHAIN_LOCK_KEY}
+    )
+    prev_hash = await external_gateway_chain_tip_hash(session)
+    row = {
+        "tenant_id": tenant_id,
+        "key_id": key_id,
+        "route": route,
+        "outcome": outcome,
+        "prev_hash": prev_hash,
+    }
+    row["row_hash"] = hash_chain.compute_external_gateway_row_hash(row)
+    await session.execute(insert(ExternalGatewayAuditLog).values(**row))
+    return row["row_hash"]
+
+
+async def validate_external_gateway_chain(session: AsyncSession) -> bool:
+    """Re-validate the full external-gateway audit chain: each row_hash recomputes + links.
+
+    Returns True iff every link verifies. O(n) — privileged session (mirrors
+    validate_state_chain's FAIL-LOUD BYPASSRLS assertion: this chain carries RLS, so a
+    non-bypass role would only see its own tenant's rows and could falsely report
+    integrity).
+    """
+    from orchestrator.persistence.models.external_gateway_audit_log import ExternalGatewayAuditLog
+
+    bypass = (
+        await session.execute(
+            text(
+                "SELECT bool_or(rolbypassrls OR rolsuper) FROM pg_roles "
+                "WHERE rolname = current_user"
+            )
+        )
+    ).scalar()
+    if not bypass:
+        raise RuntimeError(
+            "validate_external_gateway_chain requires a BYPASSRLS/superuser privileged "
+            "session; a non-bypass role sees an RLS-scoped subset and would falsely "
+            "report integrity."
+        )
+    result = await session.execute(
+        select(ExternalGatewayAuditLog).order_by(ExternalGatewayAuditLog.sequence_number.asc())
+    )
+    expected_prev = hash_chain.EXTERNAL_GATEWAY_GENESIS_HASH
+    for row in result.scalars():
+        if row.prev_hash != expected_prev:
+            return False
+        row_data = {
+            "tenant_id": row.tenant_id,
+            "key_id": row.key_id,
+            "route": row.route,
+            "outcome": row.outcome,
+            "prev_hash": row.prev_hash,
+        }
+        if not hash_chain.verify_external_gateway_row_hash(row_data, row.row_hash):
+            return False
+        expected_prev = row.row_hash
+    return True
+
+
+async def increment_external_gateway_rate_limit(
+    session: AsyncSession, *, key_id: str, window_start: datetime
+) -> int:
+    """Atomically increment (or create) this key's fixed-window request counter and
+    return the resulting count (PRIVILEGED session — the counters table carries no RLS).
+
+    A single `INSERT ... ON CONFLICT (key_id, window_start) DO UPDATE SET request_count =
+    request_count + 1 RETURNING request_count` — race-safe under concurrent requests for
+    the SAME key in the SAME window without any advisory lock (Postgres's own
+    ON-CONFLICT-DO-UPDATE is atomic). The caller compares the returned count against the
+    key's configured rate_limit_per_minute.
+    """
+    result = await session.execute(
+        text(
+            "INSERT INTO external_gateway_rate_limit_counters "
+            "(key_id, window_start, request_count) VALUES (:key_id, :window_start, 1) "
+            "ON CONFLICT (key_id, window_start) DO UPDATE SET "
+            "request_count = external_gateway_rate_limit_counters.request_count + 1 "
+            "RETURNING request_count"
+        ),
+        {"key_id": key_id, "window_start": window_start},
+    )
+    return int(result.scalar_one())
