@@ -105,3 +105,42 @@ export interface GroupSpendView {
   cost_cents: number;
   request_count: number;
 }
+
+/**
+ * D-012 chargeback/showback + anomaly detection (Delta/src/delta/chargeback/schemas.py).
+ * Figures are the same client-side cost estimates the rest of Delta already is —
+ * informational cost-attribution, never an authoritative bill or invoice.
+ */
+export interface ChargebackRow {
+  group_key: string;
+  cost_cents: number;
+  request_count: number;
+  share_pct: number;
+}
+
+export interface ChargebackReportView {
+  total_cost_cents: number;
+  rows: ChargebackRow[];
+}
+
+export type AnomalyCode = "SPEND_SPIKE" | "NEW_SPENDER";
+export type AnomalySeverity = "info" | "warning";
+
+export interface AnomalyRow {
+  group_key: string;
+  current_spend_cents: number;
+  baseline_avg_cents: number;
+  ratio: number | null;
+  code: AnomalyCode;
+  severity: AnomalySeverity;
+}
+
+export interface AnomalyReportView {
+  baseline_periods: number;
+  baseline_start: string;
+  baseline_end: string;
+  anomalies: AnomalyRow[];
+  /** A fixed-multiple trailing-average comparison, not a trained/validated
+   * statistical or ML model — see docs/adr/0012-delta-chargeback-anomaly-detection.md. */
+  method: "trailing_average_ratio_v1";
+}
