@@ -97,7 +97,7 @@ Zero application code changed; `uvicorn`/`fastapi` were already core dependencie
 |---|---|---|
 | Secret leaks into `docker inspect`/pod spec/etcd | File-based Compose secrets + K8s `secretKeyRef`/`envFrom: secretRef` (Fork E) | `test_app_services_use_file_secrets_not_env_passwords`, `test_top_level_secrets_are_file_based` |
 | Image baked with a real credential | Dockerfile has no `COPY .env`, no secret `ENV`/`ARG` default, no `.pem`/`id_rsa` | `test_dockerfile_no_secrets_baked` |
-| Container escape / privilege escalation | Non-root uid 1000, `readOnlyRootFilesystem`, dropped capabilities, no privilege escalation, `RuntimeDefault` seccomp | `test_dockerfile_runs_as_non_root`; Helm `securityContext`/`podSecurityContext` in every pod template |
+| Container escape / privilege escalation | Non-root uid 1000, `readOnlyRootFilesystem`, dropped capabilities, no privilege escalation, `RuntimeDefault` seccomp | `test_dockerfile_runs_as_non_root`; Helm `securityContext`/`podSecurityContext` on every Delta-owned pod template (ingest, admin, migrate Job, both init containers). **Exception, named not silent (independent security review):** the bundled dev/demo Postgres pod (`postgres-deployment.yaml`) carries NO securityContext — it runs as the official `postgres:16-alpine` image's own default user, matching Orchestrator's O-008 and Sentinel's F-010 bundled-Postgres templates exactly (neither sets one either, since the upstream image's own init script needs root transiently to `chown` a fresh data directory before dropping privileges internally; forcing `runAsNonRoot` would break first-boot on an empty volume). Bundled Postgres is dev/demo-grade only — production sets `postgres.bundled=false`. |
 | Serving an un-migrated schema | `wait-for-postgres` + `wait-for-migrate` initContainers on BOTH Deployments; migrate Job is a normal resource, not a hook that would race a fresh install | `test_helm_template_renders` (Job present); manual `upgrade→downgrade→upgrade` verified in D-009's migration-roundtrip CI job, unaffected by this task |
 | Admin console reachable from outside the cluster | NetworkPolicy ingress restricted to same-namespace + monitoring-namespace ONLY, no CIDR-based open-by-default rule, `ingress.enabled` never applies to it | `test_helm_admin_networkpolicy_has_no_open_ingress` |
 | Ingest seam wide open with no defense-in-depth | NetworkPolicy egress/ingress port-scoped even where source/destination can't be restricted by hostname; app-layer `DELTA_INGEST_HMAC_SECRET` check is the real backstop (unchanged from D-004) | `test_helm_networkpolicy_restrictive`, `test_helm_networkpolicy_restricted_cidrs_scope_rules` |
@@ -107,15 +107,22 @@ Zero application code changed; `uvicorn`/`fastapi` were already core dependencie
 ## 6. Verification
 
 - `helm lint` + `helm template` (both bundled and external-Postgres modes) — clean.
-- `pytest Delta/tests/deploy/` — 20/20 passed (14 Dockerfile/Compose static-assertion tests always
-  run; 6 Helm tests run for real here since `helm` was available, and self-skip where it is not —
-  no existing Delta CI job installs `helm`, matching the exact precedent Orchestrator's own
-  `tests/deploy/test_helm.py` already established; not a gap introduced by this task).
+- `pytest Delta/tests/deploy/` — 20/20 passed locally with `helm` on `PATH`.
 - Full existing Delta suite (496 passed, 9 skipped) unaffected — zero changes under `Delta/src/`.
 - `black --check` / `ruff check .` clean.
 - These new test files ride the EXISTING `ledger-db` CI job's untargeted `pytest --tb=short -q
   --cov=src --cov-report=term-missing` invocation (`pyproject.toml`'s `testpaths = ["tests"]`
-  sweeps `tests/deploy/` in automatically) — no new CI workflow or job was added.
+  sweeps `tests/deploy/` in automatically) — no new CI job was added.
+- **CI coverage note (post-review fix).** The other three products' own `tests/deploy/
+  test_helm.py` self-skip in CI (no `helm` binary on `PATH` in any of their CI jobs) — an accepted,
+  ecosystem-wide limitation this task initially inherited unchanged. An independent security review
+  flagged that this leaves the admin console's isolation NetworkPolicy — the single most
+  security-load-bearing property of this task — with no automated CI regression backstop. Fixed
+  (Delta-scoped only; the other three products' CI files were not touched) by adding
+  `azure/setup-helm@v4` to `delta-ci.yml`'s `ledger-db` job, so `test_helm_admin_networkpolicy_has_
+  no_open_ingress` and the other five Helm tests now execute for real on every Delta PR, not just
+  locally. This makes Delta's deploy-test CI coverage a strict improvement over, not a regression
+  from, precedent.
 
 ## 7. Alternatives considered
 

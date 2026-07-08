@@ -60,8 +60,16 @@ admin:
     requests: { cpu: 100m, memory: 256Mi }
     limits: { cpu: 250m, memory: 512Mi }
 
+# Placeholder only — this chart renders NO ingress.yaml template (independent security
+# review, D-010). Matches every other product's chart in this repo (Sentinel F-010,
+# Orchestrator O-008, Rendly R-010 — none render one either): "public TLS / cert-manager /
+# hardened production Ingress" is a named, honest deferral everywhere, not a Delta-specific
+# gap. Wire your own Ingress + cert-manager at the edge for the ingest component ONLY —
+# never for admin (see networkPolicy.extraAdminIngress if the admin console genuinely needs
+# more than in-cluster access). Kept here (inert) only for values-shape consistency with the
+# sibling charts' identical placeholder block.
 ingress:
-  enabled: false               # operators wire their own (nginx + cert-manager), ingest only
+  enabled: false
   className: ""
   annotations: {}
   hosts: []

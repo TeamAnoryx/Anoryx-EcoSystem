@@ -130,8 +130,11 @@ idempotently.
   ingest component). It is reached via `kubectl port-forward` or an
   operator-supplied internal gateway, never a public Ingress.
 - **Exposure is minimal.** Both Services are `ClusterIP`; access for the demo
-  is `kubectl port-forward`. No NodePort/LoadBalancer/Ingress is opened by
-  default (`ingress.enabled=false`, ingest only).
+  is `kubectl port-forward`. This chart renders NO `Ingress` object at all
+  (independent security review, D-010) — matching every other product's
+  chart in this repo. `values.yaml`'s `ingress:` block is an inert
+  values-shape placeholder, not a wired template; wire your own Ingress +
+  cert-manager at your edge for the ingest component only if you need one.
 - **NetworkPolicy.** The chart ships a NetworkPolicy per component, but egress
   to the Orchestrator and ingress on the ingest port are open by default
   (plain NetworkPolicy cannot match by hostname, and neither endpoint is known
