@@ -67,12 +67,29 @@ plain (not hash-chained — that's D-009) change-history log. See
 - **Not** wired into `docker-compose.yml` — no Delta HTTP app is (D-004's ingest app and
   D-005/D-006's engines ship the same way); full service wiring is D-010 (Deployment).
 
+## D-008 — Live Cost-to-Value Dashboards
+
+D-008 adds read-only spend aggregates (real-time total, burn rate, time series, top spenders,
+cost-per-request) over the D-003 ledger, parametrized by tenant + optional team/project/agent
+scope + time window. Zero new migration (pure `SELECT`/`GROUP BY` over the existing
+`ledger_entries`); mounted into the same admin app D-007 built (`allocation_admin/app.py`) rather
+than a second process. See
+[`docs/adr/0008-delta-cost-dashboards.md`](docs/adr/0008-delta-cost-dashboards.md).
+
+- **Backend:** `src/delta/dashboards/` — `GET /v1/admin/dashboards/{summary,timeseries,
+  top-spenders}`, same auth/app/console as D-007.
+- **Frontend:** `frontend/(admin)/dashboards` — stat tiles, an SVG spend-over-time chart, a
+  ranked top-spenders list, and a plain data table. Now the console's landing page.
+- **Honesty boundary:** "cost-per-outcome" (the roadmap's phrasing) is not built — Delta has no
+  "outcome" domain concept to divide cost by. Only cost-per-*request* is exposed.
+
 ## Layout
 
 ```
 src/delta/        Pydantic v2 domain types + validators (the invariants)
 src/delta/allocation_admin/  D-007 budget-allocation admin API (propose/approve/reject, history)
-frontend/         D-007 Next.js admin console (BFF-only, see frontend/README.md)
+src/delta/dashboards/        D-008 read-only spend aggregates (summary, time series, top spenders)
+frontend/         D-007/D-008 Next.js admin console (BFF-only, see frontend/README.md)
 contracts/        Delta-owned JSON Schemas (Draft 2020-12, additionalProperties:false)
 tests/            non-stubbed proofs of every invariant + the Budget round-trip
 docs/adr/         Delta architecture decision records
