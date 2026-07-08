@@ -204,12 +204,22 @@ def test_mutualtls_scheme_declared():
     # O-009 adds a dedicated RELAY SOURCE bearer (ORCH_RELAY_SOURCE_TOKENS), distinct from
     # every other credential, gating the governed-relay dispatch seam.
     assert schemes["relaySourceBearer"]["scheme"] == "bearer"
+    # O-010 adds a dedicated IDENTITY SOURCE bearer (ORCH_IDENTITY_SOURCE_TOKENS), distinct
+    # from every other credential, gating the identity-event ingest seam.
+    assert schemes["identitySourceBearer"]["scheme"] == "bearer"
 
 
 # Recognised app-layer second factors paired with mutualTLS: hmacIngest (O-003 ingest),
 # serviceToken (O-004 peer distribution), operatorBearer (O-005 operator registry/coordinate),
-# relaySourceBearer (O-009 governed relay dispatch).
-_SECOND_FACTORS = {"hmacIngest", "serviceToken", "operatorBearer", "relaySourceBearer"}
+# relaySourceBearer (O-009 governed relay dispatch), identitySourceBearer (O-010 identity
+# event ingest).
+_SECOND_FACTORS = {
+    "hmacIngest",
+    "serviceToken",
+    "operatorBearer",
+    "relaySourceBearer",
+    "identitySourceBearer",
+}
 
 
 def test_mutualtls_applied_to_every_operation():

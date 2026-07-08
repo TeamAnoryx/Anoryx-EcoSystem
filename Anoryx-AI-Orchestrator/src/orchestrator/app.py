@@ -12,9 +12,11 @@ coordinated push /v1/policies/coordinate — O-005, ADR-0005), the tenant-scoped
 seams (GET /v1/events, /v1/bus/dlq, /v1/bus/schema-versions — O-006, ADR-0006), the
 operator-scoped admin API + minimal UI (GET /v1/admin/events/recent,
 /v1/admin/distributions/recent, /admin — O-007, ADR-0007), the governed relay for inter-app
-AI traffic (POST /v1/relay/dispatch — O-009, ADR-0009), plus a health probe. The
-query/distribution seams derive a per-tenant principal (require_tenant_principal); a
-missing/invalid token → a uniform 401. mTLS termination is O-008.
+AI traffic (POST /v1/relay/dispatch — O-009, ADR-0009), the cross-product identity-event
+correlation seam (POST + GET /v1/identity/events, GET /v1/admin/identity/events/recent —
+O-010, ADR-0010), plus a health probe. The query/distribution seams derive a per-tenant
+principal (require_tenant_principal); a missing/invalid token → a uniform 401. mTLS
+termination is O-008.
 """
 
 from __future__ import annotations
@@ -28,10 +30,12 @@ from orchestrator.admin.router import router as admin_router
 from orchestrator.config import (
     get_coordination_settings,
     get_distribution_settings,
+    get_identity_settings,
     get_ingest_settings,
 )
 from orchestrator.coordination.router import router as coordination_router
 from orchestrator.distribution.router import router as distribution_router
+from orchestrator.identity.router import router as identity_router
 from orchestrator.ingest.router import router as ingest_router
 from orchestrator.query.router import router as query_router
 from orchestrator.relay.router import router as relay_router
@@ -59,6 +63,9 @@ def create_app() -> FastAPI:
     # Coordination (O-005) settings also resolve NON-FATALLY; the registry request boundary
     # enforces the operator token (ORCH_ADMIN_TOKEN) fail-closed, not construction.
     app.state.coordination_settings = get_coordination_settings()
+    # Identity-event correlation (O-010) settings resolve NON-FATALLY; the ingest seam's
+    # request boundary enforces a matching source token fail-closed, not construction.
+    app.state.identity_settings = get_identity_settings()
 
     @app.exception_handler(Exception)
     async def _fail_safe_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -117,4 +124,5 @@ def create_app() -> FastAPI:
     app.include_router(query_router)
     app.include_router(admin_router)
     app.include_router(relay_router)
+    app.include_router(identity_router)
     return app

@@ -883,3 +883,22 @@ def relay_ready() -> None:
         if require:
             pytest.fail("ORCH_REQUIRE_RELAY_E2E=1 but the Orchestrator Postgres is unreachable")
         pytest.skip("Orchestrator Postgres not reachable — relay e2e")
+
+
+# =========================================================================== #
+# O-010 cross-product identity-event correlation harness. APPENDED to the harness above (no
+# edits to it). Adds an identity gate mirroring relay_ready — FAILS (not skips) under
+# ORCH_REQUIRE_IDENTITY_E2E=1 so the non-stubbed e2e provably EXECUTES on CI.
+# =========================================================================== #
+
+
+@pytest.fixture
+def identity_ready() -> None:
+    """Gate the O-010 identity e2e. Skips when the Orchestrator Postgres is unreachable —
+    UNLESS ORCH_REQUIRE_IDENTITY_E2E=1, in which case an unreachable DB FAILS the run (a
+    silent skip can never masquerade as a green identity-correlation gate on CI)."""
+    require = os.environ.get("ORCH_REQUIRE_IDENTITY_E2E") == "1"
+    if not _pg_reachable():
+        if require:
+            pytest.fail("ORCH_REQUIRE_IDENTITY_E2E=1 but the Orchestrator Postgres is unreachable")
+        pytest.skip("Orchestrator Postgres not reachable — identity e2e")

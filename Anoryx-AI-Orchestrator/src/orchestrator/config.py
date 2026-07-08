@@ -390,6 +390,88 @@ def _endpoint_allowlist() -> frozenset[str]:
     return frozenset(entry.strip().lower() for entry in raw.split(",") if entry.strip())
 
 
+# =========================================================================== #
+# Cross-product identity-event correlation configuration (O-010, ADR-0010) — ADDITIVE,
+# STANDALONE (not nested in CoordinationSettings — unlike the relay, this seam has no
+# registry/SSRF/health dependency). Resolved NON-FATALLY: absence is not fatal — an
+# unconfigured seam fail-closed-401s every ingest request (no configured source can ever
+# match).
+# =========================================================================== #
+
+#: The source_products the identity-event seam recognises. EVERY ecosystem product may
+#: report identity events here (unlike the O-009 relay, where Sentinel is only ever the
+#: relay TARGET, never a caller) — Sentinel's own SSO logins, Delta's admin-token uses, and
+#: Rendly's JWT verifications are all legitimate "who accessed what, where" sources.
+KNOWN_IDENTITY_SOURCE_PRODUCTS: frozenset[str] = frozenset({"sentinel", "delta", "rendly"})
+
+#: Default request-body size cap (bytes) for one identity-event ingest.
+DEFAULT_IDENTITY_MAX_BODY_BYTES: int = 8192
+
+
+@dataclass(frozen=True, slots=True)
+class IdentitySettings:
+    """Resolved identity-event correlation configuration (O-010, ADR-0010).
+
+    source_tokens maps source_product ("sentinel" | "delta" | "rendly") -> its shared bearer
+    token; the router resolves source_product FROM the presented token (server-resolved,
+    never client-claimed), mirroring the ingest/relay seams' source_product discipline.
+    Tokens are never logged.
+    """
+
+    source_tokens: dict[str, str]
+    max_body_bytes: int
+
+
+def _identity_source_tokens() -> dict[str, str]:
+    """Parse ORCH_IDENTITY_SOURCE_TOKENS (a JSON object: source_product -> bearer token).
+
+    Unset/empty → {} (absence is not fatal; the seam is then fail-closed-401 for everyone).
+    A non-JSON value, a non-object, a non-string key/value, an empty token, or a key outside
+    KNOWN_IDENTITY_SOURCE_PRODUCTS → ConfigError (misconfiguration is loud).
+    """
+    raw = os.environ.get("ORCH_IDENTITY_SOURCE_TOKENS", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ConfigError(
+            "ORCH_IDENTITY_SOURCE_TOKENS is not valid JSON. It must be a JSON object mapping "
+            "source_product -> bearer token."
+        ) from exc
+    if not isinstance(parsed, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) and v for k, v in parsed.items()
+    ):
+        raise ConfigError(
+            "ORCH_IDENTITY_SOURCE_TOKENS must be a JSON object mapping a string source_product "
+            "to a non-empty string bearer token."
+        )
+    if not set(parsed) <= KNOWN_IDENTITY_SOURCE_PRODUCTS:
+        raise ConfigError(
+            "ORCH_IDENTITY_SOURCE_TOKENS keys must be drawn from "
+            f"{sorted(KNOWN_IDENTITY_SOURCE_PRODUCTS)}."
+        )
+    return parsed
+
+
+def get_identity_settings() -> IdentitySettings:
+    """Resolve identity-event settings from the environment (NON-FATAL on absence).
+
+    Env vars:
+      ORCH_IDENTITY_SOURCE_TOKENS   JSON object {"sentinel"|"delta"|"rendly": bearer_token}
+                                   ({} if unset).
+      ORCH_IDENTITY_MAX_BODY_BYTES  request-body size cap in bytes (default 8192, >= 1).
+
+    Tokens are never logged.
+    """
+    return IdentitySettings(
+        source_tokens=_identity_source_tokens(),
+        max_body_bytes=_env_int(
+            "ORCH_IDENTITY_MAX_BODY_BYTES", DEFAULT_IDENTITY_MAX_BODY_BYTES, minimum=1
+        ),
+    )
+
+
 def get_coordination_settings() -> CoordinationSettings:
     """Resolve coordination settings from the environment (NON-FATAL on absence).
 
