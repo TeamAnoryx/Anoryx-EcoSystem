@@ -1190,6 +1190,360 @@ async def list_recent_events_admin(session: AsyncSession, *, limit: int) -> list
     return [{column: row[column] for column in _ADMIN_EVENT_METADATA_COLUMNS} for row in rows]
 
 
+async def append_automation_audit_link(
+    session: AsyncSession,
+    *,
+    rule_id: str,
+    tenant_id: str,
+    triggering_event_id: str,
+    action_type: str,
+    disposition: str,
+    error_reason: str | None = None,
+) -> str:
+    """Append one hash-chained automation_executions link (privileged session).
+
+    Caller opens the privileged transaction (`async with session.begin()`). A
+    transaction-scoped advisory lock (own key) serialises concurrent appends so prev_hash
+    always references the true tip. Returns the new row_hash. error_reason follows the
+    opt-in-when-present hash rule (hashed iff not None).
+
+    UNIQUE(rule_id, triggering_event_id) may raise IntegrityError on the INSERT below —
+    the CALLER catches it narrowly as the idempotency dedup gate: a retried/duplicate
+    schedule of the same accepted ingest event's automation evaluation is treated as
+    "already executed, skip", never as an error (mirrors the ingest pipeline's own
+    narrow-IntegrityError dedup discipline).
+    """
+    from orchestrator.persistence.models.automation_execution import AutomationExecution
+
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:k)"), {"k": _AUTOMATION_CHAIN_LOCK_KEY}
+    )
+    prev_hash = await automation_chain_tip_hash(session)
+    row = {
+        "rule_id": rule_id,
+        "tenant_id": tenant_id,
+        "triggering_event_id": triggering_event_id,
+        "action_type": action_type,
+        "disposition": disposition,
+        "error_reason": error_reason,
+        "prev_hash": prev_hash,
+    }
+    row["row_hash"] = hash_chain.compute_automation_row_hash(row)
+    await session.execute(insert(AutomationExecution).values(**row))
+    return row["row_hash"]
+
+
+# Distinct transaction-scoped advisory-lock key for the automation-chain append (a stable
+# bigint from a domain label, distinct from every other chain's key).
+_AUTOMATION_CHAIN_LOCK_KEY = int.from_bytes(
+    hashlib.sha256(b"anoryx-orchestrator:automation-audit-chain").digest()[:8],
+    "big",
+    signed=True,
+)
+
+
+async def automation_chain_tip_hash(session: AsyncSession) -> str:
+    """Return the most-recent automation_executions row_hash, or AUTOMATION_GENESIS_HASH."""
+    result = await session.execute(
+        text("SELECT row_hash FROM automation_executions ORDER BY sequence_number DESC LIMIT 1")
+    )
+    tip = result.scalar_one_or_none()
+    return tip if tip is not None else hash_chain.AUTOMATION_GENESIS_HASH
+
+
+async def validate_automation_chain(session: AsyncSession) -> bool:
+    """Re-validate the full automation-execution chain: each row_hash recomputes + links.
+
+    Returns True iff every link verifies. O(n) — privileged session (the chain is global).
+
+    FAIL-LOUD (mirrors validate_identity_chain, audit L-2): automation_executions carries
+    RLS (unlike relay/identity), but a non-BYPASSRLS role would only see its own tenant's
+    rows, so assert the role bypasses RLS first (a privileged session) rather than risk a
+    partial-chain false pass.
+    """
+    from orchestrator.persistence.models.automation_execution import AutomationExecution
+
+    bypass = (
+        await session.execute(
+            text(
+                "SELECT bool_or(rolbypassrls OR rolsuper) FROM pg_roles "
+                "WHERE rolname = current_user"
+            )
+        )
+    ).scalar()
+    if not bypass:
+        raise RuntimeError(
+            "validate_automation_chain requires a BYPASSRLS/superuser privileged session; a "
+            "non-bypass role sees an RLS-scoped subset and would falsely report integrity."
+        )
+    result = await session.execute(
+        select(AutomationExecution).order_by(AutomationExecution.sequence_number.asc())
+    )
+    expected_prev = hash_chain.AUTOMATION_GENESIS_HASH
+    for row in result.scalars():
+        if row.prev_hash != expected_prev:
+            return False
+        row_data = {
+            "rule_id": row.rule_id,
+            "tenant_id": row.tenant_id,
+            "triggering_event_id": row.triggering_event_id,
+            "action_type": row.action_type,
+            "disposition": row.disposition,
+            "error_reason": row.error_reason,
+            "prev_hash": row.prev_hash,
+        }
+        if not hash_chain.verify_automation_row_hash(row_data, row.row_hash):
+            return False
+        expected_prev = row.row_hash
+    return True
+
+
+# --------------------------------------------------------------------------- #
+# Automation-rules CRUD (O-011, ADR-0011) — tenant session (RLS-scoped).
+# --------------------------------------------------------------------------- #
+
+_AUTOMATION_RULE_COLUMNS = (
+    "id",
+    "tenant_id",
+    "name",
+    "enabled",
+    "trigger_event_type",
+    "trigger_source_product",
+    "trigger_conditions",
+    "action_type",
+    "action_config",
+    "created_at",
+    "updated_at",
+)
+
+
+async def insert_automation_rule(session: AsyncSession, row: dict[str, Any]) -> dict[str, Any]:
+    """INSERT one automation_rules row (tenant session, RLS-scoped) and return the full
+    persisted row (including server-defaulted created_at/updated_at). Caller commits.
+
+    May raise IntegrityError on UNIQUE(tenant_id, name) — the router catches it narrowly
+    and returns 409 (duplicate rule name), never a 5xx.
+    """
+    from orchestrator.persistence.models.automation_rule import AutomationRule
+
+    stmt = insert(AutomationRule).values(**row).returning(AutomationRule)
+    result = await session.execute(stmt)
+    inserted = result.scalar_one()
+    return {c.name: getattr(inserted, c.name) for c in AutomationRule.__table__.columns}
+
+
+# Distinct transaction-scoped advisory-lock NAMESPACE for the per-tenant rule-cap lock
+# (TOCTOU fix, code-reviewer + security-auditor O-011 follow-up). This uses the pg
+# pg_advisory_xact_lock(int, int) TWO-ARG overload — a fixed namespace plus a per-tenant
+# hashtext(...) key — which is a DIFFERENT PostgreSQL function overload from the
+# single-bigint pg_advisory_xact_lock(:k) form every chain-append lock above uses
+# (_CHAIN_LOCK_KEY / _DISTRIBUTION_CHAIN_LOCK_KEY / _REGISTRY_CHAIN_LOCK_KEY /
+# _RELAY_CHAIN_LOCK_KEY / _IDENTITY_CHAIN_LOCK_KEY / _AUTOMATION_CHAIN_LOCK_KEY), so this
+# lock can never collide with any of those fixed-key chain-append locks.
+_AUTOMATION_RULE_CAP_LOCK_NAMESPACE = int.from_bytes(
+    hashlib.sha256(b"anoryx-orchestrator:automation-rule-cap").digest()[:4],
+    "big",
+    signed=True,
+)
+
+
+async def lock_automation_rule_cap(session: AsyncSession, tenant_id: str) -> None:
+    """Take a transaction-scoped, PER-TENANT advisory lock before the rule-cap COUNT.
+
+    Closes a TOCTOU race: concurrent `POST /v1/automation/rules` requests for the SAME
+    tenant, with DISTINCT rule names (so UNIQUE(tenant_id, name) does not serialise them),
+    could otherwise both COUNT before either INSERTs, racing past
+    ORCH_AUTOMATION_MAX_RULES_PER_TENANT. Locking PER TENANT (via `hashtext(tenant_id)`,
+    not a single fixed key) means concurrent creates for DIFFERENT tenants never contend
+    with each other. The caller MUST call this INSIDE the same transaction as the
+    subsequent COUNT + INSERT (the lock auto-releases at COMMIT/ROLLBACK) — never wrapped
+    in its own `session.begin()` (the tenant session already autobegins).
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:ns, hashtext(:tenant_id))"),
+        {"ns": _AUTOMATION_RULE_CAP_LOCK_NAMESPACE, "tenant_id": tenant_id},
+    )
+
+
+async def count_automation_rules(session: AsyncSession) -> int:
+    """Count this tenant's automation_rules rows (tenant session, RLS-scoped).
+
+    Used at rule-creation time to enforce the per-tenant cap
+    (ORCH_AUTOMATION_MAX_RULES_PER_TENANT) BEFORE the insert — exceeding it is a 422
+    `rule_limit_exceeded`, never a 5xx. The caller takes `lock_automation_rule_cap` in the
+    SAME transaction immediately before calling this, so a concurrent creator for the same
+    tenant can never COUNT a stale value and race past the cap (TOCTOU fix).
+    """
+    result = await session.execute(text("SELECT count(*) FROM automation_rules"))
+    return int(result.scalar_one())
+
+
+async def get_automation_rule(session: AsyncSession, rule_id: str) -> dict[str, Any] | None:
+    """Return one automation_rules row as a dict, or None (tenant session, RLS-scoped).
+
+    RLS makes another tenant's row invisible here (a 404, never a 403, at the router).
+    """
+    from orchestrator.persistence.models.automation_rule import AutomationRule
+
+    result = await session.execute(select(AutomationRule).where(AutomationRule.id == rule_id))
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    return {c.name: getattr(row, c.name) for c in AutomationRule.__table__.columns}
+
+
+async def list_automation_rules(
+    session: AsyncSession,
+    *,
+    limit: int,
+    cursor: tuple[object, str] | None,
+) -> tuple[list[dict[str, Any]], tuple[object, str] | None]:
+    """Cursor-paginated read of this tenant's automation_rules (tenant session, RLS-scoped).
+
+    Mirrors list_dead_letters' composite (created_at, id) cursor discipline: `cursor` is
+    the exclusive lower bound on that composite sort key; one extra row (limit+1) is
+    fetched to compute the next cursor without a second query.
+    """
+    conditions: list[str] = []
+    params: dict[str, Any] = {}
+    if cursor is not None:
+        c_created, c_id = cursor
+        conditions.append("(created_at, id) > (CAST(:c_created AS timestamptz), :c_id)")
+        params["c_created"] = c_created
+        params["c_id"] = c_id
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    columns = ", ".join(_AUTOMATION_RULE_COLUMNS)
+    params["lim"] = limit + 1
+    # avoid-sqlalchemy-text false positive: `columns`/`where` are built from the constant
+    # _AUTOMATION_RULE_COLUMNS tuple + literal predicate fragments; every VALUE is bound.
+    # nosemgrep: avoid-sqlalchemy-text
+    statement = text(
+        f"SELECT {columns} FROM automation_rules{where} "  # noqa: S608
+        "ORDER BY created_at ASC, id ASC LIMIT :lim"
+    )
+    result = await session.execute(statement, params)
+    rows = result.mappings().all()
+    next_cursor: tuple[object, str] | None = None
+    if len(rows) > limit:
+        last = rows[limit - 1]
+        next_cursor = (last["created_at"], last["id"])
+        rows = rows[:limit]
+    projected = [{column: row[column] for column in _AUTOMATION_RULE_COLUMNS} for row in rows]
+    return projected, next_cursor
+
+
+async def update_automation_rule_enabled(
+    session: AsyncSession, *, rule_id: str, enabled: bool
+) -> int:
+    """UPDATE one automation_rules row's `enabled` flag (tenant session, RLS-scoped).
+
+    Returns rowcount (0 -> the router 404s: unknown id or another tenant's row, RLS-hidden).
+    Caller commits. `updated_at` is always stamped.
+    """
+    from sqlalchemy import update
+
+    from orchestrator.persistence.models.automation_rule import AutomationRule
+
+    result = await session.execute(
+        update(AutomationRule)
+        .where(AutomationRule.id == rule_id)
+        .values(enabled=enabled, updated_at=datetime.now(timezone.utc))
+    )
+    return result.rowcount
+
+
+async def delete_automation_rule(session: AsyncSession, rule_id: str) -> int:
+    """DELETE one automation_rules row (tenant session, RLS-scoped). Returns rowcount.
+
+    Caller commits. A rowcount of 0 -> the router 404s (unknown id or RLS-hidden).
+    """
+    from sqlalchemy import delete
+
+    from orchestrator.persistence.models.automation_rule import AutomationRule
+
+    result = await session.execute(delete(AutomationRule).where(AutomationRule.id == rule_id))
+    return result.rowcount
+
+
+async def list_enabled_automation_rules(
+    session: AsyncSession, *, tenant_id: str, event_type: str
+) -> list[dict[str, Any]]:
+    """Return this tenant's ENABLED automation_rules matching *event_type* (tenant session,
+    RLS-scoped).
+
+    tenant_id is applied as an explicit, REDUNDANT-with-RLS filter (mirrors list_events'
+    identical precedent: harmless, since RLS already scopes the session to this tenant).
+    Bounded by the per-tenant rule cap already enforced at creation time
+    (ORCH_AUTOMATION_MAX_RULES_PER_TENANT), so this is never an unbounded per-event scan.
+    """
+    from orchestrator.persistence.models.automation_rule import AutomationRule
+
+    result = await session.execute(
+        select(AutomationRule).where(
+            AutomationRule.tenant_id == tenant_id,
+            AutomationRule.enabled.is_(True),
+            AutomationRule.trigger_event_type == event_type,
+        )
+    )
+    return [
+        {c.name: getattr(row, c.name) for c in AutomationRule.__table__.columns}
+        for row in result.scalars()
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# Automation-executions read (O-011, ADR-0011) — tenant session, RLS-scoped SELECT.
+# --------------------------------------------------------------------------- #
+
+_AUTOMATION_EXECUTION_COLUMNS = (
+    "rule_id",
+    "tenant_id",
+    "triggering_event_id",
+    "action_type",
+    "disposition",
+    "error_reason",
+    "created_at",
+)
+
+
+async def list_automation_executions(
+    session: AsyncSession,
+    *,
+    limit: int,
+    cursor: int | None,
+) -> tuple[list[dict[str, Any]], int | None]:
+    """Cursor-paginated, tenant-scoped read of automation_executions (tenant session).
+
+    automation_executions carries RLS SELECT-scoping (unlike relay/identity's chains,
+    which have none) — this read runs on get_tenant_session so RLS structurally scopes it
+    to the caller's own tenant. `cursor` is the exclusive lower bound on sequence_number;
+    one extra row (limit+1) is fetched to compute the next cursor without a second query.
+    """
+    conditions: list[str] = []
+    params: dict[str, Any] = {}
+    if cursor is not None:
+        conditions.append("sequence_number > :cursor")
+        params["cursor"] = cursor
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    columns = ", ".join(_AUTOMATION_EXECUTION_COLUMNS)
+    params["lim"] = limit + 1
+    # avoid-sqlalchemy-text false positive: `columns`/`where` are built from the constant
+    # _AUTOMATION_EXECUTION_COLUMNS tuple + literal predicate fragments; every VALUE is bound.
+    # nosemgrep: avoid-sqlalchemy-text
+    statement = text(
+        f"SELECT {columns}, sequence_number FROM automation_executions{where} "  # noqa: S608
+        "ORDER BY sequence_number ASC LIMIT :lim"
+    )
+    result = await session.execute(statement, params)
+    rows = result.mappings().all()
+    next_cursor: int | None = None
+    if len(rows) > limit:
+        next_cursor = rows[limit - 1]["sequence_number"]
+        rows = rows[:limit]
+    projected = [{column: row[column] for column in _AUTOMATION_EXECUTION_COLUMNS} for row in rows]
+    return projected, next_cursor
+
+
 async def list_recent_distributions_admin(
     session: AsyncSession, *, limit: int
 ) -> list[dict[str, Any]]:

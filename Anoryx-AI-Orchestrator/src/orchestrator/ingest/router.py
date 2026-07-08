@@ -7,6 +7,9 @@ Boundary stages (synchronous), then the in-process pipeline:
   4. Run the pipeline → 202 {status: accepted, event_id}. A pipeline-stage failure is an
      internal reject-to-DLQ disposition (still 202 — the envelope was durably recorded as
      a DLQ entry); the contract defines no dead-lettered client status.
+  5. O-011: on a genuinely fresh ACCEPTED disposition (never DEDUPED or DEAD_LETTERED),
+     schedule `automation.engine.evaluate_and_execute` as a FastAPI BackgroundTask — it
+     is a no-op unless ORCH_AUTOMATION_ENABLED is set (default off).
 
 Errors below the boundary (e.g. a DB outage during the pipeline) are NOT swallowed — they
 propagate to the app's fail-safe handler (5xx BLOCK). A non-durably-recorded event is
@@ -19,12 +22,14 @@ import json
 import time
 import uuid
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 
+from orchestrator.automation.engine import evaluate_and_execute
 from orchestrator.boundary import contains_nul
 from orchestrator.config import IngestSettings
 from orchestrator.hmac_verify import HmacOutcome, verify_ingest_signature
+from orchestrator.pipeline import reasons
 from orchestrator.pipeline.ingest_pipeline import process_envelope
 from orchestrator.schema_validation import envelope_structure_errors
 
@@ -47,7 +52,7 @@ def _error(status: int, code: str, message: str, request_id: str) -> JSONRespons
 
 
 @router.post("/v1/ingest/events")
-async def ingest_event(request: Request) -> JSONResponse:
+async def ingest_event(request: Request, background: BackgroundTasks) -> JSONResponse:
     settings: IngestSettings = request.app.state.ingest_settings
     request_id = _request_id()
 
@@ -89,6 +94,25 @@ async def ingest_event(request: Request) -> JSONResponse:
     #    here propagates to the fail-safe handler (5xx) — never a 202 for a non-recorded
     #    event.
     result = await process_envelope(envelope, settings=settings)
+
+    # 5. O-011: schedule the automation-rules evaluation ONLY for a genuinely newly
+    #    accepted event — never for DEDUPED or DEAD_LETTERED (a duplicate or a rejected
+    #    envelope must never trigger an automation rule). automation_settings.enabled
+    #    (default False) is re-checked inside the engine itself; scheduling the task is
+    #    cheap and uniform regardless.
+    if result.disposition == reasons.ACCEPTED:
+        payload = envelope.get("payload") or {}
+        background.add_task(
+            evaluate_and_execute,
+            tenant_id=payload.get("tenant_id"),
+            event_id=result.event_id,
+            event_type=envelope["event_type"],
+            source_product=settings.ingest_peer_source_product,
+            payload=payload,
+            automation_settings=request.app.state.automation_settings,
+            distribution_settings=request.app.state.distribution_settings,
+        )
+
     return JSONResponse(
         status_code=202,
         content={"status": "accepted", "event_id": result.event_id},

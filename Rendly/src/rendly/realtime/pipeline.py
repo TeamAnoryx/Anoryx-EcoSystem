@@ -17,17 +17,18 @@ THE SEND PIPELINE (FORK D — the seam is strictly BEFORE persist + fan-out):
      in ``inspection_audit_log`` (``_record_inspection_audit``), the administrative-oversight
      trail for a send that ``messages`` structurally cannot show (ADR-0008).
 
-THE HUDDLE/SIGNALING SURFACE (R-007, ADR-0007): LIVE state is ephemeral, single-instance, NOT
-persisted (see ``realtime/huddle.py``). ``huddle:initiate`` gates STARTING a huddle
-(``huddle.invite``) and fetching ICE config; a caller who is not that huddle's participant is
-denied continuing it (``signal.send`` / ``huddle.hangup``) via
-``HuddleManager.get(...).peer_of(...)`` — no separate scope check, because holding a valid
-``huddle_id`` the manager recognizes for THIS user already proves participation (it was minted
-server-side and handed only to the two peers). huddle MEDIA never rides this pipeline — only
-signaling metadata (SDP/ICE) does, and it is never content-inspected (R-001 D4 honesty
-boundary). R-009: the terminal ``ended`` transition (``handle_huddle_hangup`` below, and the
-disconnect-triggered end in ``realtime/ws.py``) additionally persists a hash-chained session
-record via ``archive_ended_huddle_best_effort`` — best-effort, never blocking the broadcast.
+THE HUDDLE/SIGNALING SURFACE (R-007, generalized to 2-8 participants by R-011/ADR-0011): LIVE
+state is ephemeral, single-instance, NOT persisted (see ``realtime/huddle.py``). ``huddle:initiate``
+gates STARTING a huddle (``huddle.invite``) and fetching ICE config; a caller who is not that
+huddle's participant is denied continuing it (``signal.send`` / ``huddle.hangup``) via
+``_get_participant_huddle`` — no separate scope check, because holding a valid ``huddle_id`` the
+manager recognizes for THIS user already proves participation (it was minted server-side and
+handed only to invited participants). huddle MEDIA never rides this pipeline — only signaling
+metadata (SDP/ICE) does, and it is never content-inspected (R-001 D4 honesty boundary); a group
+huddle is full-mesh P2P, never an SFU. R-009: a terminal ``ended`` transition (``leave_huddle``
+below, called from ``handle_huddle_hangup`` AND the disconnect-triggered cleanup in
+``realtime/ws.py``) additionally persists a hash-chained session record via
+``archive_ended_huddle_best_effort`` — best-effort, never blocking the broadcast.
 """
 
 from __future__ import annotations
@@ -334,7 +335,7 @@ async def handle_presence_set(conn: Connection, data: dict, ctx: RuntimeContext)
         await other.send(update)
 
 
-# --- huddle.invite (start a 1-on-1 huddle; ringing/busy fan-out) -----------------------
+# --- huddle.invite (start a huddle, 2-8 participants; ringing/busy fan-out, R-011) ------
 
 
 async def handle_huddle_invite(conn: Connection, data: dict, ctx: RuntimeContext) -> None:
@@ -350,47 +351,63 @@ async def handle_huddle_invite(conn: Connection, data: dict, ctx: RuntimeContext
         await conn.send(build_error(error_code="unauthorized", request_id=new_request_id()))
         return
     tenant_id = conn.tenant_id
-    peer_user_id = frame.peer_user_id
-    if peer_user_id == conn.user_id:
-        # Structurally 1-on-1 with exactly one OTHER peer — self-invite is a malformed request.
+    # ADR-0011 Fork A: peer_user_id + optional participant_ids, checked in THIS order (the
+    # FIRST failing invitee in this order determines the caller's single reply, Fork E).
+    invitee_order = [frame.peer_user_id, *(frame.participant_ids or [])]
+    if conn.user_id in invitee_order or len(set(invitee_order)) != len(invitee_order):
+        # Self-invite, or a duplicate invitee id, is a malformed request — not a busy/unavailable
+        # outcome (there is no ambiguity to resolve non-oracle-style here).
         await conn.send(build_error(error_code="invalid_message", request_id=new_request_id()))
         return
 
-    peer_conns = ctx.registry.user_connections(tenant_id, peer_user_id)
-    if not peer_conns:
-        # No live connection for this (tenant, user) -> cannot ring them. Fail-closed and
-        # non-oracle: this is indistinguishable from "peer_user_id does not exist in this
-        # tenant" (no separate DB lookup is made), matching the REST 404 no-existence-oracle
-        # posture elsewhere in R-006.
-        await conn.send(build_error(error_code="huddle_unavailable", request_id=new_request_id()))
-        return
+    for invitee in invitee_order:
+        if not ctx.registry.user_connections(tenant_id, invitee):
+            # No live connection for this (tenant, user) -> cannot ring them. Fail-closed and
+            # non-oracle: this is indistinguishable from "invitee does not exist in this
+            # tenant" (no separate DB lookup is made), matching the REST 404 no-existence-oracle
+            # posture elsewhere in R-006. The ErrorFrame carries no invitee identity either.
+            await conn.send(
+                build_error(error_code="huddle_unavailable", request_id=new_request_id())
+            )
+            return
 
-    if ctx.huddles.active_huddle_id(tenant_id, conn.user_id) is not None or (
-        ctx.huddles.active_huddle_id(tenant_id, peer_user_id) is not None
-    ):
-        # Ordinary phone-call semantics: you can't place, or be placed into, a second call
-        # while already ringing/accepted/active in one. Feedback is CALLER-ONLY (a throwaway
-        # huddle_id — nothing is registered) — the busy party is never notified of the attempt.
+    # Ordinary phone-call semantics: you can't place, or be placed into, a second call while
+    # already ringing/accepted/active in one — checked for the caller first (mirrors the
+    # original 1-on-1 `or` combination byte-for-byte for a single invitee), then per invitee in
+    # order. Feedback is CALLER-ONLY (a throwaway huddle_id — nothing is registered); a busy
+    # party is never notified of the attempt.
+    if ctx.huddles.active_huddle_id(tenant_id, conn.user_id) is not None:
         await conn.send(
             build_huddle_update(
                 huddle_id=new_huddle_id(),
                 tenant_id=tenant_id,
-                peer_user_id=peer_user_id,
+                participant_ids=[frame.peer_user_id],
                 state=HuddleState.BUSY.value,
             )
         )
         return
+    for invitee in invitee_order:
+        if ctx.huddles.active_huddle_id(tenant_id, invitee) is not None:
+            await conn.send(
+                build_huddle_update(
+                    huddle_id=new_huddle_id(),
+                    tenant_id=tenant_id,
+                    participant_ids=[invitee],
+                    state=HuddleState.BUSY.value,
+                )
+            )
+            return
 
     huddle = ctx.huddles.start(
         tenant_id=tenant_id,
         caller_id=conn.user_id,
-        callee_id=peer_user_id,
+        participant_ids=invitee_order,
         now=datetime.now(timezone.utc),
     )
-    await _broadcast_huddle_update(ctx, huddle, HuddleState.RINGING)
+    await broadcast_huddle_update(ctx, huddle, HuddleState.RINGING)
 
 
-# --- signal.send (relay WebRTC offer/answer/ICE to the single peer; infer accept/active) -
+# --- signal.send (relay WebRTC offer/answer/ICE; infer accept/active, R-011 N-way routing) -
 
 
 async def handle_signal_send(conn: Connection, data: dict, ctx: RuntimeContext) -> None:
@@ -399,13 +416,29 @@ async def handle_signal_send(conn: Connection, data: dict, ctx: RuntimeContext) 
     except Exception:  # noqa: BLE001
         await conn.send(build_error(error_code="invalid_message", request_id=new_request_id()))
         return
-    huddle, peer_id = _authorized_huddle(ctx, conn, frame.huddle_id)
-    if huddle is None or peer_id is None:
+    huddle = _get_participant_huddle(ctx, conn, frame.huddle_id)
+    if huddle is None:
         await conn.send(build_error(error_code="huddle_unavailable", request_id=new_request_id()))
         return
 
+    if frame.to_user_id is None:
+        # Implicit single peer — unchanged 1-on-1 behavior. Ambiguous (and rejected) for a
+        # session with more than 2 live participants (ADR-0011 Fork A: to_user_id is required in
+        # practice for 3+, since full-mesh WebRTC needs a distinct exchange PER PAIR).
+        target = huddle.peer_of(conn.user_id)
+        if target is None:
+            await conn.send(build_error(error_code="invalid_message", request_id=new_request_id()))
+            return
+    else:
+        target = frame.to_user_id
+        if target == conn.user_id or target not in huddle.live_ids:
+            await conn.send(
+                build_error(error_code="huddle_unavailable", request_id=new_request_id())
+            )
+            return
+
     # Relay FIRST (the direct effect of this frame), THEN announce any state transition — so the
-    # peer's SDP/ICE payload is never held up behind the (equally informative but secondary)
+    # target's SDP/ICE payload is never held up behind the (equally informative but secondary)
     # huddle.update broadcast.
     relay = build_signal_relay(
         tenant_id=conn.tenant_id,
@@ -413,21 +446,28 @@ async def handle_signal_send(conn: Connection, data: dict, ctx: RuntimeContext) 
         from_user_id=conn.user_id,
         signal=frame.signal,
     )
-    for peer_conn in ctx.registry.user_connections(conn.tenant_id, peer_id):
+    for peer_conn in ctx.registry.user_connections(conn.tenant_id, target):
         await peer_conn.send(relay)
 
-    # Signaling-liveness heuristic (see realtime/huddle.py honesty boundary): the CALLEE's first
-    # signal after `ringing` is treated as their accept; the CALLER's first signal after
-    # `accepted` is treated as the session going active. Neither observes real ICE/DTLS state.
-    if huddle.state is HuddleState.RINGING and conn.user_id == huddle.callee_id:
-        ctx.huddles.transition(huddle, HuddleState.ACCEPTED)
-        await _broadcast_huddle_update(ctx, huddle, HuddleState.ACCEPTED)
-    elif huddle.state is HuddleState.ACCEPTED and conn.user_id == huddle.caller_id:
+    # Signaling-liveness heuristic (see realtime/huddle.py honesty boundary). Exactly-2-participant
+    # session: the CALLEE's first signal after `ringing` is treated as their accept; the CALLER's
+    # first signal after `accepted` is treated as the session going active — byte-for-byte the
+    # ADR-0007 behavior. 3+-participant session: `accepted` is skipped entirely (there is no
+    # single bilateral "the callee accepted" moment to key off) — ANY invitee's first signal
+    # after `ringing` transitions the whole session straight to `active` (ADR-0011 Fork C).
+    if len(huddle.live_ids) == 2:
+        if huddle.state is HuddleState.RINGING and conn.user_id == huddle.callee_id:
+            ctx.huddles.transition(huddle, HuddleState.ACCEPTED)
+            await broadcast_huddle_update(ctx, huddle, HuddleState.ACCEPTED)
+        elif huddle.state is HuddleState.ACCEPTED and conn.user_id == huddle.caller_id:
+            ctx.huddles.transition(huddle, HuddleState.ACTIVE)
+            await broadcast_huddle_update(ctx, huddle, HuddleState.ACTIVE)
+    elif huddle.state is HuddleState.RINGING:
         ctx.huddles.transition(huddle, HuddleState.ACTIVE)
-        await _broadcast_huddle_update(ctx, huddle, HuddleState.ACTIVE)
+        await broadcast_huddle_update(ctx, huddle, HuddleState.ACTIVE)
 
 
-# --- huddle.hangup (end or decline the huddle; terminal, releases it from the manager) -
+# --- huddle.hangup (leave, decline, or end the huddle, R-011 leave-vs-end) -------------
 
 
 async def handle_huddle_hangup(conn: Connection, data: dict, ctx: RuntimeContext) -> None:
@@ -436,44 +476,46 @@ async def handle_huddle_hangup(conn: Connection, data: dict, ctx: RuntimeContext
     except Exception:  # noqa: BLE001
         await conn.send(build_error(error_code="invalid_message", request_id=new_request_id()))
         return
-    huddle, peer_id = _authorized_huddle(ctx, conn, frame.huddle_id)
-    if huddle is None or peer_id is None:
+    huddle = _get_participant_huddle(ctx, conn, frame.huddle_id)
+    if huddle is None:
         await conn.send(build_error(error_code="huddle_unavailable", request_id=new_request_id()))
         return
 
-    # The callee hanging up a still-ringing invite is a DECLINE; every other hangup (the caller
-    # retracting a ring, or either side leaving an accepted/active session) is an END.
-    if huddle.state is HuddleState.RINGING and conn.user_id == huddle.callee_id:
-        end_state = HuddleState.DECLINED
-    else:
-        end_state = HuddleState.ENDED
-    archive = None
-    if end_state is HuddleState.ENDED:
-        archive = await archive_ended_huddle_best_effort(
-            huddle, ended_at=datetime.now(timezone.utc)
-        )
-    ctx.huddles.transition(huddle, end_state)
-    await _broadcast_huddle_update(ctx, huddle, end_state, archive=archive)
+    # The callee hanging up a still-ringing exactly-2-participant session is a DECLINE; every
+    # other hangup (the caller retracting a ring, or any participant leaving an
+    # accepted/active/still-ringing session) is a leave-or-end (see leave_huddle).
+    decline = huddle.state is HuddleState.RINGING and conn.user_id == huddle.callee_id
+    resulting_state, archive, notify_ids, id_source = await leave_huddle(
+        ctx, huddle, conn.user_id, decline=decline
+    )
+    await broadcast_huddle_update(
+        ctx, huddle, resulting_state, notify_ids=notify_ids, id_source=id_source, archive=archive
+    )
 
 
 # --- huddle helpers ----------------------------------------------------------------------
 
 
 async def archive_ended_huddle_best_effort(
-    huddle: Huddle, *, ended_at: datetime
+    huddle: Huddle, *, participant_ids: frozenset[str], ended_at: datetime
 ) -> HuddleArchive | None:
     """Persist the R-009 session record for an ENDED huddle. Best-effort: never raises.
 
     Called from the ONE place a huddle transitions to ``ended`` on the live path
-    (``handle_huddle_hangup`` above) AND from ``ws.py``'s disconnect-triggered end — mirrors
-    ``_record_inspection_audit``'s posture: the huddle has ALREADY ended from the two peers'
-    perspective (signaling/media already stopped) by the time this runs, so a DB failure here
-    must not block or alter the ``ended`` broadcast. A failure degrades to no ``archival`` field
-    on that broadcast (``build_huddle_update``) rather than losing the ``ended`` notice itself.
+    (``leave_huddle`` below, from ``handle_huddle_hangup``) AND from ``ws.py``'s
+    disconnect-triggered cleanup — mirrors ``_record_inspection_audit``'s posture: the huddle
+    has ALREADY ended from every participant's perspective (signaling/media already stopped) by
+    the time this runs, so a DB failure here must not block or alter the ``ended`` broadcast. A
+    failure degrades to no ``archival`` field on that broadcast (``build_huddle_update``) rather
+    than losing the ``ended`` notice itself.
+
+    ``participant_ids`` is ``huddle.roster`` — the FULL set of everyone EVER invited into this
+    session (R-011, ADR-0011 Fork F/G), not just whoever is still live at the moment it ends —
+    includes the caller and every invitee, whether or not they left earlier or triggered the end.
 
     NOT itself shielded from cancellation — the disconnect-triggered caller
     (``realtime/ws.py``) wraps its ENTIRE ended-huddle notification (this call AND the
-    subsequent peer send) in ``anyio.CancelScope(shield=True)``; see that module for why. The
+    subsequent peer sends) in ``anyio.CancelScope(shield=True)``; see that module for why. The
     hangup-triggered caller runs in an uncancelled context and needs no shield either way.
     """
     try:
@@ -483,7 +525,7 @@ async def archive_ended_huddle_best_effort(
                 tenant_id=huddle.tenant_id,
                 huddle_id=huddle.huddle_id,
                 caller_id=huddle.caller_id,
-                callee_id=huddle.callee_id,
+                participant_ids=participant_ids,
                 created_at=huddle.created_at,
                 ended_at=ended_at,
             )
@@ -493,44 +535,86 @@ async def archive_ended_huddle_best_effort(
         return None
 
 
-def _authorized_huddle(
-    ctx: RuntimeContext, conn: Connection, huddle_id: str
-) -> tuple[Huddle | None, str | None]:
+def _get_participant_huddle(ctx: RuntimeContext, conn: Connection, huddle_id: str) -> Huddle | None:
     """Resolve ``huddle_id`` for this connection's tenant + confirm it is a live participant.
 
     Holding a ``huddle_id`` the manager recognizes for THIS (tenant, user) pair is itself the
-    authorization — huddle ids are server-minted and handed only to the two peers (``start`` /
-    the ringing fan-out), so there is no separate scope check here (mirrors the channel-authz
-    seam's fail-closed "not a participant -> deny", but the "membership" is the manager's live
-    state, not a DB row). A terminal huddle is already released from the manager, so re-acting on
-    it (e.g. a duplicate hangup) resolves the same as an unknown id — idempotently non-oracle.
+    authorization — huddle ids are server-minted and handed only to invited participants
+    (``start`` / the ringing fan-out), so there is no separate scope check here (mirrors the
+    channel-authz seam's fail-closed "not a participant -> deny", but the "membership" is the
+    manager's live state, not a DB row). A terminal huddle is already released from the manager,
+    so re-acting on it (e.g. a duplicate hangup) resolves the same as an unknown id —
+    idempotently non-oracle.
     """
     huddle = ctx.huddles.get(conn.tenant_id, huddle_id)
-    if huddle is None:
-        return None, None
-    peer_id = huddle.peer_of(conn.user_id)
-    if peer_id is None:
-        return None, None
-    return huddle, peer_id
+    if huddle is None or conn.user_id not in huddle.live_ids:
+        return None
+    return huddle
 
 
-async def _broadcast_huddle_update(
-    ctx: RuntimeContext, huddle: Huddle, state: HuddleState, *, archive: HuddleArchive | None = None
-) -> None:
-    """Send huddle.update to EVERY live connection of BOTH participants.
+async def leave_huddle(
+    ctx: RuntimeContext, huddle: Huddle, leaver_id: str, *, decline: bool = False
+) -> tuple[HuddleState, HuddleArchive | None, frozenset[str], frozenset[str]]:
+    """Remove ``leaver_id`` from ``huddle`` (ADR-0011 Fork D: the ONE leave-vs-end rule shared by
+    ``handle_huddle_hangup`` and ``realtime/ws.py``'s disconnect-triggered cleanup).
 
-    ``peer_user_id`` on each recipient's frame is relative to THAT recipient (mirrors
-    ``typing.update``/``presence.update`` — the field always identifies "the other party"), so
-    the caller's own sockets and the callee's own sockets converge on the same session state.
+    If 2+ participants remain after the removal, the session STAYS in its current state (no new
+    state value — Fork D reuses ``ringing``/``active`` exactly as-is) and only the REMAINING
+    participants are notified, with a SHRUNK ``participant_ids``. If <=1 participant would
+    remain, the whole session ends (``declined`` iff ``decline=True`` — an exactly-2-participant
+    still-ringing callee hangup; ``ended`` otherwise, archived via
+    ``archive_ended_huddle_best_effort`` using ``huddle.roster`` — the FULL historical
+    participant list, not just the 1-2 people left at this final hangup, Fork F) and EVERY
+    participant who was live just before this removal (the leaver included, mirroring the
+    original symmetric 1-on-1 notify) is notified.
+
+    Returns ``(resulting_state, archive, notify_ids, id_source)`` for
+    ``broadcast_huddle_update`` — mutates ``ctx.huddles`` state but sends no frames itself.
     """
-    for user_id, peer_id in (
-        (huddle.caller_id, huddle.callee_id),
-        (huddle.callee_id, huddle.caller_id),
-    ):
+    pre_ids = ctx.huddles.remove_participant(huddle, leaver_id)
+    post_ids = huddle.live_ids
+    if len(post_ids) > 1:
+        return huddle.state, None, post_ids, post_ids
+
+    resulting_state = HuddleState.DECLINED if decline else HuddleState.ENDED
+    archive = None
+    if resulting_state is HuddleState.ENDED:
+        archive = await archive_ended_huddle_best_effort(
+            huddle, participant_ids=huddle.roster, ended_at=datetime.now(timezone.utc)
+        )
+    ctx.huddles.transition(huddle, resulting_state)
+    return resulting_state, archive, pre_ids, pre_ids
+
+
+async def broadcast_huddle_update(
+    ctx: RuntimeContext,
+    huddle: Huddle,
+    state: HuddleState,
+    *,
+    notify_ids: frozenset[str] | None = None,
+    id_source: frozenset[str] | None = None,
+    archive: HuddleArchive | None = None,
+) -> None:
+    """Send huddle.update to every live connection of every id in ``notify_ids`` (default: every
+    CURRENTLY live participant — the usual ringing/accepted/active fan-out, unchanged size).
+
+    ``participant_ids`` on each recipient's frame is computed from ``id_source`` relative to
+    THAT recipient (mirrors ``typing.update``/``presence.update`` — the field always identifies
+    "the other parties"), so every notified socket converges on the same session view.
+    ``notify_ids``/``id_source`` are split (R-011, ``leave_huddle``) so a terminal broadcast can
+    notify the PRE-removal set (symmetric with the departed participant) while a non-terminal
+    shrink notifies only the POST-removal survivors with the new, smaller ``participant_ids``.
+    """
+    targets = notify_ids if notify_ids is not None else huddle.live_ids
+    source = id_source if id_source is not None else targets
+    for user_id in targets:
+        participant_ids = sorted(source - {user_id})
+        if not participant_ids:  # pragma: no cover - defensive; every real call keeps >=1
+            continue
         frame = build_huddle_update(
             huddle_id=huddle.huddle_id,
             tenant_id=huddle.tenant_id,
-            peer_user_id=peer_id,
+            participant_ids=participant_ids,
             state=state.value,
             archive=archive,
         )

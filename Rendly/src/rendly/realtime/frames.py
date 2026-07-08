@@ -114,11 +114,15 @@ _MAX_CANDIDATE_LEN = 1024  # Signal.ice-candidate.candidate maxLength
 _SdpStr = Annotated[str, StringConstraints(max_length=_MAX_SDP_LEN)]
 
 
+_ParticipantIds = Annotated[list[_Uuid], Field(min_length=1, max_length=6)]
+
+
 class HuddleInviteFrame(BaseModel):
     model_config = ConfigDict(extra="forbid")
     msg_type: Literal["huddle.invite"]
     peer_user_id: _Uuid
     channel_id: _Uuid | None = None
+    participant_ids: _ParticipantIds | None = None
 
 
 class HuddleHangupFrame(BaseModel):
@@ -158,6 +162,7 @@ class SignalSendFrame(BaseModel):
     model_config = ConfigDict(extra="forbid")
     msg_type: Literal["signal.send"]
     huddle_id: _Uuid
+    to_user_id: _Uuid | None = None
     signal: SignalPayload
 
 
@@ -313,11 +318,15 @@ def build_huddle_update(
     *,
     huddle_id: str,
     tenant_id: str,
-    peer_user_id: str,
+    participant_ids: list[str],
     state: str,
     archive: HuddleArchive | None = None,
 ) -> dict:
-    """The server->client huddle.update frame. ``peer_user_id`` is relative to the RECIPIENT.
+    """The server->client huddle.update frame. ``participant_ids`` lists every OTHER live (or,
+    for a terminal state, just-departed) participant relative to the RECIPIENT (R-011) — 1
+    entry for a 1-on-1 session, up to 7 for a group. ``peer_user_id`` is populated as
+    ``participant_ids[0]`` for backward compatibility (contracts/messages.schema.json
+    HuddleUpdate description).
 
     ``archival`` is attached IFF ``archive`` is given — the caller only supplies it once the
     huddle reaches its durable ``ended`` state AND the DB archive write succeeds
@@ -329,7 +338,8 @@ def build_huddle_update(
         "msg_type": "huddle.update",
         "huddle_id": huddle_id,
         "tenant_id": tenant_id,
-        "peer_user_id": peer_user_id,
+        "peer_user_id": participant_ids[0],
+        "participant_ids": list(participant_ids),
         "state": state,
     }
     if archive is not None:

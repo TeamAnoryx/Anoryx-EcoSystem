@@ -701,7 +701,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] O-008 Deployment ✅ (shipped PR #55)
 - [x] O-009 Centralized Sentinel proxy for all inter-app traffic — Heavy 🏦 ✅ (shipped PR #60, scoped to a governed dispatch+audit seam — see ADR-0009)
 - [x] O-010 Unified identity + cross-platform access mgmt — Heavy 🏦 ✅ (shipped PR #65, scoped to a cross-product identity-event correlation seam — see ADR-0010)
-- [ ] O-011 Event-driven cross-module automation engine — Complex 🏦
+- [x] O-011 Event-driven cross-module automation engine — Complex 🏦 ✅ (shipped PR #67, scoped to a tenant-owned rule-triggered redistribution seam — see ADR-0011)
 - [ ] O-012 Sub-ms agent-to-agent messaging backbone + state-sync — Heavy 🏦
 - [ ] O-013 Global API gateway for third-party interactions — Heavy 🏦
 - [ ] O-014 Command dashboard + automated rollback — Complex 🏦
@@ -747,8 +747,8 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] R-008 Sentinel safety + data sovereignty ✅ (#58)
 - [x] R-009 Immutable comms + video-log archiving ✅ (shipped PR #61)
 - [x] R-010 Deployment ✅ (shipped PR #64)
-- [ ] R-011 Group huddles — Complex 🏦
-- [ ] R-012 AI internal culture matching engine — Complex 🏦
+- [x] R-011 Group huddles ✅ (shipped PR #69)
+- [x] R-012 AI internal culture matching engine ✅ (shipped PR #70 — scoped to a deterministic, opt-in, cross-department suggestion seam; see ADR-0012)
 - [ ] R-013 Integrated virtual event platform — Heavy 🏦
 - [ ] R-014 Encrypted live-streaming infrastructure — Heavy 🏦
 - [ ] R-015 Context-aware comms/transcript summarization — Complex 🏦
