@@ -118,6 +118,15 @@ jobs:
             --cov-fail-under=90 \
             --cov-report=term-missing \
             tests/allocation_admin
+      - name: Dashboards core coverage floor (>=90%)
+        # The D-008 read-only aggregates (store, schemas, service, router) — pure SELECTs
+        # over ledger_entries, no dependency on any other feature's core to re-count here.
+        run: |
+          pytest -q \
+            --cov=delta.dashboards \
+            --cov-fail-under=90 \
+            --cov-report=term-missing \
+            tests/dashboards
 
   # Migration reversibility: upgrade -> downgrade -> upgrade on a fresh DB, then a
   # full drop-schema rebuild (a true fresh build, not a downgrade-base reset).

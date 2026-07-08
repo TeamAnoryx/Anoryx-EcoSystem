@@ -30,7 +30,7 @@ export function LoginForm() {
       });
       if (res.ok) {
         setToken("");
-        router.replace("/allocations");
+        router.replace("/dashboards");
         router.refresh();
         return;
       }

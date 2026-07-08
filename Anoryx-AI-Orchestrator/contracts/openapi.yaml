@@ -176,6 +176,16 @@ tags:
       a payload) and the distribution view never returns the signed policy body. Both are a
       single bounded "recent N" page (no cursor pagination in v1) — a deliberate
       simplification for a triage surface, not an omission.
+  - name: relay
+    description: |
+      O-009 governed relay for inter-app AI traffic: lets Delta/Rendly route their
+      Sentinel-bound requests THROUGH the Orchestrator so the dispatch is centrally
+      registry-gated (only a registered, enabled, healthy Sentinel — O-005), SSRF
+      re-validated immediately before every outbound use, and hash-chain audited.
+      Sentinel's OWN already-shipped gateway (F-004/F-005/F-006) is what actually
+      monitors/redacts/routes the payload once it arrives — this seam performs
+      centralized, governed DISPATCH, not a re-implementation of Sentinel's detectors
+      (ADR-0009 honesty boundary). SINGLE ATTEMPT, NO RETRY, NO STREAMING in v1.
 
 paths:
   /v1/ingest/events:
@@ -1077,6 +1087,87 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /v1/relay/dispatch:
+    post:
+      operationId: relayDispatch
+      tags: [relay]
+      summary: Dispatch one inter-app AI request through a governed, audited Sentinel relay
+      description: |
+        Forwards `payload` as the JSON body of a POST to `target_path` on the registered
+        Sentinel instance `sentinel_id`, after: (1) resolving source_product from the
+        matched relay-source bearer (never from the body); (2) confirming the target is
+        registered, enabled, and HEALTHY (O-005 registry); (3) re-validating its endpoint
+        through the SSRF gate immediately before the outbound call (never trusting a
+        stored endpoint blindly); (4) making exactly ONE outbound attempt (no automatic
+        retry — a relay caller that wants a retry issues a new request, since retrying a
+        non-idempotent LLM call risks duplicate provider cost); and (5) hash-chain
+        auditing the outcome, whether it was FORWARDED (Sentinel answered — any status
+        code Sentinel itself returned), BLOCKED (target unknown/disabled/unhealthy/
+        SSRF-invalid — nothing was sent), or FAILED (a transport-layer error — Sentinel
+        may or may not have received it).
+
+        `target_path` MUST be one of the operator-configured relay-eligible Sentinel
+        paths (ORCH_RELAY_ALLOWED_PATHS; defaults to Sentinel's shipped OpenAI-compatible
+        surface: /v1/chat/completions, /v1/completions, /v1/models) — a CLOSED allowlist,
+        not an open passthrough to any Sentinel route.
+
+        TRANSPARENT RESPONSE: on a forwarded dispatch, this seam returns SENTINEL'S OWN
+        status code and body unchanged (a transparent relay, not normalized to 200) — a
+        non-2xx from Sentinel (e.g. its F-005 hooks blocked the content) is relayed as-is.
+
+        HONESTY BOUNDARIES (ADR-0009): (a) this seam does NOT re-implement Sentinel's
+        PII/injection/secret detection — Sentinel's own gateway does that when the
+        request arrives; (b) NO STREAMING in v1 — a `payload.stream: true` request is
+        rejected (422); (c) NO AUTOMATIC RETRY — every dispatch is a single attempt.
+
+        Auth: mTLS (peer = Delta or Rendly) AND a relay-source bearer (env-configured per
+        source_product) AND the tenant's own Sentinel virtual API key, carried separately
+        (see securitySchemes) and forwarded to Sentinel unchanged.
+      security:
+        - mutualTLS: []
+          relaySourceBearer: []
+          sentinelAuthorizationHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RelayDispatchRequest'
+            examples:
+              chatCompletion:
+                summary: Relay a chat-completions request to a registered Sentinel
+                value:
+                  tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+                  sentinel_id: "sentinel-prod-eu-1"
+                  target_path: "/v1/chat/completions"
+                  payload:
+                    model: "gpt-4o-mini"
+                    messages:
+                      - role: user
+                        content: "Summarize this quarter's board deck."
+      responses:
+        '200':
+          description: |
+            Sentinel answered. This is Sentinel's OWN response, unchanged — the status
+            code documented here is the common case; a real dispatch may return any
+            status Sentinel itself returned (this seam is a transparent relay, not a
+            normalizer).
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Sentinel's raw OpenAI-compatible response body, forwarded unchanged.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/RelayUpstreamError'
+        '503':
+          $ref: '#/components/responses/RelayTargetUnavailable'
+
 components:
 
   securitySchemes:
@@ -1137,6 +1228,27 @@ components:
         contents is DEFERRED to O-006, so a token holder operates across tenants; treat
         the token accordingly until O-006 lands. Issued/rotated by deploy tooling;
         provisioning details are out of scope here.
+
+    relaySourceBearer:
+      type: http
+      scheme: bearer
+      description: |
+        O-009 RELAY SOURCE bearer token (env ORCH_RELAY_SOURCE_TOKENS, keyed by
+        source_product: delta | rendly) authorizing a caller to dispatch inter-app AI
+        traffic through the governed relay. source_product is SERVER-RESOLVED from the
+        matched token — never accepted from the request body. DISTINCT from every other
+        Orchestrator credential (operatorBearer, serviceToken, hmacIngest).
+
+    sentinelAuthorizationHeader:
+      type: apiKey
+      in: header
+      name: X-Sentinel-Authorization
+      description: |
+        The TENANT'S OWN Sentinel virtual API key (the same credential the tenant would
+        present calling Sentinel directly), carried in a header DISTINCT from the relay's
+        own `Authorization` (which authenticates the Delta/Rendly source, not the
+        tenant). Forwarded to Sentinel UNCHANGED as its `Authorization: Bearer <value>` —
+        the Orchestrator never stores, mints, or inspects it (secret hygiene).
 
   parameters:
     IngestTimestamp:
@@ -2103,6 +2215,37 @@ components:
           items:
             $ref: '#/components/schemas/CoordinatedSkippedTarget'
 
+    RelayDispatchRequest:
+      type: object
+      description: |
+        A single inter-app AI request to relay to a registered Sentinel (O-009,
+        ADR-0009). tenant_id is the tenant whose traffic this is (audit attribution);
+        sentinel_id names a registry entry (O-005); target_path MUST be one of the
+        operator-allowlisted Sentinel paths; payload is forwarded as the outbound JSON
+        body (re-serialized, not byte-preserved — there is no signature over it to
+        preserve, unlike the O-004 signed policy record).
+      additionalProperties: false
+      required: [tenant_id, sentinel_id, target_path, payload]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+          maxLength: 64
+        sentinel_id:
+          type: string
+          maxLength: 128
+          example: "sentinel-prod-eu-1"
+        target_path:
+          type: string
+          maxLength: 256
+          description: One of the operator-configured relay-eligible Sentinel paths.
+          example: "/v1/chat/completions"
+        payload:
+          type: object
+          description: |
+            Forwarded as the JSON body of the outbound call. `stream: true` is rejected
+            (422) — streaming relay is not supported in v1.
+
   responses:
     Unauthorized:
       description: |
@@ -2177,4 +2320,35 @@ components:
                 error:
                   code: already_registered
                   message: sentinel_id already registered
+    RelayTargetUnavailable:
+      description: |
+        The target Sentinel is unknown, disabled, unhealthy, or its endpoint fails SSRF
+        re-validation. Nothing was sent — recorded as a `blocked` audit disposition.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            unhealthy:
+              value:
+                error:
+                  code: target_degraded
+                  message: target_degraded
+                  request_id: "req-orch-example-01"
+    RelayUpstreamError:
+      description: |
+        The outbound HTTP call to Sentinel failed at the transport layer (connect error /
+        timeout). Sentinel may or may not have received the request — recorded as a
+        `failed` audit disposition.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            connectError:
+              value:
+                error:
+                  code: connect_error
+                  message: connect_error
+                  request_id: "req-orch-example-01"
                   request_id: "req-o005-registry-example-01"

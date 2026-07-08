@@ -699,7 +699,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] O-006 Persistence consolidation + tenant-scoped read seams ✅ (#47)
 - [x] O-007 Admin API + minimal UI ✅ (shipped PR #51)
 - [x] O-008 Deployment ✅ (shipped PR #55)
-- [ ] O-009 Centralized Sentinel proxy for all inter-app traffic — Heavy 🏦
+- [x] O-009 Centralized Sentinel proxy for all inter-app traffic — Heavy 🏦 ✅ (shipped PR #60, scoped to a governed dispatch+audit seam — see ADR-0009)
 - [ ] O-010 Unified identity + cross-platform access mgmt — Heavy 🏦
 - [ ] O-011 Event-driven cross-module automation engine — Complex 🏦
 - [ ] O-012 Sub-ms agent-to-agent messaging backbone + state-sync — Heavy 🏦
@@ -716,7 +716,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-005 Budget engine (killer-feature half) ✅ (#45)
 - [x] D-006 Kill-switch for unauthorized AI agent txns ✅ (shipped PR #54)
 - [x] D-007 Budget allocation UI ✅ (shipped PR #57)
-- [ ] D-008 Live cost-to-value dashboards (param-driven) — Tricky (12-16h)
+- [x] D-008 Live cost-to-value dashboards (param-driven) ✅ (shipped PR #62)
 - [ ] D-009 Immutable financial-workflow audit trails — Tricky (8-12h) ➕
 - [ ] D-010 Deployment — Easy-Tricky (6-10h)
 - [ ] D-011 Predictive SaaS/cloud budget optimization — Tricky (12-16h) ➕

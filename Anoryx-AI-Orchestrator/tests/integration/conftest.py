@@ -779,7 +779,7 @@ def coordination_settings():
     embedded distribution settings carry the shared SENTINEL_ADMIN_TOKEN so the engine's outbound
     call authenticates to the shim (which checks the same env token).
     """
-    from orchestrator.config import CoordinationSettings, DistributionSettings
+    from orchestrator.config import CoordinationSettings, DistributionSettings, RelaySettings
 
     return CoordinationSettings(
         admin_token="o005-operator-token",  # noqa: S106 - test fake
@@ -797,6 +797,12 @@ def coordination_settings():
             max_attempts=2,
             backoff_seconds=0.0,
             http_timeout_seconds=10.0,
+        ),
+        relay=RelaySettings(
+            source_tokens={"delta": RELAY_SOURCE_TOKEN},
+            allowed_paths=frozenset({RELAY_TARGET_PATH}),
+            http_timeout_seconds=10.0,
+            max_body_bytes=1_048_576,
         ),
     )
 
@@ -849,3 +855,31 @@ def seed_query_token(db_ready):
         return secret
 
     return _seed
+
+
+# =========================================================================== #
+# O-009 governed-relay harness. APPENDED to the O-003/O-004/O-005/O-006 harness above (no
+# edits to it). Adds: a relay gate that FAILS (not skips) under ORCH_REQUIRE_RELAY_E2E=1 so the
+# non-stubbed e2e provably EXECUTES on CI (mirrors coordination_ready/authz_ready); the shared
+# relay-source token + relay-target path + shim chat-token test constants; and a
+# `validate_relay_chain` re-export point (imported directly by the e2e — no wrapper needed).
+# =========================================================================== #
+
+# Test-only fakes — never production secrets.
+RELAY_SOURCE_TOKEN = "o009-relay-delta-token"  # noqa: S105 - test-only fake
+RELAY_TARGET_PATH = "/v1/chat/completions"
+# MUST match _sentinel_shim.create_shim_app's chat_token default (spawn_sentinel_shim/
+# sentinel_shim_server call it with no override).
+SENTINEL_CHAT_TOKEN = "shim-tenant-sentinel-key"  # noqa: S105 - test-only fake
+
+
+@pytest.fixture
+def relay_ready() -> None:
+    """Gate the O-009 relay e2e. Skips when DBs are unreachable — UNLESS
+    ORCH_REQUIRE_RELAY_E2E=1, in which case an unreachable DB FAILS the run (a silent skip
+    can never masquerade as a green relay-mechanism gate on CI)."""
+    require = os.environ.get("ORCH_REQUIRE_RELAY_E2E") == "1"
+    if not _pg_reachable():
+        if require:
+            pytest.fail("ORCH_REQUIRE_RELAY_E2E=1 but the Orchestrator Postgres is unreachable")
+        pytest.skip("Orchestrator Postgres not reachable — relay e2e")
