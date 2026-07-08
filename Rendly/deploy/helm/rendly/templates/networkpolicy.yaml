@@ -1,0 +1,83 @@
+{{- if .Values.networkPolicy.enabled -}}
+# Restrictive-by-default NetworkPolicy. policyTypes lists both Ingress and Egress, so
+# anything NOT explicitly allowed below is DENIED.
+#
+# Simpler than Anoryx-AI-Orchestrator's own chart: Rendly makes NO outbound network call to
+# another ecosystem product — R-008's "Sentinel safety" is fully self-hosted in-process
+# PII/injection/secret detection (rendly.realtime.sentinel_inspector), not a network
+# dependency — so there is no "arbitrary :443 egress to a dynamic peer" rule to carry here,
+# unlike the Orchestrator's registry (ADR-0008 Fork H).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "rendly.fullname" . }}
+  labels:
+    {{- include "rendly.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "rendly.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Same-namespace traffic (e.g. an ingress controller) — http port only. Also covers the
+    # GET /v1/realtime WebSocket upgrade (same port; NetworkPolicy has no HTTP-path
+    # granularity to split it out).
+    - from:
+        - podSelector: {}
+      ports:
+        - port: http
+          protocol: TCP
+    # Prometheus scrape of /metrics + probes from the monitoring namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.monitoringNamespace }}
+      ports:
+        - port: http
+          protocol: TCP
+    {{- if .Values.networkPolicy.ingressCIDRs }}
+    # Restricted external ingress by IP block.
+    - from:
+        {{- range .Values.networkPolicy.ingressCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - port: http
+          protocol: TCP
+    {{- else }}
+    # No CIDRs configured — open ingress on the http port. Clients (browsers/mobile,
+    # possibly outside this namespace/cluster) are not known at chart-render time.
+    - ports:
+        - port: http
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  egress:
+    # DNS resolution.
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- if .Values.postgres.bundled }}
+    # Bundled Postgres (same namespace) — port 5432 only.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "rendly.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    # Operator-supplied egress rules — REQUIRED for external managed Postgres
+    # (bundled=false), or if RENDLY_TURN_URLS points at an external coturn instance.
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

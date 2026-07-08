@@ -115,6 +115,13 @@ def create_app(
         response.headers["X-Request-Id"] = request.state.request_id
         return response
 
+    @app.get("/health", include_in_schema=False)
+    def health() -> dict[str, str]:
+        # No DB/dependency check (R-010, ADR-0010 Fork G) — mirrors the Orchestrator's
+        # single /health probe. A DB-gated /readyz split is a named deferral, not silently
+        # worked around.
+        return {"status": "ok"}
+
     router = APIRouter(prefix="/v1")
 
     @router.post("/auth/token", response_model=TokenResponse)

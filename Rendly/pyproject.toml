@@ -36,6 +36,9 @@ dependencies = [
 
 # The contract suite (R-001), domain suite (R-002), and auth suite (R-003) share one dev extra.
 [project.optional-dependencies]
+# R-010: the ASGI server, kept OUT of core deps (not needed by CI or tests — only the
+# deploy image needs it). Mirrors Anoryx-AI-Orchestrator's own `server` extra (ADR-0008 C1).
+server = ["uvicorn[standard]>=0.30,<1"]
 dev = [
   "jsonschema[format]>=4.22,<5",
   "openapi-spec-validator>=0.7,<0.8",

@@ -1,25 +1,42 @@
 #!/bin/sh
-# Rendly identity persistence container entrypoint (R-004).
+# Rendly container entrypoint (R-004 migrate/provision + R-010 serve, ADR-0010).
 #
-# Ports the proven Sentinel F-010 fix (as Delta D-003 did): a migration that creates the
-# app role passwordless breaks every RLS tenant connection on a fresh `compose up`. This
-# shim runs alembic, then provisions the rendly_app SCRAM password POST-migrate so a fresh
-# DB authenticates. Rendly is sync, so the inline provisioning uses psycopg (not asyncpg).
+# Ports the proven Sentinel F-010 fix (as Delta D-003 and Orchestrator O-008 did): a
+# migration that creates the app role passwordless breaks every RLS tenant connection on a
+# fresh `compose up`. This shim runs alembic, then provisions the rendly_app SCRAM password
+# POST-migrate so a fresh DB authenticates. Rendly is sync, so the inline provisioning uses
+# psycopg (not asyncpg).
+#
+# R-010 adds: reading file-based Docker secrets (mirrors Orchestrator's O-008 entrypoint),
+# and launching uvicorn when no command is supplied — the R-004 migrate-only behavior is
+# preserved for a caller that still wants a one-shot migrate (e.g. `docker run rendly
+# alembic current`, or the K8s migrate Job which passes its own args).
 #
 # Security posture:
-#   - No password is ever in the migration SQL or logged. The plaintext is read from
-#     APP_DATABASE_URL (the same trust boundary as the process env) and only an opaque
-#     SCRAM-SHA-256 verifier is ever sent to the server in ALTER ROLE.
+#   - No password/key is ever in the migration SQL or logged. Secrets are read from mounted
+#     secret files (Compose, /run/secrets/*) or the environment (Kubernetes Secret) — the
+#     escape hatch below: if a var is already set, it is used verbatim and NO assembly
+#     happens for that var.
+#   - Only an opaque SCRAM-SHA-256 verifier is ever sent to the server in ALTER ROLE.
 #
 # POSIX sh (slim base has /bin/sh, not bash).
 set -eu
+
+_read_secret() {
+    if [ -f "$1" ]; then
+        tr -d '\n\r' < "$1"
+    fi
+}
 
 PG_HOST="${POSTGRES_HOST:-postgres}"
 PG_PORT="${POSTGRES_PORT:-5432}"
 PG_USER="${POSTGRES_USER:-rendly}"
 PG_DB="${POSTGRES_DB:-rendly_dev}"
 PG_APP_USER="${RENDLY_APP_USER:-rendly_app}"
-PG_PW="${POSTGRES_PASSWORD:-}"
+# Prefer a mounted file secret (Compose); fall back to POSTGRES_PASSWORD env (Kubernetes
+# injects it via secretKeyRef — kept out of the pod spec).
+PG_PW="$(_read_secret /run/secrets/postgres_password)"
+[ -z "$PG_PW" ] && PG_PW="${POSTGRES_PASSWORD:-}"
 
 # Assemble the two role URLs if not already supplied (k8s/external services may set them
 # verbatim, in which case no assembly happens for that URL).
@@ -34,7 +51,15 @@ if [ -z "${APP_DATABASE_URL:-}" ] && [ -n "$PG_PW" ]; then
 fi
 
 if [ -z "${DATABASE_URL:-}" ]; then
-    echo "rendly-entrypoint: WARNING: DATABASE_URL unset and no POSTGRES_PASSWORD — migrations will fail." >&2
+    echo "rendly-entrypoint: WARNING: DATABASE_URL unset and no postgres password found (file /run/secrets/postgres_password or POSTGRES_PASSWORD env) — migrations/serving will fail to reach Postgres." >&2
+fi
+
+# --- ES256 signing key (RENDLY_JWT_PRIVATE_KEY_PEM) -------------------------- #
+# The single most sensitive value: prefer a mounted file secret; the app itself loads it
+# fail-closed (rendly.auth.keys.load_key_material) if this ends up unset.
+JWT_KEY_PEM="$(_read_secret /run/secrets/rendly_jwt_private_key_pem)"
+if [ -z "${RENDLY_JWT_PRIVATE_KEY_PEM:-}" ] && [ -n "$JWT_KEY_PEM" ]; then
+    export RENDLY_JWT_PRIVATE_KEY_PEM="$JWT_KEY_PEM"
 fi
 
 # --- Migrations (compose convenience; k8s uses a dedicated Job) -------------- #
@@ -93,9 +118,11 @@ PYEOF
 fi
 
 # --- Launch ----------------------------------------------------------------- #
-# R-004 ships no app server (identity persistence is a library + schema). If a command was
-# supplied, exec it; otherwise the migrate/provision work is done — exit cleanly.
+# If a command was supplied (e.g. the migrate-only K8s Job passing `alembic current`, or
+# `docker run rendly sh` for debugging), exec it. Otherwise R-010 launches the served app.
 if [ "$#" -gt 0 ]; then
     exec "$@"
 fi
-echo "rendly-entrypoint: migrations + role provisioning complete"
+
+exec uvicorn rendly.asgi:create_app_from_env --factory \
+    --host 0.0.0.0 --port "${RENDLY_PORT:-8082}" --workers "${RENDLY_WORKERS:-1}"

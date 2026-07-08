@@ -1,0 +1,29 @@
+# Rendly — example values for a LOCAL single-cluster demo (mirrors Anoryx-AI-Orchestrator's
+# own values.example.yaml, ADR-0008, itself mirroring Anoryx-Sentinel's ADR-0027).
+#
+# Copy + adjust, then:
+#   helm install rendly deploy/helm/rendly -n rendly -f my-values.yaml
+#
+# This file contains NO secrets — the sensitive material is delivered as a K8s Secret
+# created out-of-band by deploy/helm/gen-k8s-secret.sh (see NOTES.txt). NEVER commit a
+# values file that contains real secret values.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Local image (built from the repo Dockerfile, then `kind load docker-image`):
+#   docker build -t anoryx-rendly:1.0.0 .
+#   kind load docker-image anoryx-rendly:1.0.0
+# ─────────────────────────────────────────────────────────────────────────────
+
+image:
+  repository: anoryx-rendly
+  tag: "1.0.0"                    # local tag (not the ghcr default)
+  pullPolicy: IfNotPresent         # IfNotPresent so the kind-loaded image is used
+
+# replicaCount already defaults to 1 in values.yaml (single-instance realtime state) —
+# nothing to override here.
+
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false

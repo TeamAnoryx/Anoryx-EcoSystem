@@ -746,7 +746,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] R-007 Low-latency voice/video huddles (1-on-1, no external links) ✅ (#53)
 - [x] R-008 Sentinel safety + data sovereignty ✅ (#58)
 - [x] R-009 Immutable comms + video-log archiving ✅ (shipped PR #61)
-- [ ] R-010 Deployment — Tricky (12-16h)
+- [x] R-010 Deployment ✅ (shipped PR #TBD)
 - [ ] R-011 Group huddles — Complex 🏦
 - [ ] R-012 AI internal culture matching engine — Complex 🏦
 - [ ] R-013 Integrated virtual event platform — Heavy 🏦
