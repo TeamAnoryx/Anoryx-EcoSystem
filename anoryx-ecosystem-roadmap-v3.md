@@ -705,7 +705,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] O-012 Sub-ms agent-to-agent messaging backbone + state-sync — Heavy 🏦 ✅ (shipped PR #74, scoped to an intra-tenant mailbox relay + optimistic-concurrency state store — see ADR-0012)
 - [x] O-013 Global API gateway for third-party interactions — Heavy 🏦 ✅ (shipped PR #75, scoped to an operator-issued third-party API-key credential gating one rate-limited/scope-checked/audited read seam — see ADR-0013)
 - [x] O-014 Command dashboard + automated rollback — Complex 🏦 ✅ (shipped PR #78, scoped to a read-only fleet-health summary + one operator-triggered, O-004-engine-reusing distribution rollback — see ADR-0014)
-- [ ] O-015 Predictive scaling — Complex 🔮
+- [x] O-015 Predictive scaling — Complex 🔮 ✅ (shipped PR #80, scoped to a read-only ingest-traffic current-rate projection + deterministic spike heuristic, no autoscaling action — see ADR-0015)
 
 ## Delta — 28 tasks (12 MVP/MVP+ + 16 vision) — 5 shipped
 
