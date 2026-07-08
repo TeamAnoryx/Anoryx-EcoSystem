@@ -201,11 +201,15 @@ def test_mutualtls_scheme_declared():
     # O-005 adds a dedicated OPERATOR bearer (ORCH_ADMIN_TOKEN), distinct from the peer
     # serviceToken, gating the registry + coordinate seams.
     assert schemes["operatorBearer"]["scheme"] == "bearer"
+    # O-009 adds a dedicated RELAY SOURCE bearer (ORCH_RELAY_SOURCE_TOKENS), distinct from
+    # every other credential, gating the governed-relay dispatch seam.
+    assert schemes["relaySourceBearer"]["scheme"] == "bearer"
 
 
 # Recognised app-layer second factors paired with mutualTLS: hmacIngest (O-003 ingest),
-# serviceToken (O-004 peer distribution), operatorBearer (O-005 operator registry/coordinate).
-_SECOND_FACTORS = {"hmacIngest", "serviceToken", "operatorBearer"}
+# serviceToken (O-004 peer distribution), operatorBearer (O-005 operator registry/coordinate),
+# relaySourceBearer (O-009 governed relay dispatch).
+_SECOND_FACTORS = {"hmacIngest", "serviceToken", "operatorBearer", "relaySourceBearer"}
 
 
 def test_mutualtls_applied_to_every_operation():

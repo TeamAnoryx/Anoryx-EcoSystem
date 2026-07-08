@@ -80,13 +80,59 @@ async def _health_route(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"}, status_code=200)
 
 
+def _make_chat_route(chat_token: str):
+    """Build the O-009 relay-target stand-in route, closed over its expected tenant key.
+
+    UNLIKE the intake route above, this does NOT delegate to any real Sentinel code — Sentinel's
+    real `/v1/chat/completions` (F-001/F-004/F-006, already SHIPPED) requires a live provider
+    adapter + DB-backed virtual-key resolution that is out of scope to stand up in the
+    Orchestrator's own test suite (ADR-0009 honesty boundary: this e2e proves the RELAY
+    mechanism — registry-gated, SSRF-checked, single-attempt, audited dispatch — not Sentinel's
+    own gateway behavior, which has its own dedicated Sentinel-side test suite). It checks a
+    Bearer tenant key (mirroring Sentinel's real virtual-API-key auth: right key -> 200 with a
+    canned OpenAI-compatible body, wrong/missing key -> 401) purely so the e2e can prove the
+    relay forwards the caller-supplied X-Sentinel-Authorization value UNCHANGED and returns
+    Sentinel's real status/body transparently.
+    """
+
+    async def _chat_route(request: Request) -> JSONResponse:
+        header = request.headers.get("authorization", "")
+        presented = header[len(_BEARER_PREFIX) :] if header.startswith(_BEARER_PREFIX) else ""
+        if not presented or not hmac.compare_digest(presented, chat_token):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        body = await request.json()
+        return JSONResponse(
+            {
+                "id": "chatcmpl-shim-test",
+                "object": "chat.completion",
+                "model": body.get("model", "unknown"),
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "shim response"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+            status_code=200,
+        )
+
+    return _chat_route
+
+
 def create_shim_app(
-    intake_path: str = "/admin/policies/intake", health_path: str = "/healthz"
+    intake_path: str = "/admin/policies/intake",
+    health_path: str = "/healthz",
+    *,
+    chat_path: str = "/v1/chat/completions",
+    chat_token: str = "shim-tenant-sentinel-key",  # noqa: S107 - test-only fake
 ) -> Starlette:
-    """Build the TEST Sentinel shim ASGI app: real intake (POST) + a health probe (GET)."""
+    """Build the TEST Sentinel shim ASGI app: real intake (POST), a health probe (GET), and
+    the O-009 relay-target stand-in (POST chat_path, gated by chat_token)."""
     return Starlette(
         routes=[
             Route(intake_path, _intake_route, methods=["POST"]),
             Route(health_path, _health_route, methods=["GET"]),
+            Route(chat_path, _make_chat_route(chat_token), methods=["POST"]),
         ]
     )

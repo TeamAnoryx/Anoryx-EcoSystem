@@ -14,7 +14,7 @@ import uuid
 import asyncpg
 import pytest
 
-from orchestrator.config import CoordinationSettings, DistributionSettings
+from orchestrator.config import CoordinationSettings, DistributionSettings, RelaySettings
 from orchestrator.coordination import registry
 from orchestrator.coordination.endpoint_validation import EndpointValidationError
 from orchestrator.coordination.registry import (
@@ -46,6 +46,12 @@ def _settings(
             max_attempts=2,
             backoff_seconds=0.0,
             http_timeout_seconds=5.0,
+        ),
+        relay=RelaySettings(
+            source_tokens={},
+            allowed_paths=frozenset({"/v1/chat/completions"}),
+            http_timeout_seconds=5.0,
+            max_body_bytes=1_048_576,
         ),
     )
 
