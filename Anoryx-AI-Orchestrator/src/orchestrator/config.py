@@ -657,3 +657,75 @@ def get_coordination_settings() -> CoordinationSettings:
         distribution=get_distribution_settings(),
         relay=get_relay_settings(),
     )
+
+
+# =========================================================================== #
+# Third-party external gateway configuration (O-013, ADR-0013) — ADDITIVE, STANDALONE
+# (not nested in CoordinationSettings — the gateway's key-management endpoints reuse
+# CoordinationSettings.admin_token at the router call site directly, exactly like the
+# admin API (O-007) does, rather than duplicating it here). UNLIKE MessagingSettings,
+# `enabled` IS a master switch here (default False): the third-party read endpoint is the
+# Orchestrator's first surface intended for a credential OTHER than an internal product
+# or tenant service token, so an unconfigured deployment must not silently expose it
+# merely by upgrading. Key issuance/revocation (operator-only, ORCH_ADMIN_TOKEN-gated)
+# is NOT gated by `enabled` — an operator may provision keys ahead of flipping the switch,
+# mirroring how POST /v1/automation/rules works regardless of ORCH_AUTOMATION_ENABLED.
+# =========================================================================== #
+
+#: Default per-key rate limit assigned at issuance when the request omits one.
+DEFAULT_EXTERNAL_GATEWAY_RATE_LIMIT_PER_MINUTE: int = 60
+#: Ceiling an operator may set for a single key's rate limit at issuance.
+DEFAULT_EXTERNAL_GATEWAY_MAX_RATE_LIMIT_PER_MINUTE: int = 6000
+#: Per-tenant cap on total third_party_api_keys rows (bounds unbounded growth on the
+#: shared, non-RLS, operator-global table).
+DEFAULT_EXTERNAL_GATEWAY_MAX_KEYS_PER_TENANT: int = 20
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalGatewaySettings:
+    """Resolved third-party external-gateway configuration (O-013, ADR-0013).
+
+    `enabled` is the master switch (default False — see the module-level comment above).
+    `default_rate_limit_per_minute` seeds a new key's limit when the issuance request
+    omits `rate_limit_per_minute`. `max_rate_limit_per_minute` is the ceiling an operator
+    may configure for any single key. `max_keys_per_tenant` bounds the per-tenant
+    third_party_api_keys row count (enforced at issuance time as a 422
+    `key_limit_exceeded`, never at request time).
+    """
+
+    enabled: bool
+    default_rate_limit_per_minute: int
+    max_rate_limit_per_minute: int
+    max_keys_per_tenant: int
+
+
+def get_external_gateway_settings() -> ExternalGatewaySettings:
+    """Resolve external-gateway settings from the environment (NON-FATAL on absence).
+
+    Env vars:
+      ORCH_EXTERNAL_GATEWAY_ENABLED                      master switch (default false).
+      ORCH_EXTERNAL_GATEWAY_DEFAULT_RATE_LIMIT_PER_MINUTE default per-key rate limit
+                                                          (default 60, >= 1).
+      ORCH_EXTERNAL_GATEWAY_MAX_RATE_LIMIT_PER_MINUTE     per-key rate-limit ceiling
+                                                          (default 6000, >= 1).
+      ORCH_EXTERNAL_GATEWAY_MAX_KEYS_PER_TENANT           per-tenant key-count cap
+                                                          (default 20, >= 1).
+    """
+    return ExternalGatewaySettings(
+        enabled=_env_bool("ORCH_EXTERNAL_GATEWAY_ENABLED"),
+        default_rate_limit_per_minute=_env_int(
+            "ORCH_EXTERNAL_GATEWAY_DEFAULT_RATE_LIMIT_PER_MINUTE",
+            DEFAULT_EXTERNAL_GATEWAY_RATE_LIMIT_PER_MINUTE,
+            minimum=1,
+        ),
+        max_rate_limit_per_minute=_env_int(
+            "ORCH_EXTERNAL_GATEWAY_MAX_RATE_LIMIT_PER_MINUTE",
+            DEFAULT_EXTERNAL_GATEWAY_MAX_RATE_LIMIT_PER_MINUTE,
+            minimum=1,
+        ),
+        max_keys_per_tenant=_env_int(
+            "ORCH_EXTERNAL_GATEWAY_MAX_KEYS_PER_TENANT",
+            DEFAULT_EXTERNAL_GATEWAY_MAX_KEYS_PER_TENANT,
+            minimum=1,
+        ),
+    )

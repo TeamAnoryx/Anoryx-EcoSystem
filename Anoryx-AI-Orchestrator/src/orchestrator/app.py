@@ -20,9 +20,13 @@ relay + shared state store (POST /v1/messaging/messages, GET /v1/messaging/inbox
 PUT + GET /v1/state/{state_key} — O-012, ADR-0012: durable, ordered, poll-based messaging
 and single-Postgres-instance optimistic-concurrency state, NOT the roadmap's literal
 sub-millisecond messaging backbone / global consensus state-sync — see ADR-0012's honesty
-boundaries), plus a health probe. The query/distribution seams derive a per-tenant
-principal (require_tenant_principal); a missing/invalid token -> a uniform 401. mTLS
-termination is O-008.
+boundaries), the third-party external gateway (POST/GET /v1/admin/external-keys,
+POST /v1/admin/external-keys/{key_id}/revoke, GET /v1/external/events — O-013, ADR-0013:
+API-key issuance, rate limiting, scope enforcement, and governance audit for one gated
+read seam, NOT the roadmap's literal global cross-product third-party gateway — see
+ADR-0013's honesty boundaries), plus a health probe. The query/distribution seams derive
+a per-tenant principal (require_tenant_principal); a missing/invalid token -> a uniform
+401. mTLS termination is O-008.
 """
 
 from __future__ import annotations
@@ -38,12 +42,15 @@ from orchestrator.config import (
     get_automation_settings,
     get_coordination_settings,
     get_distribution_settings,
+    get_external_gateway_settings,
     get_identity_settings,
     get_ingest_settings,
     get_messaging_settings,
 )
 from orchestrator.coordination.router import router as coordination_router
 from orchestrator.distribution.router import router as distribution_router
+from orchestrator.external_gateway.auth import ExternalGatewayAuthError
+from orchestrator.external_gateway.router import router as external_gateway_router
 from orchestrator.identity.router import router as identity_router
 from orchestrator.ingest.router import router as ingest_router
 from orchestrator.messaging.router import router as messaging_router
@@ -86,6 +93,12 @@ def create_app() -> FastAPI:
     # require_tenant_principal credential every other tenant-write seam already requires,
     # not new autonomous behavior (ADR-0012).
     app.state.messaging_settings = get_messaging_settings()
+    # Third-party external gateway (O-013) settings resolve NON-FATALLY. `enabled`
+    # DEFAULTS OFF (ORCH_EXTERNAL_GATEWAY_ENABLED) — the gated read is the Orchestrator's
+    # first surface meant for a credential other than an internal product/tenant, so an
+    # unconfigured deployment never exposes it merely by upgrading. Key issuance/
+    # revocation is admin-token-gated regardless of this flag (ADR-0013).
+    app.state.external_gateway_settings = get_external_gateway_settings()
 
     @app.exception_handler(Exception)
     async def _fail_safe_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -134,6 +147,31 @@ def create_app() -> FastAPI:
             headers={"X-Request-Id": request_id},
         )
 
+    @app.exception_handler(ExternalGatewayAuthError)
+    async def _external_gateway_auth_handler(
+        request: Request, exc: ExternalGatewayAuthError
+    ) -> JSONResponse:
+        """Render a third-party API key auth failure as a UNIFORM 401 (O-013, ADR-0013).
+
+        A specific handler for ExternalGatewayAuthError so an auth miss is a clean 401,
+        not the catch-all 503. Absent/malformed header and an unknown key hash are
+        indistinguishable here (no enumeration oracle); the message is generic and
+        PII-free, the request_id is server-generated (never a reflected client
+        X-Request-Id).
+        """
+        request_id = "req-orch-" + uuid.uuid4().hex[:24]
+        return JSONResponse(
+            status_code=401,
+            content={
+                "error": {
+                    "code": "unauthorized",
+                    "message": "a valid third-party API key is required",
+                    "request_id": request_id,
+                }
+            },
+            headers={"X-Request-Id": request_id},
+        )
+
     @app.get("/health", include_in_schema=False)
     async def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -147,4 +185,5 @@ def create_app() -> FastAPI:
     app.include_router(identity_router)
     app.include_router(automation_router)
     app.include_router(messaging_router)
+    app.include_router(external_gateway_router)
     return app
