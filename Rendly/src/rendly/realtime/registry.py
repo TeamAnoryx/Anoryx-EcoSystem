@@ -101,6 +101,16 @@ class ConnectionRegistry:
         """A SNAPSHOT list of the connections in a (tenant, channel) bucket."""
         return list(self._by_channel.get((tenant_id, channel_id), ()))
 
+    def user_connections(self, tenant_id: str, user_id: str) -> list[Connection]:
+        """A SNAPSHOT list of a user's live connections (R-007 huddle signaling target lookup).
+
+        Structurally tenant-scoped like every other lookup here: a connection only ever registers
+        under its OWN tenant (``add`` above), so this can never return a connection from another
+        tenant — the R-007 huddle authz spine (peer must have a live connection in the SAME
+        tenant) rests on this, not on a separate DB check.
+        """
+        return list(self._by_user.get((tenant_id, user_id), ()))
+
     def sharing_connections(self, conn: Connection) -> list[Connection]:
         """Connections that share at least one channel with ``conn`` (presence audience)."""
         seen: set[Connection] = set()

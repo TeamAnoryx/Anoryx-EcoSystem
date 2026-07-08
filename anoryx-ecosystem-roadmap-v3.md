@@ -698,7 +698,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] O-005 Multi-Sentinel coordination ✅ (#43)
 - [x] O-006 Persistence consolidation + tenant-scoped read seams ✅ (#47)
 - [x] O-007 Admin API + minimal UI ✅ (shipped PR #51)
-- [ ] O-008 Deployment — Easy-Tricky (6-10h)
+- [x] O-008 Deployment ✅ (shipped PR #55)
 - [ ] O-009 Centralized Sentinel proxy for all inter-app traffic — Heavy 🏦
 - [ ] O-010 Unified identity + cross-platform access mgmt — Heavy 🏦
 - [ ] O-011 Event-driven cross-module automation engine — Complex 🏦
@@ -714,8 +714,8 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-003 Sub-second double-entry ledger ✅ (#39)
 - [x] D-004 Event ingest from Orchestrator ✅ (#41)
 - [x] D-005 Budget engine (killer-feature half) ✅ (#45)
-- [ ] D-006 Kill-switch for unauthorized AI agent txns — Tricky (12-16h) ➕
-- [ ] D-007 Budget allocation UI — Tricky (12-16h)
+- [x] D-006 Kill-switch for unauthorized AI agent txns ✅ (shipped PR #54)
+- [x] D-007 Budget allocation UI ✅ (shipped PR #57)
 - [ ] D-008 Live cost-to-value dashboards (param-driven) — Tricky (12-16h)
 - [ ] D-009 Immutable financial-workflow audit trails — Tricky (8-12h) ➕
 - [ ] D-010 Deployment — Easy-Tricky (6-10h)
@@ -743,8 +743,8 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] R-004 User profiles + persistence ✅ (#40)
 - [x] R-005 Real-time chat (WebSocket) ✅ (#44)
 - [x] R-006 Role-based secure channels + manual team map ✅ (#46) ➕
-- [ ] R-007 Low-latency voice/video huddles (1-on-1, no external links) — Complex (22-30h)
-- [ ] R-008 Sentinel safety + data sovereignty — Tricky (12-16h)
+- [x] R-007 Low-latency voice/video huddles (1-on-1, no external links) ✅ (#53)
+- [x] R-008 Sentinel safety + data sovereignty ✅ (#58)
 - [ ] R-009 Immutable comms + video-log archiving — Tricky (12-16h) ➕
 - [ ] R-010 Deployment — Tricky (12-16h)
 - [ ] R-011 Group huddles — Complex 🏦

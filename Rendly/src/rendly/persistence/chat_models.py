@@ -15,6 +15,7 @@ ID/COLUMN SHAPE (same rule as ``models.py``): ids are PLAIN dashed-hex UUID stri
 from __future__ import annotations
 
 from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKeyConstraint, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import mapped_column
 
 from . import RENDLY_SCHEMA
@@ -106,3 +107,39 @@ class MessageRow(Base):
     content_hash = mapped_column(String(64), nullable=True)  # RESERVED (R-009)
     inspection_status = mapped_column(String(16), nullable=False)
     inspection_evaluated_at = mapped_column(DateTime(timezone=True), nullable=False)
+    # R-008: the per-category findings the seam evaluated for this message (metadata only —
+    # [{"category": "pii", "outcome": "pass"}, ...], NEVER the offending content).
+    detectors = mapped_column(JSONB, nullable=False, server_default="[]")
+
+
+class InspectionAuditLogRow(Base):
+    """R-008: an append-only record of every BLOCKED / SEAM-UNAVAILABLE send attempt (RLS table).
+
+    The administrative-oversight complement to ``messages`` — a passed message is already fully
+    durable (content + sender + channel) in ``messages``; a blocked one is fail-closed and NEVER
+    persisted there, so without this table a rejected send leaves no trace anywhere. Metadata
+    only — content is NEVER stored here either (mirrors ``InspectionResult.detectors``).
+    APPEND-ONLY (rendly_app has SELECT,INSERT only, same posture as ``messages``).
+    """
+
+    __tablename__ = "inspection_audit_log"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "channel_id"],
+            [f"{RENDLY_SCHEMA}.channels.tenant_id", f"{RENDLY_SCHEMA}.channels.channel_id"],
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "sender_user_id"],
+            [f"{RENDLY_SCHEMA}.users.tenant_id", f"{RENDLY_SCHEMA}.users.user_id"],
+        ),
+        {"schema": RENDLY_SCHEMA},
+    )
+
+    tenant_id = mapped_column(String(64), primary_key=True)
+    audit_id = mapped_column(String(64), primary_key=True)
+    channel_id = mapped_column(String(64), nullable=False)
+    sender_user_id = mapped_column(String(64), nullable=False)
+    status = mapped_column(String(16), nullable=False)
+    detectors = mapped_column(JSONB, nullable=False, server_default="[]")
+    evaluated_at = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False)

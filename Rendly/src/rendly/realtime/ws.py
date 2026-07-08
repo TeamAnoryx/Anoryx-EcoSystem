@@ -19,7 +19,8 @@ from ..auth.errors import new_request_id
 from ..auth.tokens import TokenVerificationError, verify
 from ..persistence import chat_repo
 from ..persistence.async_database import get_tenant_session
-from .frames import build_error, build_presence_update, build_session_welcome
+from .frames import build_error, build_huddle_update, build_presence_update, build_session_welcome
+from .huddle import HuddleState
 from .pipeline import RuntimeContext, dispatch_frame
 from .registry import Connection
 
@@ -133,3 +134,24 @@ async def realtime_endpoint(websocket: WebSocket) -> None:
         audience = [c for c in ctx.registry.sharing_connections(conn) if c is not conn]
         ctx.registry.discard(conn)
         await _broadcast_presence(ctx, conn, "offline", audience=audience)
+        # R-007: a dropped socket ends any live 1-on-1 huddle this user was in — real telephony
+        # semantics (a network drop ends the call), and it prevents a stale ringing/active huddle
+        # from lingering in the single-instance manager after its last connection is gone. Only
+        # fires when the disconnecting user has NO remaining live connection (multi-device: the
+        # huddle stays up on their other sockets).
+        if not ctx.registry.user_connections(conn.tenant_id, conn.user_id):
+            ended = ctx.huddles.end_all_for_user(conn.tenant_id, conn.user_id)
+            if ended is not None:
+                seq = ctx.huddles.next_seq(conn.tenant_id)
+                peer_id = ended.peer_of(conn.user_id)
+                for peer_conn in ctx.registry.user_connections(conn.tenant_id, peer_id):
+                    await peer_conn.send(
+                        build_huddle_update(
+                            huddle_id=ended.huddle_id,
+                            tenant_id=conn.tenant_id,
+                            peer_user_id=conn.user_id,
+                            state=HuddleState.ENDED.value,
+                            huddle=ended,
+                            seq=seq,
+                        )
+                    )

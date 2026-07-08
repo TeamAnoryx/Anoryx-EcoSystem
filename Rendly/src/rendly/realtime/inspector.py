@@ -3,13 +3,15 @@
 R-001 locks the inspection contract: the send path runs inspection SYNCHRONOUSLY (in-line,
 awaited) BEFORE the message is persisted or fanned out, and the result is fail-closed — a
 ``blocked`` verdict OR a seam that cannot complete (``seam_unavailable``) BOTH stop the send
-(the message is never persisted and never delivered). R-005 builds the SEAM and wires it into
-the send pipeline; it ships ONLY the no-op pass-through. R-008 swaps in real PII / injection /
-secret detection by providing a different :class:`MessageInspector` — no pipeline change.
+(the message is never persisted and never delivered). R-005 built the SEAM and wired it into
+the send pipeline, shipping ONLY the no-op pass-through. R-008 (``sentinel_inspector.py``)
+swaps in real PII / injection / secret detection via a different :class:`MessageInspector` —
+no pipeline change, exactly as designed.
 
 HONESTY BOUNDARY (verbatim): SEAM ONLY, not inspection. ``NoOpMessageInspector`` performs NO
 detection — it always returns ``pass``. It exists so the fail-closed wiring (a rejecting or
-unavailable inspector stops the send before persist + fan-out) is REAL and testable now.
+unavailable inspector stops the send before persist + fan-out) is REAL and testable now, and
+remains available for tests that want an explicit pass-through.
 
 FAIL-CLOSED CONTRACT the pipeline enforces around this seam (Sentinel non-negotiable #5):
   * ``inspect`` returns ``pass``           -> the send proceeds (persist + ack accepted + fan-out).
@@ -28,14 +30,34 @@ from datetime import datetime, timezone
 from typing import Literal
 
 InspectionStatus = Literal["pass", "blocked", "seam_unavailable"]
+DetectorCategory = Literal["pii", "injection", "secret"]
+DetectorOutcome = Literal["pass", "block"]
+
+
+@dataclass(frozen=True)
+class DetectorFinding:
+    """One detector's verdict (contracts/messages.schema.json InspectionResult.detectors item).
+
+    Metadata ONLY — ``category`` + ``outcome``, NEVER the offending content or the matched
+    substring. Mirrors the Sentinel F-005 detector categories (pii / injection / secret).
+    """
+
+    category: DetectorCategory
+    outcome: DetectorOutcome
 
 
 @dataclass(frozen=True)
 class InspectionOutcome:
-    """The inspection seam's verdict. ``detectors`` is RESERVED (R-008) — never populated here."""
+    """The inspection seam's verdict.
+
+    ``detectors`` was RESERVED for R-008 and is now populated by :class:`SentinelMessageInspector`
+    (``sentinel_inspector.py``) — up to one finding per category, metadata only. It stays empty
+    for :class:`NoOpMessageInspector` and any test fake that does not set it.
+    """
 
     status: InspectionStatus
     evaluated_at: datetime
+    detectors: tuple[DetectorFinding, ...] = ()
 
 
 class MessageInspector(ABC):

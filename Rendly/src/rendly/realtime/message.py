@@ -12,7 +12,9 @@ archival-ready fields R-001 reserves (FORK C, baked-now): the per-channel ``seq`
 ``created_at`` populate ``ArchivalMeta``; the hash fields are NOT modeled here — they are
 RESERVED (always null) until R-009 builds the chain. The inspection result on a persisted
 message is ALWAYS ``pass`` (a blocked / seam-unavailable send is fail-closed and never
-persisted), captured as ``inspection_status`` + ``inspection_evaluated_at``.
+persisted), captured as ``inspection_status`` + ``inspection_evaluated_at`` + (R-008)
+``detectors`` — the per-category findings the seam evaluated (always all-``pass`` on a
+persisted message, since ANY category blocking would have blocked the whole send).
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator
 
 from ..common import require_aware_utc
 from ..identifiers import ChannelId, TenantId, UserId, UuidStr
+from .inspector import DetectorFinding
 
 # message_id shares the LOCKED wire UUID shape (dashed hex, case-insensitive, ≤64) — see
 # contracts/messages.schema.json #/$defs/message_id. Reuse the R-002 constraint verbatim.
@@ -57,6 +60,9 @@ class Message(BaseModel):
     # (fail-closed pre-persist), but typed to the full enum so R-008 needs no model change.
     inspection_status: Literal["pass", "blocked", "seam_unavailable"]
     inspection_evaluated_at: datetime
+    # R-008: the per-category findings the seam evaluated. Defaults to empty for any Message
+    # built before R-008 populated this (e.g. an older row with no stored detectors).
+    detectors: tuple[DetectorFinding, ...] = ()
 
     @field_validator("created_at", "inspection_evaluated_at")
     @classmethod

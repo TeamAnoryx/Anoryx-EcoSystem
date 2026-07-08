@@ -8,6 +8,10 @@ before the NEXT test still finds the tables.
 RULE 9 (R-005 added migration 0002 — Rendly's SECOND migration): the full-chain table set below is
 extended with the chat tables, and a dedicated test proves the 0001<->0002 boundary reverses
 cleanly (downgrade 0002 drops ONLY the chat tables; the identity tables + the 0001 head survive).
+
+R-008 added migration 0003 (Rendly's THIRD migration) — the ``inspection_audit_log`` table
+(``messages.detectors`` is a column addition on an existing table, not a new one, so it does not
+extend this table-set check). A further dedicated test proves the 0002<->0003 boundary.
 """
 
 from __future__ import annotations
@@ -56,7 +60,8 @@ _IDENTITY_TABLES = {
     "refresh_tokens",
 }
 _CHAT_TABLES = {"channels", "memberships", "messages"}
-_ALL_TABLES = _IDENTITY_TABLES | _CHAT_TABLES
+_INSPECTION_TABLES = {"inspection_audit_log"}
+_ALL_TABLES = _IDENTITY_TABLES | _CHAT_TABLES | _INSPECTION_TABLES
 
 
 def test_migration_down_up_is_clean() -> None:
@@ -85,6 +90,23 @@ def test_chat_migration_0002_reverses_to_0001() -> None:
     tables = _tables()
     assert tables & _CHAT_TABLES == set()  # chat tables gone
     assert _IDENTITY_TABLES <= tables  # identity tables (the 0001 head) intact
+
+    up = _alembic("upgrade", "head")
+    assert up.returncode == 0, f"{up.stdout}\n{up.stderr}"
+    assert _ALL_TABLES <= _tables()
+
+
+def test_inspection_migration_0003_reverses_to_0002() -> None:
+    """The 0002<->0003 boundary: downgrade 0003 drops ONLY inspection_audit_log; 0002 survives."""
+    # Start at head (0003).
+    assert _INSPECTION_TABLES <= _tables()
+    assert _CHAT_TABLES <= _tables()
+
+    down = _alembic("downgrade", "0002")
+    assert down.returncode == 0, f"{down.stdout}\n{down.stderr}"
+    tables = _tables()
+    assert tables & _INSPECTION_TABLES == set()  # inspection_audit_log gone
+    assert _CHAT_TABLES <= tables  # chat tables (the 0002 head) intact
 
     up = _alembic("upgrade", "head")
     assert up.returncode == 0, f"{up.stdout}\n{up.stderr}"

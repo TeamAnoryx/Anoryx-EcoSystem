@@ -54,6 +54,7 @@ if not os.environ.get("DATABASE_URL"):
     collect_ignore_glob = ["*"]
 
 _ALL_TABLES = (
+    "inspection_audit_log",
     "messages",
     "memberships",
     "channels",
@@ -265,19 +266,31 @@ def seed_user() -> Callable[..., tuple[str, str]]:
 
 @pytest.fixture
 def make_client(key: "object") -> Callable[..., "object"]:
-    """Build a TestClient over the real chat app, optionally with a custom inspection seam and/or a
-    custom team-membership resolver (R-006 — seam tests pass an unresolvable/raising resolver)."""
+    """Build a TestClient over the real chat app, optionally with a custom inspection seam, a
+    custom team-membership resolver (R-006 — seam tests pass an unresolvable/raising resolver),
+    and/or a custom ICE credential provider (R-007 — ice-server tests pass a fixed config)."""
     from starlette.testclient import TestClient
 
     from rendly.realtime.app import create_chat_app
-    from rendly.realtime.inspector import MessageInspector
+    from rendly.realtime.ice import IceCredentialProvider
+    from rendly.realtime.inspector import MessageInspector, NoOpMessageInspector
     from rendly.realtime.resolver import TeamMembershipResolver
 
     def _make(
         inspector: MessageInspector | None = None,
         resolver: TeamMembershipResolver | None = None,
+        ice_provider: IceCredentialProvider | None = None,
     ) -> "object":
-        app = create_chat_app(key=key, inspector=inspector, resolver=resolver)
+        # create_chat_app's OWN default is the real R-008 SentinelMessageInspector; this harness
+        # defaults to the explicit no-op instead so every pre-existing test (most of which pass no
+        # inspector at all) keeps sending arbitrary fixture content through an inert seam exactly
+        # as before R-008 — tests that want the real detectors ask for it explicitly.
+        app = create_chat_app(
+            key=key,
+            inspector=inspector or NoOpMessageInspector(),
+            resolver=resolver,
+            ice_provider=ice_provider,
+        )
         return TestClient(app)
 
     return _make
