@@ -749,7 +749,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] R-010 Deployment ✅ (shipped PR #64)
 - [x] R-011 Group huddles ✅ (shipped PR #69)
 - [x] R-012 AI internal culture matching engine ✅ (shipped PR #70 — scoped to a deterministic, opt-in, cross-department suggestion seam; see ADR-0012)
-- [ ] R-013 Integrated virtual event platform — Heavy 🏦
+- [x] R-013 Integrated virtual event platform — Heavy 🏦 ✅ (shipped PR #72, scoped to a single-host agenda scheduling seam — see ADR-0013)
 - [ ] R-014 Encrypted live-streaming infrastructure — Heavy 🏦
 - [ ] R-015 Context-aware comms/transcript summarization — Complex 🏦
 - [ ] R-016 Intent-based matching (B2C) 🏦
