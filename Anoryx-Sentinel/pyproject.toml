@@ -132,6 +132,8 @@ sentinel-cli = "policy.cli:main"
 sentinel-dr = "dr.cli:main"
 # F-025 operator CLI (ADR-0031): guided sandbox-tenant onboarding.
 sentinel-onboarding = "onboarding.cli:main"
+# F-026 operator CLI (ADR-0032): MCP server allow-listing + inspection preview.
+sentinel-mcp = "mcp_gateway.cli:main"
 
 [tool.ruff]
 target-version = "py312"

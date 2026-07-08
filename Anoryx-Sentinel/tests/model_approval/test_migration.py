@@ -52,9 +52,10 @@ async def test_migrations_reversible():
     """Vector 11: the three F-019 migrations (0025/0026/0027) round-trip cleanly.
 
     Later features keep adding migrations on top of F-019 (F-020 0028-0030, F-021
-    0031, ADR-0025 0032). To stay correct regardless of the current head, we go to
-    head, then downgrade to the EXPLICIT revision 0024 (pre-F-019) rather than a
-    step count, then re-upgrade to head — verifying all F-019 migrations reverse.
+    0031, ADR-0025 0032, F-026 0033). To stay correct regardless of the current head,
+    we go to head, then downgrade to the EXPLICIT revision 0024 (pre-F-019) rather
+    than a step count, then re-upgrade to head — verifying all F-019 migrations
+    reverse.
     """
     if not _db_available():
         pytest.skip("DATABASE_URL not set — skipping migration reversibility test")
@@ -62,7 +63,7 @@ async def test_migrations_reversible():
     up = _run_alembic("upgrade", "head")
     assert up.returncode == 0, f"upgrade head failed:\n{up.stderr}"
     cur = _run_alembic("current")
-    assert "0032" in (cur.stdout + cur.stderr), "expected head at 0032 before downgrade"
+    assert "0033" in (cur.stdout + cur.stderr), "expected head at 0033 before downgrade"
 
     # Downgrade to the explicit pre-F-019 revision (robust to later head bumps).
     down = _run_alembic("downgrade", "0024")
@@ -74,7 +75,7 @@ async def test_migrations_reversible():
     up2 = _run_alembic("upgrade", "head")
     assert up2.returncode == 0, f"re-upgrade head failed:\n{up2.stderr}"
     cur_up = _run_alembic("current")
-    assert "0032" in (cur_up.stdout + cur_up.stderr), "expected head at 0032 after re-upgrade"
+    assert "0033" in (cur_up.stdout + cur_up.stderr), "expected head at 0033 after re-upgrade"
 
 
 @pytest.mark.parametrize(
