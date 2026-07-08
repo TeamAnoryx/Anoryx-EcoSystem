@@ -703,7 +703,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] O-010 Unified identity + cross-platform access mgmt — Heavy 🏦 ✅ (shipped PR #65, scoped to a cross-product identity-event correlation seam — see ADR-0010)
 - [x] O-011 Event-driven cross-module automation engine — Complex 🏦 ✅ (shipped PR #67, scoped to a tenant-owned rule-triggered redistribution seam — see ADR-0011)
 - [x] O-012 Sub-ms agent-to-agent messaging backbone + state-sync — Heavy 🏦 ✅ (shipped PR #74, scoped to an intra-tenant mailbox relay + optimistic-concurrency state store — see ADR-0012)
-- [ ] O-013 Global API gateway for third-party interactions — Heavy 🏦
+- [x] O-013 Global API gateway for third-party interactions — Heavy 🏦 ✅ (shipped PR #75, scoped to an operator-issued third-party API-key credential gating one rate-limited/scope-checked/audited read seam — see ADR-0013)
 - [ ] O-014 Command dashboard + automated rollback — Complex 🏦
 - [ ] O-015 Predictive scaling — Complex 🔮
 
