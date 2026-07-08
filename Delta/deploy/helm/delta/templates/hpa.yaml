@@ -1,0 +1,25 @@
+{{- if .Values.ingest.autoscaling.enabled -}}
+# Ingest component ONLY. The admin console never autoscales (low-traffic
+# internal surface, no admin.autoscaling knob at all).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "delta.fullname" . }}-ingest
+  labels:
+    {{- include "delta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "delta.fullname" . }}-ingest
+  minReplicas: {{ .Values.ingest.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.ingest.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.ingest.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

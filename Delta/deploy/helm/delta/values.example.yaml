@@ -1,0 +1,33 @@
+# Delta — example values for a LOCAL single-cluster demo (D-010).
+# Mirrors Anoryx-AI-Orchestrator's values.example.yaml (O-008), itself mirroring
+# Anoryx-Sentinel's ADR-0027 values.example.yaml.
+#
+# Copy + adjust, then:
+#   helm install delta deploy/helm/delta -n delta -f my-values.yaml
+#
+# This file contains NO secrets — the sensitive material is delivered as a K8s
+# Secret created out-of-band by deploy/helm/gen-k8s-secret.sh (see NOTES.txt).
+# NEVER commit a values file that contains real secret values.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Local image (built from the repo Dockerfile, then `kind load docker-image`):
+#   docker build -t anoryx-delta:0.2.0 .
+#   kind load docker-image anoryx-delta:0.2.0
+# ─────────────────────────────────────────────────────────────────────────────
+
+image:
+  repository: anoryx-delta
+  tag: "0.2.0"                   # local tag (not the ghcr default)
+  pullPolicy: IfNotPresent        # IfNotPresent so the kind-loaded image is used
+
+# Single replica for the demo (avoids needing >1 schedulable node's resources).
+ingest:
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+
+admin:
+  replicaCount: 1
+
+podDisruptionBudget:
+  enabled: false

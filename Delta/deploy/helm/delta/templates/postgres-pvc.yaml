@@ -1,0 +1,17 @@
+{{- if .Values.postgres.bundled -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "delta.postgresFullname" . }}
+  labels:
+    {{- include "delta.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.postgres.storage }}
+  {{- if .Values.postgres.storageClassName }}
+  storageClassName: {{ .Values.postgres.storageClassName | quote }}
+  {{- end }}
+{{- end }}

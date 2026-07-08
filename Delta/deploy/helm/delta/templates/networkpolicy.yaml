@@ -1,0 +1,173 @@
+{{- if .Values.networkPolicy.enabled -}}
+# Restrictive-by-default NetworkPolicies, one per component. policyTypes lists
+# both Ingress and Egress on each, so anything NOT explicitly allowed below is
+# DENIED — except where an honest limitation forces an open rule (documented
+# inline, ingest component only).
+#
+# Honest limitation (ingest component only): plain Kubernetes NetworkPolicy
+# cannot match by hostname, so (a) egress to the operator-configured
+# Orchestrator base URL is expressed as :443 to any IP — restrict via
+# networkPolicy.orchestratorEgressCIDRs; (b) ingress on the ingest port from
+# Sentinel/Orchestrator callers outside this namespace is open by default —
+# restrict via networkPolicy.ingressCIDRs. Defense-in-depth for both is the
+# app-layer HMAC signature check (DELTA_INGEST_HMAC_SECRET), not this policy.
+#
+# The admin component has NO such open-by-default rule: it is an
+# INTERNAL-ONLY operator surface (break-glass bearer auth), so its ingress is
+# ALWAYS restricted to same-namespace + the monitoring namespace, with no
+# ingressCIDRs-equivalent escape hatch (only the explicit-opt-in
+# networkPolicy.extraAdminIngress).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "delta.fullname" . }}-ingest
+  labels:
+    {{- include "delta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "delta.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ingest
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Same-namespace traffic (e.g. an ingress controller) — http port only.
+    - from:
+        - podSelector: {}
+      ports:
+        - port: http
+          protocol: TCP
+    # Prometheus scrape of /metrics + probes from the monitoring namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.monitoringNamespace }}
+      ports:
+        - port: http
+          protocol: TCP
+    {{- if .Values.networkPolicy.ingressCIDRs }}
+    # Restricted external ingress (Sentinel/Orchestrator callers) by IP block.
+    - from:
+        {{- range .Values.networkPolicy.ingressCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - port: http
+          protocol: TCP
+    {{- else }}
+    # No CIDRs configured — open ingress on the http port (honest limitation
+    # above). Callers to POST /v1/ingest/usage may live outside this
+    # namespace/cluster and are not known at chart-render time.
+    - ports:
+        - port: http
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  egress:
+    # DNS resolution.
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- if .Values.postgres.bundled }}
+    # Bundled Postgres (same namespace) — port 5432 only.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "delta.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+    {{- end }}
+    # Orchestrator O-004 distribution egress over HTTPS (:443). FQDN
+    # restriction needs a FQDN-aware CNI; set orchestratorEgressCIDRs to
+    # restrict by IP block.
+    {{- if .Values.networkPolicy.orchestratorEgressCIDRs }}
+    - to:
+        {{- range .Values.networkPolicy.orchestratorEgressCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - port: 443
+          protocol: TCP
+    {{- else }}
+    - ports:
+        - port: 443
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    # Operator-supplied egress rules — REQUIRED for external managed Postgres
+    # (bundled=false). See deploy/DEPLOY-K8s.md.
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "delta.fullname" . }}-admin
+  labels:
+    {{- include "delta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "delta.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: admin
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Same-namespace traffic ONLY (e.g. an internal operator gateway/bastion) —
+    # http port only. No open-by-default external rule: this is a break-glass
+    # operator console, never a public or cross-namespace-by-default surface.
+    - from:
+        - podSelector: {}
+      ports:
+        - port: http
+          protocol: TCP
+    # Prometheus scrape of /metrics + probes from the monitoring namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.monitoringNamespace }}
+      ports:
+        - port: http
+          protocol: TCP
+    {{- with .Values.networkPolicy.extraAdminIngress }}
+    # Explicit operator opt-in ONLY — no CIDR-based open-by-default escape
+    # hatch is provided for the admin console (unlike the ingest component).
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  egress:
+    # DNS resolution.
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- if .Values.postgres.bundled }}
+    # Bundled Postgres (same namespace) — port 5432 only. The admin app never
+    # calls the Orchestrator seam, so no :443 egress rule is needed here.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "delta.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    # Operator-supplied egress rules — REQUIRED for external managed Postgres
+    # (bundled=false). See deploy/DEPLOY-K8s.md.
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

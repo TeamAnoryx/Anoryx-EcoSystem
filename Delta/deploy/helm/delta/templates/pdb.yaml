@@ -1,0 +1,36 @@
+{{- if .Values.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "delta.fullname" . }}-ingest
+  labels:
+    {{- include "delta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "delta.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ingest
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "delta.fullname" . }}-admin
+  labels:
+    {{- include "delta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin
+spec:
+  # NOTE: the admin console runs a single replica by default (admin.replicaCount:
+  # 1). With the default podDisruptionBudget.minAvailable=1, this PDB requires
+  # its one-and-only pod to stay available, which blocks a voluntary node
+  # drain until admin.replicaCount is raised or this PDB is disabled — an
+  # accepted tradeoff for a low-traffic internal console (operators wanting
+  # drain-friendly behavior should raise admin.replicaCount to 2+ or set
+  # podDisruptionBudget.enabled=false).
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "delta.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: admin
+{{- end }}
