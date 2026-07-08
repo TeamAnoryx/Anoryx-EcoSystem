@@ -93,6 +93,35 @@ async def test_propose_approve_history_over_http(
     actions = [h["action"] for h in history_resp.json()]
     assert actions == ["approved", "requested"]  # newest first
 
+    # D-009: both writes above landed in the tamper-evident chain untampered.
+    verify_resp = await client.get(
+        "/v1/admin/audit/verify", params={"tenant_id": tenant_id}, headers=auth_headers
+    )
+    assert verify_resp.status_code == 200
+    verified = verify_resp.json()
+    assert verified["is_valid"] is True
+    assert verified["rows_checked"] == 2
+    assert verified["first_mismatch_sequence"] is None
+    assert verified["error_detail"] is None
+
+
+@db_required
+async def test_audit_verify_is_isolated_per_tenant(
+    client: httpx.AsyncClient, auth_headers: dict, tenant_id: str, other_tenant_id: str
+) -> None:
+    create_resp = await client.post(
+        "/v1/admin/allocations", json=_payload(tenant_id), headers=auth_headers
+    )
+    assert create_resp.status_code == 201, create_resp.text
+
+    verify_resp = await client.get(
+        "/v1/admin/audit/verify", params={"tenant_id": other_tenant_id}, headers=auth_headers
+    )
+    assert verify_resp.status_code == 200
+    verified = verify_resp.json()
+    assert verified["is_valid"] is True
+    assert verified["rows_checked"] == 0  # RLS: tenant A's row is structurally invisible
+
 
 @db_required
 async def test_get_unknown_allocation_is_404(

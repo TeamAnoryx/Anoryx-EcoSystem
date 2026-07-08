@@ -7,6 +7,7 @@ D-005's ``create_budget`` seam unchanged (no new budget-creation code path).
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -17,6 +18,7 @@ from ..allocation import Allocation, AllocationTarget
 from ..budget import BudgetConcept
 from ..budget_engine.definitions import create_budget
 from ..money import Money
+from ..persistence.audit_log import append_history
 from . import store
 from .schemas import (
     AllocationCreateRequest,
@@ -24,6 +26,10 @@ from .schemas import (
     AllocationView,
     ApprovalDecisionRequest,
 )
+
+# Audit note fields are bounded (mirrors delta.allocation_admin.schemas's
+# _NOTE_MAX_LENGTH) — a validation error string must never overflow the column.
+_AUDIT_NOTE_MAX_LENGTH = 1024
 
 
 class AllocationReconciliationError(ValueError):
@@ -84,7 +90,13 @@ async def create_allocation_request(
     session: AsyncSession, req: AllocationCreateRequest
 ) -> AllocationView:
     """Validate reconciliation (vector 4) via the shared D-001 ``Allocation`` model,
-    then persist status='requested' + a 'requested' history entry. Commits the txn."""
+    then persist status='requested' + a 'requested' history entry. Commits the txn.
+
+    A reconciliation FAILURE is itself audited (D-009 — the roadmap's "reconciliations"
+    audit category: a rejected write is a security-relevant event, not a silent no-op)
+    before the error is raised, committed on its own since the caller never reaches the
+    normal end-of-function commit on this path.
+    """
     try:
         Allocation(
             allocation_id="00000000-0000-0000-0000-000000000000",
@@ -106,6 +118,17 @@ async def create_allocation_request(
             period=req.period,
         )
     except ValidationError as exc:
+        await append_history(
+            session,
+            tenant_id=req.tenant_id,
+            entity_type="allocation_reconciliation",
+            entity_id=str(uuid.uuid4()),
+            action="rejected",
+            actor=req.requested_by,
+            now=_now(),
+            note=str(exc)[:_AUDIT_NOTE_MAX_LENGTH],
+        )
+        await session.commit()
         raise AllocationReconciliationError(str(exc)) from exc
 
     now = _now()
@@ -128,7 +151,7 @@ async def create_allocation_request(
         requested_by=req.requested_by,
         now=now,
     )
-    await store.record_history(
+    await append_history(
         session,
         tenant_id=req.tenant_id,
         entity_type="allocation",
@@ -205,7 +228,7 @@ async def decide_allocation(
             materialized.append(replace(target, budget_id=budget.budget_id))
         updated_targets = tuple(materialized)
 
-    await store.record_history(
+    await append_history(
         session,
         tenant_id=record.tenant_id,
         entity_type="allocation",

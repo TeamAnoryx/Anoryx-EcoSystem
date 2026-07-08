@@ -23,27 +23,35 @@ The roadmap lists O-013 as **"Global API gateway for third-party interactions.
 Standardized external-facing gateway for all third-party interactions with the ecosystem
 (rate-limit, auth, governance applied uniformly). Overlaps F-026 (MCP layer) — reconcile
 when both are reached."** — in the same Phase-2 ecosystem-integration tier as
-O-009/O-010/O-011/O-012, and it names a dependency (F-026) that does not exist. This is
-not buildable as a single, honest PR today, for two independent reasons, the same shape
-as every prior Phase-2 ADR:
+O-009/O-010/O-011/O-012. This is not buildable as a single, honest PR today, for two
+independent reasons, the same shape as every prior Phase-2 ADR:
 
 - **"Global... for all third-party interactions with the ecosystem" implies a
   cross-product proxy fronting Sentinel, Delta, and Rendly alike.** No such shared
   ingress exists — each product owns its own API surface, and this repo's protect-paths
   hook confines `Anoryx-AI-Orchestrator/` code to its own directory; it must not reach
   into `Anoryx-Sentinel/`, `Delta/`, or `Rendly/` to front their APIs.
-- **"Overlaps F-026 (MCP layer) — reconcile when both are reached" is an explicit
-  roadmap instruction to wait for F-026, and F-026 is unshipped** (still 🔮 SPECULATIVE
-  on the Sentinel checklist). Building the "reconciled" version now would mean
-  inventing F-026's shape unilaterally, which is not this task's call to make.
+- **"Overlaps F-026 (MCP layer) — reconcile when both are reached" — F-026 has, in fact,
+  shipped concurrently with this task (Sentinel PR #66, merged to `main` mid-session),
+  but ships NO live HTTP/MCP proxy endpoint.** It is scoped to a per-tenant MCP-server
+  allow-list (RLS-isolated `tenant_mcp_servers`), SSRF-guarded URL validation, and F-005
+  inspection reuse, exposed ONLY via an operator CLI (`sentinel-mcp`) — Sentinel's own
+  ADR-0032 explicitly defers the live proxy endpoint to
+  `Anoryx-Sentinel/docs/followups/f-026-mcp-proxy-endpoint.md`, naming the identical
+  api-architect-contract-ownership constraint this repo's CLAUDE.md imposes. There is
+  therefore still no F-026 HTTP surface to reconcile with — "reconcile when both are
+  reached" cannot mean anything concrete yet, since F-026 itself has nothing exposed over
+  HTTP. This ADR was updated in-flight to reflect F-026's actual shipped shape (it was
+  drafted, and this task's design was chosen, before F-026 landed) rather than leaving a
+  now-false "F-026 does not exist" claim in place.
 
 This ADR resolves that tension the same way ADR-0009→ADR-0012 resolved their own literal
 roadmap text: ship the smallest genuinely useful, honest slice of what "rate-limit, auth,
 governance applied uniformly" concretely means — a real API-key credential class, distinct
 from every existing Orchestrator credential, that gates ONE Orchestrator-owned read seam
 with rate limiting, scope enforcement, and a uniform, tamper-evident audit trail — and name
-everything else (the cross-product proxy, F-026 integration, any other product's surface)
-as an honest, explicit deferral, never implied as done.
+everything else (the cross-product proxy, F-026 HTTP integration, any other product's
+surface) as an honest, explicit deferral, never implied as done.
 
 ## Decision — resolved forks
 
@@ -93,9 +101,12 @@ Orchestrator chain's discipline — never nested inside the tenant session's aut
   It gates exactly ONE Orchestrator-owned read seam (`GET /v1/external/events`). Sentinel,
   Delta, and Rendly's own APIs are untouched — nothing here fronts, proxies, or governs
   traffic to any other product.
-- **This does NOT integrate with F-026 (the MCP layer).** F-026 does not exist yet; the
-  roadmap's own text says to reconcile when both are reached — that reconciliation is
-  future work, not something this PR can honestly do unilaterally.
+- **This does NOT integrate with F-026 (the Sentinel MCP governance substrate).** F-026
+  has shipped, but as a CLI-only allowlist/inspection tool with no live HTTP/MCP proxy
+  endpoint (deferred by Sentinel's own follow-up) — there is no F-026 HTTP surface to
+  integrate with today. The roadmap's own text says to reconcile when both are reached;
+  that reconciliation remains future work, contingent on F-026's own proxy endpoint
+  eventually shipping, not something this PR can honestly do unilaterally.
 - **This is NOT a sliding-window rate limiter.** `ORCH_EXTERNAL_GATEWAY_*` limits are
   enforced via a fixed one-minute window; a burst straddling a window boundary can
   momentarily exceed the configured rate by up to roughly 2x. A stricter sliding-window or
@@ -183,9 +194,10 @@ New environment variables (all resolved NON-FATALLY — absence is not fatal):
 ## Out of scope (do not build here)
 
 A cross-product proxy fronting Sentinel/Delta/Rendly's own APIs; any integration with
-F-026 (the MCP layer, which does not exist); a sliding-window or token-bucket rate
-limiter; per-request sub-key identity; key expiry/TTL; self-service (non-operator) key
-issuance; any additional gated seam beyond `GET /v1/external/events` (extending scope
+F-026 (its HTTP/MCP proxy endpoint remains unshipped — see Context); a sliding-window or
+token-bucket rate limiter; per-request sub-key identity; key expiry/TTL; self-service
+(non-operator) key issuance; any additional gated seam beyond `GET /v1/external/events`
+(extending scope
 coverage is real, separate follow-up work, per Fork C).
 
 ## Consequences

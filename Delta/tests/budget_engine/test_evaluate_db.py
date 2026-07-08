@@ -93,6 +93,7 @@ async def test_over_cap_publishes_exactly_once(
     stub_publish,
     read_outbox,
     read_state,
+    read_history,
 ):
     bd = await _make_budget(tenant_session, tenant_id, cap=1000)
     rec = await post_debit(
@@ -117,6 +118,9 @@ async def test_over_cap_publishes_exactly_once(
     assert outbox[0]["distribution_id"] == "dist-1"
     states = await read_state(tenant_id)
     assert states[0]["state"] == "enforced" and states[0]["enforced_policy_version"] == 1
+    # D-009: the enforcement decision is hash-chain audited in the same transaction.
+    history = await read_history(tenant_id, entity_id=bd.budget_id)
+    assert history == [{"entity_id": bd.budget_id, "action": "enforce", "actor": "budget-engine"}]
 
 
 async def test_repeated_over_cap_does_not_republish(
@@ -196,6 +200,7 @@ async def test_budget_raise_lifts_enforcement(
     stub_publish,
     read_outbox,
     read_state,
+    read_history,
 ):
     bd = await _make_budget(tenant_session, tenant_id, cap=1000)
     r1 = await post_debit(
@@ -222,3 +227,7 @@ async def test_budget_raise_lifts_enforcement(
     assert states[0]["state"] == "under"
     outbox = await read_outbox(tenant_id)
     assert [o["transition"] for o in outbox] == ["enforce", "refresh"]
+    # D-009: both decisions are hash-chain audited, in the same order as the outbox.
+    history = await read_history(tenant_id, entity_id=bd.budget_id)
+    assert [h["action"] for h in history] == ["enforce", "refresh"]
+    assert all(h["actor"] == "budget-engine" for h in history)

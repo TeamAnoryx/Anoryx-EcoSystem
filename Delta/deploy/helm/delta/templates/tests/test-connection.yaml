@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "delta.fullname" . }}-test-connection
+  labels:
+    {{- include "delta.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    # `helm test` passes iff BOTH services' /health return HTTP 200.
+    - name: probe-ingest
+      image: busybox:1.36
+      command: ["wget"]
+      args:
+        - "--spider"
+        - "-q"
+        - "http://{{ include "delta.fullname" . }}-ingest:{{ .Values.ingest.service.port }}/health"
+    - name: probe-admin
+      image: busybox:1.36
+      command: ["wget"]
+      args:
+        - "--spider"
+        - "-q"
+        - "http://{{ include "delta.fullname" . }}-admin:{{ .Values.admin.service.port }}/health"

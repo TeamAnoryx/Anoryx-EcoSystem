@@ -215,9 +215,11 @@ tags:
       O-013 third-party API-key gateway: key issuance/revocation (operator-gated) plus
       ONE rate-limited, scope-checked, uniformly-audited read seam
       (`GET /v1/external/events`). NOT the roadmap's literal "global gateway for all
-      third-party interactions with the ecosystem" and NOT integrated with F-026 (the MCP
-      layer, which does not exist) -- see ADR-0013's honesty boundaries. Every request
-      for which a key resolves to a tenant is chain-audited regardless of outcome.
+      third-party interactions with the ecosystem" -- F-026 (the Sentinel-side MCP
+      governance substrate) has shipped, but as a CLI-only allowlist + inspection tool
+      with no live HTTP/MCP proxy endpoint, so there is still no F-026 surface to
+      integrate with -- see ADR-0013's honesty boundaries. Every request for which a key
+      resolves to a tenant is chain-audited regardless of outcome.
 
 paths:
   /v1/ingest/events:

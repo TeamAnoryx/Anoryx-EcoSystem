@@ -85,15 +85,15 @@ async def test_migration_reversible():
 
     # Step 3: upgrade back to the real head so the DB is left complete for
     # subsequent tests. Later features keep adding migrations after F-018 (F-020
-    # 0028-0030, F-021 0031, ADR-0025 0032), so head is now 0032.
+    # 0028-0030, F-021 0031, ADR-0025 0032, F-026 0033), so head is now 0033.
     result_up = _run_alembic("upgrade", "head")
     assert result_up.returncode == 0, f"upgrade head after downgrade -1 failed:\n{result_up.stderr}"
 
     current_after_up = _run_alembic("current")
     combined_after_up = current_after_up.stdout + current_after_up.stderr
     assert (
-        "0032" in combined_after_up
-    ), f"Expected head at 0032 after re-upgrade, got: {combined_after_up[:300]}"
+        "0033" in combined_after_up
+    ), f"Expected head at 0033 after re-upgrade, got: {combined_after_up[:300]}"
 
 
 def test_migration_0024_is_documented_reversible():

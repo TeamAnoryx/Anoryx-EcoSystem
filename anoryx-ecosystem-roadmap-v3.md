@@ -717,8 +717,8 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-006 Kill-switch for unauthorized AI agent txns ✅ (shipped PR #54)
 - [x] D-007 Budget allocation UI ✅ (shipped PR #57)
 - [x] D-008 Live cost-to-value dashboards (param-driven) ✅ (shipped PR #62)
-- [ ] D-009 Immutable financial-workflow audit trails — Tricky (8-12h) ➕
-- [ ] D-010 Deployment — Easy-Tricky (6-10h)
+- [x] D-009 Immutable financial-workflow audit trails ✅ (shipped PR #68)
+- [x] D-010 Deployment ✅ (shipped PR #71)
 - [ ] D-011 Predictive SaaS/cloud budget optimization — Tricky (12-16h) ➕
 - [ ] D-012 Chargeback/showback + anomaly detection — Tricky (12-16h) ➕
 - [ ] D-013 Unified CRM — Heavy 🏦
@@ -747,9 +747,9 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] R-008 Sentinel safety + data sovereignty ✅ (#58)
 - [x] R-009 Immutable comms + video-log archiving ✅ (shipped PR #61)
 - [x] R-010 Deployment ✅ (shipped PR #64)
-- [ ] R-011 Group huddles — Complex 🏦
-- [ ] R-012 AI internal culture matching engine — Complex 🏦
-- [ ] R-013 Integrated virtual event platform — Heavy 🏦
+- [x] R-011 Group huddles ✅ (shipped PR #69)
+- [x] R-012 AI internal culture matching engine ✅ (shipped PR #70 — scoped to a deterministic, opt-in, cross-department suggestion seam; see ADR-0012)
+- [x] R-013 Integrated virtual event platform — Heavy 🏦 ✅ (shipped PR #72, scoped to a single-host agenda scheduling seam — see ADR-0013)
 - [ ] R-014 Encrypted live-streaming infrastructure — Heavy 🏦
 - [ ] R-015 Context-aware comms/transcript summarization — Complex 🏦
 - [ ] R-016 Intent-based matching (B2C) 🏦

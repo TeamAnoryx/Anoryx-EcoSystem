@@ -67,8 +67,16 @@ MESSAGE_CANONICAL_FIELDS: tuple[str, ...] = (
 HUDDLE_CANONICAL_FIELDS: tuple[str, ...] = (
     "tenant_id",
     "huddle_id",
-    "caller_id",
-    "callee_id",
+    # R-011 (ADR-0011 Fork G): a SORTED, order-independent list of every participant id,
+    # replacing the two named caller_id/callee_id scalar fields. Strict generalization — a
+    # 2-element sorted list carries the exact same information the old scalars did. The
+    # caller (persistence/huddle_repo.py) is responsible for sorting before this is called;
+    # canonical_json's own sort_keys=True only orders dict KEYS, not list contents.
+    # HONESTY BOUNDARY (verbatim, non-removable): a huddle row archived BEFORE this field-list
+    # change was hashed under the OLD (caller_id, callee_id) scalar fields — a future
+    # chain-verifier task must account for this field-list boundary at the migration that
+    # introduced it (mirrors the message-chain coverage boundary from ADR-0009).
+    "participant_ids",
     "state",
     "seq",
     "created_at",

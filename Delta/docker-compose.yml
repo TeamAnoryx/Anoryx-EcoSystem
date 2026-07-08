@@ -1,17 +1,36 @@
-# docker-compose.yml — Delta ledger local-dev / fresh-compose-up stack (D-003).
+# docker-compose.yml — Delta local-dev / fresh-compose-up stack (D-003, extended D-010).
 #
 # Topology (ADR-0003 Fork 4): Delta runs its OWN Postgres for local/CI here (the
 # shared Sentinel Postgres lives in Anoryx-Sentinel/docker-compose.yml, which the
 # cross-project hook forbids Delta from editing). Production points Delta at the
 # shared instance's `delta` schema with no code change.
 #
-# Local-dev passwords use ${VAR:-default} substitution. NEVER commit real creds;
-# production injects them from Vault/KMS.
+# D-010 adds the two live ASGI services (mirrors Anoryx-AI-Orchestrator's O-008
+# compose pattern, ADR-0008 Fork D): delta-ingest (delta.ingest.app:create_app,
+# the runtime enforcement hot path) and delta-admin (delta.allocation_admin.app:
+# create_app, the internal operator console). No Redis is bundled — zero Delta
+# code imports it (deliberate scope decision, not an omission; the roadmap's
+# "Postgres + Redis" phrase is generic boilerplate, mirrors the Orchestrator's
+# own ADR-0008 Fork E dropping subsystems the product doesn't have).
+#
+# Secrets:
+#   Local-dev defaults are supplied via file-based Docker secrets (see
+#   deploy/secrets/gen-dev-secrets.sh). Never commit a .env file with real
+#   credentials. Production MUST inject these from Vault or cloud KMS — this
+#   stack, like Anoryx-AI-Orchestrator's O-008 and Anoryx-Sentinel's F-010,
+#   explicitly and honestly defers real Vault/KMS integration and mTLS (see
+#   deploy/DEPLOY-K8s.md). The interim peer authenticator for the Delta ->
+#   Orchestrator seam is the shared ORCH_SERVICE_TOKEN bearer.
 #
 # QUICK START:
-#   docker compose up -d --build      # postgres + one-shot migrate/provision
-#   # delta-migrate exits 0 once the schema + delta_app password are in place.
-# Teardown + clean volume:  docker compose down -v
+#   1. bash deploy/secrets/gen-dev-secrets.sh
+#   2. docker compose up -d --build
+#   3. Wait for delta-ingest / delta-admin healthy
+#   4. curl http://localhost:8000/health   # ingest
+#      curl http://localhost:8001/health   # admin
+#
+# Teardown:                   docker compose down
+# Teardown + remove volumes:  docker compose down -v
 
 services:
   postgres:
@@ -19,10 +38,15 @@ services:
     container_name: delta-postgres
     ports:
       - "5544:5432"            # host 5544 avoids clash with Sentinel's 5432/5433
+    # POSTGRES_PASSWORD_FILE is the postgres image's own file-secret convention
+    # (distinct from Delta's own file-secret bridge in docker-entrypoint.sh,
+    # which the delta-* services below use instead).
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-delta}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-delta}
       POSTGRES_DB: ${POSTGRES_DB:-delta_dev}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
     volumes:
       - delta-postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -36,8 +60,9 @@ services:
       - delta-net
 
   # One-shot: runs `alembic upgrade head` then provisions the delta_app SCRAM
-  # password (RUN_MIGRATIONS=1, DELTA_PROVISION_APP_ROLE=1 baked into the image).
-  # Exits 0 when the fresh DB is migrated AND a delta_app login is possible.
+  # password (RUN_MIGRATIONS=1, DELTA_PROVISION_APP_ROLE=1). Exits 0 when the
+  # fresh DB is migrated AND a delta_app login is possible. The two live
+  # services below gate on this exiting successfully.
   delta-migrate:
     build:
       context: .
@@ -51,11 +76,108 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
       POSTGRES_USER: ${POSTGRES_USER:-delta}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-delta}
       POSTGRES_DB: ${POSTGRES_DB:-delta_dev}
       RUN_MIGRATIONS: "1"
       DELTA_PROVISION_APP_ROLE: "1"
+    secrets:
+      - postgres_password
     restart: "no"
+    networks:
+      - delta-net
+
+  # ----------------------------------------------------------------------- #
+  # D-010 — Delta ingest app: the runtime hot path (POST /v1/ingest/usage +  #
+  # GET /health). Evaluates the D-005 budget engine and D-006 kill-switch    #
+  # inline and publishes enforcement decisions to the Orchestrator via the  #
+  # Bearer-token seam (ORCH_SERVICE_TOKEN) when enabled. Reads file-based   #
+  # Docker secrets at /run/secrets/* (the entrypoint shim assembles         #
+  # DATABASE_URL / APP_DATABASE_URL / DELTA_INGEST_HMAC_SECRET /            #
+  # ORCH_SERVICE_TOKEN). Passwords/tokens are NEVER set as environment      #
+  # variables here — only mounted as secret files (`docker inspect` env    #
+  # must contain no secret value).                                         #
+  #                                                                         #
+  # DELTA_BUDGET_ENGINE_ENABLED / DELTA_KILL_SWITCH_ENABLED default to "0"  #
+  # here: both configs are fail-loud when enabled (their own module         #
+  # default) without a valid DELTA_ORCH_DISTRIBUTION_URL + ORCH_SERVICE_    #
+  # TOKEN, so a minimal local-dev stack with no reachable Orchestrator      #
+  # explicitly disables the publish path rather than crash-looping.        #
+  # ----------------------------------------------------------------------- #
+  delta-ingest:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "0.2.0"
+    image: anoryx-delta:0.2.0
+    container_name: delta-ingest
+    command: ["uvicorn", "delta.ingest.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      delta-migrate:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-delta}
+      POSTGRES_DB: ${POSTGRES_DB:-delta_dev}
+      DELTA_APP_USER: delta_app
+      DELTA_PORT: "8000"
+      DELTA_BUDGET_ENGINE_ENABLED: ${DELTA_BUDGET_ENGINE_ENABLED:-0}
+      DELTA_KILL_SWITCH_ENABLED: ${DELTA_KILL_SWITCH_ENABLED:-0}
+      DELTA_ORCH_DISTRIBUTION_URL: ${DELTA_ORCH_DISTRIBUTION_URL:-}
+    secrets:
+      - postgres_password
+      - delta_ingest_hmac_secret
+      - orch_service_token
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - delta-net
+
+  # ----------------------------------------------------------------------- #
+  # D-010 — Delta admin app: the internal operator console (D-007           #
+  # allocations + D-008 dashboards + D-009 audit-verify) plus GET /health.  #
+  # Protected by a single break-glass Bearer token (DELTA_ADMIN_TOKEN). No  #
+  # ingest/enforcement responsibility — this service never touches the     #
+  # Orchestrator seam.                                                     #
+  # ----------------------------------------------------------------------- #
+  delta-admin:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "0.2.0"
+    image: anoryx-delta:0.2.0
+    container_name: delta-admin
+    command: ["uvicorn", "delta.allocation_admin.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8001"]
+    depends_on:
+      delta-migrate:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-delta}
+      POSTGRES_DB: ${POSTGRES_DB:-delta_dev}
+      DELTA_APP_USER: delta_app
+      DELTA_PORT: "8001"
+    secrets:
+      - postgres_password
+      - delta_admin_token
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health', timeout=3).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
     networks:
       - delta-net
 
@@ -65,3 +187,16 @@ networks:
 
 volumes:
   delta-postgres-data:
+
+# File-based Docker secrets. The delta-* services' entrypoint reads these at
+# /run/secrets/* and assembles the connection URLs / tokens. Generate the
+# files first: bash deploy/secrets/gen-dev-secrets.sh
+secrets:
+  postgres_password:
+    file: ./deploy/secrets/postgres_password
+  delta_ingest_hmac_secret:
+    file: ./deploy/secrets/delta_ingest_hmac_secret
+  orch_service_token:
+    file: ./deploy/secrets/orch_service_token
+  delta_admin_token:
+    file: ./deploy/secrets/delta_admin_token

@@ -26,8 +26,10 @@ resolves a tenant and is therefore never audited here (mirrors `require_tenant_p
 identical non-audited-401 precedent).
 
 NOT the roadmap's literal "global API gateway for all third-party interactions with the
-ecosystem" — this gates ONE Orchestrator read seam, not a cross-product proxy, and it does
-not integrate with F-026 (the MCP layer), which does not exist yet. See ADR-0013's honesty
+ecosystem" — this gates ONE Orchestrator read seam, not a cross-product proxy. F-026 (the
+Sentinel-side MCP governance substrate) has shipped, but as a CLI-only allowlist +
+inspection tool with no live HTTP/MCP proxy endpoint (its own follow-up defers that), so
+there is still no F-026 surface for this seam to integrate with. See ADR-0013's honesty
 boundaries for the full disclosure.
 """
 

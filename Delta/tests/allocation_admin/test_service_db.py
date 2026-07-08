@@ -28,6 +28,7 @@ from delta.allocation_admin.service import (
     list_allocation_views,
 )
 from delta.budget import BudgetPeriod, BudgetScope
+from delta.persistence.audit_log import list_history
 from delta.persistence.database import get_tenant_session
 from delta.persistence.models import budget_definitions
 
@@ -84,6 +85,14 @@ async def test_propose_then_approve_materializes_budgets(tenant_id: str) -> None
     assert len(rows) == 2
     costs = sorted(r.limit_cost_cents for r in rows)
     assert costs == [4_000, 6_000]
+
+    # D-009: the propose and the approve are each hash-chain audited in the same
+    # transaction as the write they record.
+    async with get_tenant_session(tenant_id) as session:
+        history = await list_history(session, entity_id=proposed.allocation_id)
+    assert [h.action for h in reversed(history)] == ["requested", "approved"]
+    assert history[0].actor == "operator-2"  # newest first: the approve
+    assert history[1].actor == "operator-1"  # then the original request
 
 
 @db_required
@@ -182,6 +191,14 @@ async def test_unreconciled_targets_rejected(tenant_id: str) -> None:
     with pytest.raises(AllocationReconciliationError):
         async with get_tenant_session(tenant_id) as session:
             await create_allocation_request(session, req)
+
+    # D-009: the reconciliation FAILURE is itself audited, not just successful writes.
+    async with get_tenant_session(tenant_id) as session:
+        history = await list_history(session, entity_type="allocation_reconciliation")
+    assert len(history) == 1
+    assert history[0].action == "rejected"
+    assert history[0].actor == "operator-1"
+    assert history[0].note  # the validation error text, truncated
 
 
 @db_required

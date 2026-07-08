@@ -154,7 +154,8 @@ class InspectionAuditLogRow(Base):
 
 
 class HuddleRow(Base):
-    """R-009: the persisted session record for an ENDED 1-on-1 huddle (RLS table).
+    """R-009: the persisted session record for an ENDED huddle (RLS table), 2-8 participants
+    since R-011.
 
     A huddle is ephemeral/in-memory for its LIVE lifetime (``realtime/huddle.py``, ADR-0007) —
     this row is written exactly once, at the terminal ``ended`` transition
@@ -163,6 +164,13 @@ class HuddleRow(Base):
     present once the huddle reaches a durable (ended) state"). APPEND-ONLY (rendly_app has
     SELECT,INSERT only). ``prev_record_hash``/``content_hash`` chain per TENANT (not per
     channel — a huddle has no channel), linked over the per-tenant ``seq``.
+
+    R-011 (ADR-0011 Fork F): ``caller_id`` is always the original inviter (NOT NULL — there is
+    always exactly one). ``callee_id`` is a convenience column populated ONLY when the archived
+    session had exactly 2 participants (preserving its exact historical meaning for that case);
+    NULL for a genuine 3+-participant session. ``HuddleParticipantRow`` (below) is the
+    AUTHORITATIVE full participant list for every huddle archived from R-011 forward — 1-on-1
+    included, for a uniform read path.
     """
 
     __tablename__ = "huddles"
@@ -182,13 +190,43 @@ class HuddleRow(Base):
     tenant_id = mapped_column(String(64), primary_key=True)
     huddle_id = mapped_column(String(64), primary_key=True)
     caller_id = mapped_column(String(64), nullable=False)
-    callee_id = mapped_column(String(64), nullable=False)
+    callee_id = mapped_column(String(64), nullable=True)
     state = mapped_column(String(16), nullable=False)
     seq = mapped_column(BigInteger, nullable=False)
     created_at = mapped_column(DateTime(timezone=True), nullable=False)
     ended_at = mapped_column(DateTime(timezone=True), nullable=False)
     prev_record_hash = mapped_column(String(64), nullable=False)
     content_hash = mapped_column(String(64), nullable=False)
+
+
+class HuddleParticipantRow(Base):
+    """R-011: the AUTHORITATIVE full participant list for an archived huddle (RLS table).
+
+    One row per (tenant_id, huddle_id, user_id) — composite PK, FK to both ``huddles`` and
+    ``users`` (the DB-level proof every participant is a real same-tenant user, the per-row
+    analog of ``HuddleRow``'s own caller/callee FKs). APPEND-ONLY (rendly_app has SELECT,INSERT
+    only — same posture as ``huddles``). Written for EVERY archived huddle, including
+    2-participant ones, for a uniform read path (ADR-0011 Fork F). No backfill of historical
+    (pre-R-011) rows — coverage starts at the migration boundary, disclosed, not silently
+    implied as retroactive (mirrors ADR-0009's own chain-coverage-boundary precedent).
+    """
+
+    __tablename__ = "huddle_participants"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "huddle_id"],
+            [f"{RENDLY_SCHEMA}.huddles.tenant_id", f"{RENDLY_SCHEMA}.huddles.huddle_id"],
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"],
+            [f"{RENDLY_SCHEMA}.users.tenant_id", f"{RENDLY_SCHEMA}.users.user_id"],
+        ),
+        {"schema": RENDLY_SCHEMA},
+    )
+
+    tenant_id = mapped_column(String(64), primary_key=True)
+    huddle_id = mapped_column(String(64), primary_key=True)
+    user_id = mapped_column(String(64), primary_key=True)
 
 
 class HuddleChainStateRow(Base):

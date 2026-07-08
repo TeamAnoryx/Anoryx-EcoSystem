@@ -20,6 +20,7 @@ import logging
 from datetime import datetime, timezone
 
 from ..ingest.errors import is_transient
+from ..persistence.audit_log import append_history
 from ..persistence.database import get_tenant_session
 from .authorizations import is_authorized, is_tenant_gated
 from .config import KillSwitchSettings
@@ -30,6 +31,10 @@ from .state import get_or_create_state, try_transition_to_killed
 from .triggers import detect_reason
 
 logger = logging.getLogger("delta.kill_switch.evaluator")
+
+# Reserved system-actor slug for audit rows this module writes itself (D-009) — mirrors
+# budget_engine.evaluator._ACTOR.
+_ACTOR = "kill-switch"
 
 
 async def evaluate_kill_switch(record, settings: KillSwitchSettings) -> None:
@@ -116,6 +121,20 @@ async def _kill(session, record, reason: str, settings: KillSwitchSettings, now:
         transition="kill",
         policy_payload=payload,
         now=now,
+    )
+    # D-009: hash-chain audited in the SAME transaction as the outbox enqueue.
+    await append_history(
+        session,
+        tenant_id=record.tenant_id,
+        entity_type="kill_switch_enforcement",
+        entity_id=state.kill_id,
+        action="kill",
+        actor=_ACTOR,
+        now=now,
+        note=(
+            f"reason={reason} policy_id={state.policy_id} version={version} "
+            f"team={record.team_id} project={record.project_id} agent={record.agent_id}"
+        ),
     )
     logger.warning(
         "delta.kill_switch KILL decided reason=%s policy_id=%s version=%d tenant=%s "
