@@ -170,3 +170,44 @@ async def top_spenders(
     return [
         GroupSpendRow(group_key=r[0], cost_cents=int(r[1]), request_count=int(r[2])) for r in rows
     ]
+
+
+async def spend_for_groups(
+    session: AsyncSession,
+    *,
+    start: datetime,
+    end: datetime,
+    group_by: GroupDimension,
+    group_keys: list[str],
+    scope: ScopeFilter | None = None,
+) -> list[GroupSpendRow]:
+    """Spend + request count for a SPECIFIC, caller-supplied set of ``group_by`` values
+    over ``[start, end)`` — unlike ``top_spenders``, this does not rank or apply its own
+    limit; the caller already knows exactly which groups it needs (e.g. D-012's anomaly
+    baseline lookup, which must match the group_keys ``top_spenders`` returned for the
+    CURRENT window, not whichever groups separately happen to rank in the top-N of a
+    different window — a group could be a top-N spender now but rank outside a blind
+    top-N baseline query, silently reading as "no prior spend"). ``group_keys`` is
+    expected to already be bounded by the caller (mirrors ``top_spenders``'s own
+    100-row cap); this returns no rows for an empty list without issuing a query.
+    """
+    if not group_keys:
+        return []
+    group_col = getattr(ledger_entries.c, group_by)
+    stmt = (
+        select(
+            group_col,
+            func.coalesce(func.sum(ledger_entries.c.amount_minor_units), 0),
+            func.count(),
+        )
+        .where(
+            _window_clause(start=start, end=end),
+            group_col.in_(group_keys[:100]),
+            *_scope_clauses(scope or ScopeFilter()),
+        )
+        .group_by(group_col)
+    )
+    rows = (await session.execute(stmt)).all()
+    return [
+        GroupSpendRow(group_key=r[0], cost_cents=int(r[1]), request_count=int(r[2])) for r in rows
+    ]
