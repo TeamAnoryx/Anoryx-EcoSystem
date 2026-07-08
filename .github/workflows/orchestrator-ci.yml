@@ -124,4 +124,8 @@ jobs:
           # O-011: same fail-not-skip discipline for the cross-module automation-engine
           # e2e — a silent skip must never masquerade as a green automation-engine gate.
           ORCH_REQUIRE_AUTOMATION_E2E: "1"
+          # O-012: same fail-not-skip discipline for the agent-messaging + shared-state e2e
+          # (incl. the genuine concurrent-writer CAS race) -- a silent skip must never
+          # masquerade as a green messaging/state gate.
+          ORCH_REQUIRE_MESSAGING_E2E: "1"
         run: pytest tests --tb=short -q

@@ -1566,3 +1566,409 @@ async def list_recent_distributions_admin(
     result = await session.execute(statement, {"lim": limit})
     rows = result.mappings().all()
     return [{column: row[column] for column in _ADMIN_DISTRIBUTION_SUMMARY_COLUMNS} for row in rows]
+
+
+# =========================================================================== #
+# Agent mailbox relay (O-012, ADR-0012) — data access (tenant session, RLS-scoped) and its
+# audit chain (privileged session, no RLS on writes; RLS-scoped SELECT, mirrors
+# automation_executions).
+# =========================================================================== #
+
+_AGENT_MESSAGE_COLUMNS = (
+    "sequence_number",
+    "tenant_id",
+    "sender_team_id",
+    "sender_project_id",
+    "sender_agent_id",
+    "recipient_team_id",
+    "recipient_project_id",
+    "recipient_agent_id",
+    "message_type",
+    "body",
+    "idempotency_key",
+    "created_at",
+)
+
+
+async def insert_agent_message(session: AsyncSession, row: dict[str, Any]) -> dict[str, Any]:
+    """INSERT one agent_messages row (tenant session, RLS-scoped) and return the full
+    persisted row (including the server-assigned sequence_number/created_at). Caller commits.
+
+    May raise IntegrityError on UNIQUE(tenant_id, idempotency_key) — the router catches it
+    NARROWLY (mirrors the O-003 ingest pipeline's own dedup discipline), rolls back, and
+    re-fetches the ORIGINAL row via `get_agent_message_by_idempotency_key` on a FRESH tenant
+    session (a rolled-back session's transaction-local tenant GUC is gone — reusing it here
+    would run the re-read with no tenant context set, mirroring automation/router.py's PATCH
+    two-separate-sessions precedent).
+    """
+    from orchestrator.persistence.models.agent_message import AgentMessage
+
+    stmt = insert(AgentMessage).values(**row).returning(AgentMessage)
+    result = await session.execute(stmt)
+    inserted = result.scalar_one()
+    return {c.name: getattr(inserted, c.name) for c in AgentMessage.__table__.columns}
+
+
+async def get_agent_message_by_idempotency_key(
+    session: AsyncSession, idempotency_key: str
+) -> dict[str, Any] | None:
+    """Return one agent_messages row by idempotency_key, or None (tenant session, RLS-scoped).
+
+    Used to re-fetch the ORIGINAL message after a dedup IntegrityError on insert — the
+    UNIQUE(tenant_id, idempotency_key) constraint means a conflict can only ever be with a
+    row of the caller's OWN tenant, so this RLS-scoped lookup always finds it.
+    """
+    from orchestrator.persistence.models.agent_message import AgentMessage
+
+    result = await session.execute(
+        select(AgentMessage).where(AgentMessage.idempotency_key == idempotency_key)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    return {c.name: getattr(row, c.name) for c in AgentMessage.__table__.columns}
+
+
+async def list_inbox_messages(
+    session: AsyncSession,
+    *,
+    team_id: str,
+    project_id: str,
+    agent_id: str,
+    since_sequence: int | None,
+    limit: int,
+) -> tuple[list[dict[str, Any]], int | None]:
+    """Cursor-paginated read of one agent's inbox (tenant session, RLS-scoped).
+
+    Returns messages addressed to (team_id, project_id, agent_id), ordered by
+    sequence_number ASCENDING. `since_sequence` is the EXCLUSIVE lower bound (mirrors every
+    other cursor discipline in this module); one extra row (limit+1) is fetched to compute
+    the next cursor without a second query. RLS means a tenant can only ever poll inboxes
+    for agents within ITS OWN tenant — there is no separate cross-tenant check needed.
+    """
+    conditions = [
+        "recipient_team_id = :team_id",
+        "recipient_project_id = :project_id",
+        "recipient_agent_id = :agent_id",
+    ]
+    params: dict[str, Any] = {"team_id": team_id, "project_id": project_id, "agent_id": agent_id}
+    if since_sequence is not None:
+        conditions.append("sequence_number > :since_sequence")
+        params["since_sequence"] = since_sequence
+    where = " WHERE " + " AND ".join(conditions)
+    columns = ", ".join(_AGENT_MESSAGE_COLUMNS)
+    params["lim"] = limit + 1
+    # avoid-sqlalchemy-text false positive: `columns`/`where` are built from the constant
+    # _AGENT_MESSAGE_COLUMNS tuple + literal predicate fragments; every VALUE is bound.
+    # nosemgrep: avoid-sqlalchemy-text
+    statement = text(
+        f"SELECT {columns} FROM agent_messages{where} "  # noqa: S608
+        "ORDER BY sequence_number ASC LIMIT :lim"
+    )
+    result = await session.execute(statement, params)
+    rows = result.mappings().all()
+    next_cursor: int | None = None
+    if len(rows) > limit:
+        next_cursor = rows[limit - 1]["sequence_number"]
+        rows = rows[:limit]
+    projected = [{column: row[column] for column in _AGENT_MESSAGE_COLUMNS} for row in rows]
+    return projected, next_cursor
+
+
+# Distinct transaction-scoped advisory-lock key for the messaging-chain append (a stable
+# bigint from a domain label, distinct from every other chain's key).
+_MESSAGING_CHAIN_LOCK_KEY = int.from_bytes(
+    hashlib.sha256(b"anoryx-orchestrator:messaging-audit-chain").digest()[:8],
+    "big",
+    signed=True,
+)
+
+
+async def messaging_chain_tip_hash(session: AsyncSession) -> str:
+    """Return the most-recent agent_messaging_audit_log row_hash, or MESSAGING_GENESIS_HASH."""
+    result = await session.execute(
+        text(
+            "SELECT row_hash FROM agent_messaging_audit_log "
+            "ORDER BY sequence_number DESC LIMIT 1"
+        )
+    )
+    tip = result.scalar_one_or_none()
+    return tip if tip is not None else hash_chain.MESSAGING_GENESIS_HASH
+
+
+async def append_messaging_audit_link(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    sender_agent_id: str,
+    recipient_agent_id: str,
+    message_type: str,
+    idempotency_key: str,
+    disposition: str,
+) -> str:
+    """Append one hash-chained agent_messaging_audit_log link (privileged session).
+
+    Caller opens the privileged transaction (`async with session.begin()`). A
+    transaction-scoped advisory lock (own key) serialises concurrent appends so prev_hash
+    always references the true tip. Returns the new row_hash. Records every send ATTEMPT —
+    both 'sent' and 'deduped' get a link (ADR-0012; contrast with append_state_audit_link
+    below, which mirrors O-011's "only the meaningful outcome" semantics instead).
+    """
+    from orchestrator.persistence.models.agent_messaging_audit_log import AgentMessagingAuditLog
+
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:k)"), {"k": _MESSAGING_CHAIN_LOCK_KEY}
+    )
+    prev_hash = await messaging_chain_tip_hash(session)
+    row = {
+        "tenant_id": tenant_id,
+        "sender_agent_id": sender_agent_id,
+        "recipient_agent_id": recipient_agent_id,
+        "message_type": message_type,
+        "idempotency_key": idempotency_key,
+        "disposition": disposition,
+        "prev_hash": prev_hash,
+    }
+    row["row_hash"] = hash_chain.compute_messaging_row_hash(row)
+    await session.execute(insert(AgentMessagingAuditLog).values(**row))
+    return row["row_hash"]
+
+
+async def validate_messaging_chain(session: AsyncSession) -> bool:
+    """Re-validate the full agent-messaging chain: each row_hash recomputes + links.
+
+    Returns True iff every link verifies. O(n) — privileged session (mirrors
+    validate_automation_chain's FAIL-LOUD BYPASSRLS assertion: this chain carries RLS, so a
+    non-bypass role would only see its own tenant's rows and could falsely report integrity).
+    """
+    from orchestrator.persistence.models.agent_messaging_audit_log import AgentMessagingAuditLog
+
+    bypass = (
+        await session.execute(
+            text(
+                "SELECT bool_or(rolbypassrls OR rolsuper) FROM pg_roles "
+                "WHERE rolname = current_user"
+            )
+        )
+    ).scalar()
+    if not bypass:
+        raise RuntimeError(
+            "validate_messaging_chain requires a BYPASSRLS/superuser privileged session; a "
+            "non-bypass role sees an RLS-scoped subset and would falsely report integrity."
+        )
+    result = await session.execute(
+        select(AgentMessagingAuditLog).order_by(AgentMessagingAuditLog.sequence_number.asc())
+    )
+    expected_prev = hash_chain.MESSAGING_GENESIS_HASH
+    for row in result.scalars():
+        if row.prev_hash != expected_prev:
+            return False
+        row_data = {
+            "tenant_id": row.tenant_id,
+            "sender_agent_id": row.sender_agent_id,
+            "recipient_agent_id": row.recipient_agent_id,
+            "message_type": row.message_type,
+            "idempotency_key": row.idempotency_key,
+            "disposition": row.disposition,
+            "prev_hash": row.prev_hash,
+        }
+        if not hash_chain.verify_messaging_row_hash(row_data, row.row_hash):
+            return False
+        expected_prev = row.row_hash
+    return True
+
+
+# =========================================================================== #
+# Shared state store (O-012, ADR-0012) — data access (tenant session, RLS-scoped) and its
+# audit chain (privileged session, RLS-scoped SELECT, mirrors automation_executions).
+# =========================================================================== #
+
+
+async def get_agent_state(session: AsyncSession, state_key: str) -> dict[str, Any] | None:
+    """Return one agent_state row as a dict, or None (tenant session, RLS-scoped)."""
+    from orchestrator.persistence.models.agent_state import AgentState
+
+    result = await session.execute(select(AgentState).where(AgentState.state_key == state_key))
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    return {c.name: getattr(row, c.name) for c in AgentState.__table__.columns}
+
+
+async def create_agent_state_if_absent(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    state_key: str,
+    state_value: dict[str, Any],
+    updated_by_agent_id: str | None,
+) -> dict[str, Any] | None:
+    """INSERT a new agent_state row iff (tenant_id, state_key) is absent (tenant session).
+
+    ON CONFLICT DO NOTHING is the atomic, race-safe "create-only-if-absent" primitive — two
+    concurrent creates for the SAME key can never both succeed (the UNIQUE constraint lets
+    exactly one INSERT win; the loser's RETURNING is empty, never an IntegrityError). Returns
+    the newly created row (version=1) iff THIS call won the race, else None — the caller then
+    reads back the current row (`get_agent_state`) to echo its version in a 409
+    `already_exists`. Caller commits.
+    """
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from orchestrator.persistence.models.agent_state import AgentState
+
+    stmt = (
+        pg_insert(AgentState)
+        .values(
+            tenant_id=tenant_id,
+            state_key=state_key,
+            state_value=state_value,
+            updated_by_agent_id=updated_by_agent_id,
+        )
+        .on_conflict_do_nothing(constraint="uq_as_tenant_state_key")
+        .returning(AgentState)
+    )
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    return {c.name: getattr(row, c.name) for c in AgentState.__table__.columns}
+
+
+async def update_agent_state_cas(
+    session: AsyncSession,
+    *,
+    state_key: str,
+    expected_version: int,
+    state_value: dict[str, Any],
+    updated_by_agent_id: str | None,
+) -> dict[str, Any] | None:
+    """Atomically UPDATE one agent_state row iff its CURRENT version == expected_version.
+
+    `UPDATE ... WHERE state_key = :k AND version = :expected` (RLS's own USING/WITH CHECK
+    predicate additionally confines this to the caller's tenant) is the race-safe CAS idiom
+    — no separate lock statement is needed: under Postgres's MVCC, two concurrent writers
+    racing on the SAME (tenant_id, state_key) with the SAME expected_version serialise on the
+    row's write lock, and the second writer's WHERE clause re-evaluates against the
+    already-committed new version and genuinely fails to match (never a silent overwrite).
+    Returns the UPDATED row (new version) iff this call's CAS won, else None (the caller
+    then reads back the current row to echo its version in a 409 `version_conflict`). Caller
+    commits.
+    """
+    from sqlalchemy import update
+
+    from orchestrator.persistence.models.agent_state import AgentState
+
+    stmt = (
+        update(AgentState)
+        .where(AgentState.state_key == state_key, AgentState.version == expected_version)
+        .values(
+            state_value=state_value,
+            version=AgentState.version + 1,
+            updated_at=datetime.now(timezone.utc),
+            updated_by_agent_id=updated_by_agent_id,
+        )
+        .returning(AgentState)
+    )
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    return {c.name: getattr(row, c.name) for c in AgentState.__table__.columns}
+
+
+# Distinct transaction-scoped advisory-lock key for the state-chain append (a stable
+# bigint from a domain label, distinct from every other chain's key).
+_STATE_CHAIN_LOCK_KEY = int.from_bytes(
+    hashlib.sha256(b"anoryx-orchestrator:state-audit-chain").digest()[:8],
+    "big",
+    signed=True,
+)
+
+
+async def state_chain_tip_hash(session: AsyncSession) -> str:
+    """Return the most-recent agent_state_audit_log row_hash, or STATE_GENESIS_HASH."""
+    result = await session.execute(
+        text("SELECT row_hash FROM agent_state_audit_log ORDER BY sequence_number DESC LIMIT 1")
+    )
+    tip = result.scalar_one_or_none()
+    return tip if tip is not None else hash_chain.STATE_GENESIS_HASH
+
+
+async def append_state_audit_link(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    state_key: str,
+    version: int,
+    disposition: str,
+    updated_by_agent_id: str | None = None,
+) -> str:
+    """Append one hash-chained agent_state_audit_log link (privileged session).
+
+    Caller opens the privileged transaction (`async with session.begin()`). A
+    transaction-scoped advisory lock (own key) serialises concurrent appends so prev_hash
+    always references the true tip. Returns the new row_hash. Mirrors O-011's
+    automation_executions "only the meaningful outcome" semantics — the CALLER must only
+    invoke this for a genuine 'created'/'updated' write, NEVER for a version-conflict
+    rejection (nothing about the stored state changed, so there is nothing tamper-evident
+    to record; see append_messaging_audit_link above for the messaging chain's OPPOSITE
+    "every attempt" choice, and ADR-0012 for why the two chains differ).
+    """
+    from orchestrator.persistence.models.agent_state_audit_log import AgentStateAuditLog
+
+    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _STATE_CHAIN_LOCK_KEY})
+    prev_hash = await state_chain_tip_hash(session)
+    row = {
+        "tenant_id": tenant_id,
+        "state_key": state_key,
+        "version": version,
+        "updated_by_agent_id": updated_by_agent_id,
+        "disposition": disposition,
+        "prev_hash": prev_hash,
+    }
+    row["row_hash"] = hash_chain.compute_state_row_hash(row)
+    await session.execute(insert(AgentStateAuditLog).values(**row))
+    return row["row_hash"]
+
+
+async def validate_state_chain(session: AsyncSession) -> bool:
+    """Re-validate the full shared-state chain: each row_hash recomputes + links.
+
+    Returns True iff every link verifies. O(n) — privileged session (mirrors
+    validate_automation_chain's FAIL-LOUD BYPASSRLS assertion: this chain carries RLS, so a
+    non-bypass role would only see its own tenant's rows and could falsely report integrity).
+    """
+    from orchestrator.persistence.models.agent_state_audit_log import AgentStateAuditLog
+
+    bypass = (
+        await session.execute(
+            text(
+                "SELECT bool_or(rolbypassrls OR rolsuper) FROM pg_roles "
+                "WHERE rolname = current_user"
+            )
+        )
+    ).scalar()
+    if not bypass:
+        raise RuntimeError(
+            "validate_state_chain requires a BYPASSRLS/superuser privileged session; a "
+            "non-bypass role sees an RLS-scoped subset and would falsely report integrity."
+        )
+    result = await session.execute(
+        select(AgentStateAuditLog).order_by(AgentStateAuditLog.sequence_number.asc())
+    )
+    expected_prev = hash_chain.STATE_GENESIS_HASH
+    for row in result.scalars():
+        if row.prev_hash != expected_prev:
+            return False
+        row_data = {
+            "tenant_id": row.tenant_id,
+            "state_key": row.state_key,
+            "version": row.version,
+            "updated_by_agent_id": row.updated_by_agent_id,
+            "disposition": row.disposition,
+            "prev_hash": row.prev_hash,
+        }
+        if not hash_chain.verify_state_row_hash(row_data, row.row_hash):
+            return False
+        expected_prev = row.row_hash
+    return True
