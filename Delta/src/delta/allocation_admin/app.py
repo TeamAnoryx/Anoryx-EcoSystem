@@ -1,9 +1,13 @@
-"""Delta allocation-admin app factory (D-007) — the budget-allocation admin API.
+"""Delta admin app factory — the operator admin API (D-007 allocations, D-008
+dashboards).
 
-Exposes ``/v1/admin/*`` (allocations, decisions, history) plus a ``/health`` probe.
-Settings (the break-glass bearer token) are resolved fail-loud at construction,
-mirroring ``delta.ingest.app.create_app``. No public OpenAPI schema — this is an
-internal operator surface, not a versioned external contract.
+Exposes ``/v1/admin/*`` (allocations, decisions, history, dashboards) plus a
+``/health`` probe. One app/port for the whole admin console (D-008 adds routes to
+the D-007 app rather than standing up a second process — same operators, same
+auth, same trust boundary). Settings (the break-glass bearer token) are resolved
+fail-loud at construction, mirroring ``delta.ingest.app.create_app``. No public
+OpenAPI schema — this is an internal operator surface, not a versioned external
+contract.
 """
 
 from __future__ import annotations
@@ -11,14 +15,15 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from ..dashboards.router import router as dashboards_router
 from .config import load_settings
-from .router import router
+from .router import router as allocations_router
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="Delta Allocation Admin",
-        version="0.1.0",
+        title="Delta Admin",
+        version="0.2.0",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
@@ -36,5 +41,6 @@ def create_app() -> FastAPI:
         # captures it), return a generic 500.
         return JSONResponse(status_code=500, content={"status": "error"})
 
-    app.include_router(router)
+    app.include_router(allocations_router)
+    app.include_router(dashboards_router)
     return app
