@@ -18,6 +18,9 @@ It is ITSELF a security product. Its own code is a target. Build accordingly.
                            integrity verification (operator CLI, no HTTP endpoints)
 - src/onboarding/       — guided sandbox-tenant provisioning (operator CLI,
                            no HTTP endpoints — see docs/adr/0031)
+- src/mcp_gateway/      — MCP/third-party integration governance: per-tenant
+                           server allow-lists + uniform inspection (operator
+                           CLI, no live proxy yet — see docs/adr/0032)
 - frontend/             — Next.js admin/compliance console
 - infra/                — Docker, K8s, Helm, CI/CD
 - contracts/            — API/event/policy schemas (api-architect owns, hook-protected)
