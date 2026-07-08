@@ -1,0 +1,71 @@
+{{- if .Values.migrations.enabled -}}
+# Alembic migration Job. A NORMAL release resource (NOT a Helm pre-install
+# hook): a pre-install hook would run before the bundled Postgres resource
+# exists and fail on a fresh install. Instead, a `wait-for-postgres`
+# initContainer gates the migration on the DB accepting connections, and BOTH
+# serve Deployments (ingest + admin) gate on schema-at-head via a
+# `wait-for-migrate` initContainer. Runs `alembic upgrade head` +
+# (when provisionAppRole) the delta_app SCRAM provisioning THROUGH the
+# entrypoint shim, so it assembles the connection URLs from the password
+# secretKeyRef exactly as the compose stack does (mirrors Anoryx-AI-
+# Orchestrator's O-008 migration-job.yaml / ADR-0008 Fork F).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "delta.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "delta.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 2
+  # Bound a hung migration. Counts initContainer + image-pull time, so it must
+  # tolerate a cold first pull of the bundled Postgres image on a fresh node.
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        {{- include "delta.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "delta.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- $waitPg := include "delta.waitForPostgres" . | trim }}
+      {{- if $waitPg }}
+      initContainers:
+        {{- $waitPg | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "delta.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          # Run via the entrypoint shim so it assembles the connection URLs from
+          # the password secretKeyRef (kept out of the pod spec). The entrypoint
+          # runs `alembic upgrade head` (gated on RUN_MIGRATIONS=1) and THEN
+          # provisions the delta_app SCRAM password — that order is mandatory:
+          # the provision step needs the role that migration 0001 creates. The
+          # `args` below are a read-only head confirmation that exits 0 (the
+          # entrypoint exec's it after migrate+provision succeed).
+          command: ["/usr/local/bin/docker-entrypoint.sh"]
+          args: ["alembic", "current"]
+          env:
+            - name: RUN_MIGRATIONS
+              value: "1"
+            {{- if .Values.migrations.provisionAppRole }}
+            - name: DELTA_PROVISION_APP_ROLE
+              value: "1"
+            {{- end }}
+            {{- include "delta.pgEnv" . | nindent 12 }}
+          {{- if or .Values.envSecret .Values.createEnvSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ include "delta.envSecretName" . }}
+          {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

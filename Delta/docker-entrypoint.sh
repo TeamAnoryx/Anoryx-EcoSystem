@@ -1,5 +1,5 @@
 #!/bin/sh
-# Delta ledger container entrypoint (D-003).
+# Delta container entrypoint (D-003, extended D-010).
 #
 # Ports the proven Sentinel F-010 fix (Anoryx-Sentinel/docker-entrypoint.sh): a
 # migration that creates the app role passwordless breaks every RLS tenant
@@ -7,20 +7,40 @@
 # alembic, then provisions the delta_app SCRAM password POST-migrate so a fresh DB
 # authenticates.
 #
+# D-010 extends this SAME shim (mirrors the Orchestrator's O-008 entrypoint,
+# ADR-0008 Fork D) to bridge file-based Docker secrets under /run/secrets/* to
+# the env vars Delta's config modules expect, falling back to the environment
+# when no file is mounted (Kubernetes' secretKeyRef/envFrom case). It then
+# execs whatever command it was given — either app's uvicorn invocation (the
+# Helm Deployment / compose service supplies the target) or `alembic current`
+# (the migration Job).
+#
 # Security posture:
 #   - No password is ever in the migration SQL or logged. The plaintext is read from
 #     APP_DATABASE_URL (the same trust boundary as the process env) and only an
 #     opaque SCRAM verifier is ever sent to the server in ALTER ROLE.
+#   - Passwords/tokens live ONLY in mounted secret files or the environment,
+#     never in the compose file's `environment:` block or `docker inspect`
+#     Config.Env for a value assembled here.
 #
 # POSIX sh (slim base has /bin/sh, not bash).
 set -eu
+
+_read_secret() {
+    if [ -f "$1" ]; then
+        tr -d '\n\r' < "$1"
+    fi
+}
 
 PG_HOST="${POSTGRES_HOST:-postgres}"
 PG_PORT="${POSTGRES_PORT:-5432}"
 PG_USER="${POSTGRES_USER:-delta}"
 PG_DB="${POSTGRES_DB:-delta_dev}"
 PG_APP_USER="${DELTA_APP_USER:-delta_app}"
-PG_PW="${POSTGRES_PASSWORD:-}"
+# Prefer a mounted file secret (Compose); fall back to POSTGRES_PASSWORD env
+# (Kubernetes injects it via secretKeyRef — kept out of the pod spec).
+PG_PW="$(_read_secret /run/secrets/postgres_password)"
+[ -z "$PG_PW" ] && PG_PW="${POSTGRES_PASSWORD:-}"
 
 # Assemble the two role URLs if not already supplied (k8s/external services may set
 # them verbatim, in which case no assembly happens for that URL).
@@ -35,7 +55,28 @@ if [ -z "${APP_DATABASE_URL:-}" ] && [ -n "$PG_PW" ]; then
 fi
 
 if [ -z "${DATABASE_URL:-}" ]; then
-    echo "delta-entrypoint: WARNING: DATABASE_URL unset and no POSTGRES_PASSWORD — migrations will fail." >&2
+    echo "delta-entrypoint: WARNING: DATABASE_URL unset and no postgres password was found (file /run/secrets/postgres_password or POSTGRES_PASSWORD env) — migrations will fail." >&2
+fi
+
+# --- Ingest HMAC secret (POST /v1/ingest/usage signature verification) ------ #
+INGEST_HMAC="$(_read_secret /run/secrets/delta_ingest_hmac_secret)"
+if [ -z "${DELTA_INGEST_HMAC_SECRET:-}" ] && [ -n "$INGEST_HMAC" ]; then
+    export DELTA_INGEST_HMAC_SECRET="$INGEST_HMAC"
+fi
+
+# --- Outbound Bearer token to the Orchestrator's O-004 distribution seam ---- #
+# Empty is a VALID value (the budget-engine/kill-switch configs treat "" as
+# "disabled, inert no-op" when their own *_ENABLED flag is off) — this shim
+# only bridges the file if one is mounted; it never fabricates a value.
+ORCH_TOKEN="$(_read_secret /run/secrets/orch_service_token)"
+if [ -z "${ORCH_SERVICE_TOKEN:-}" ] && [ -n "$ORCH_TOKEN" ]; then
+    export ORCH_SERVICE_TOKEN="$ORCH_TOKEN"
+fi
+
+# --- Admin break-glass bearer (delta.allocation_admin app; fail-loud) ------- #
+ADMIN_TOKEN="$(_read_secret /run/secrets/delta_admin_token)"
+if [ -z "${DELTA_ADMIN_TOKEN:-}" ] && [ -n "$ADMIN_TOKEN" ]; then
+    export DELTA_ADMIN_TOKEN="$ADMIN_TOKEN"
 fi
 
 # --- Migrations (compose convenience; k8s uses a dedicated Job) -------------- #
@@ -91,8 +132,12 @@ PYEOF
 fi
 
 # --- Launch ----------------------------------------------------------------- #
-# D-003 ships no app server (the ledger is a library + schema). If a command was
-# supplied, exec it; otherwise the migrate/provision work is done — exit cleanly.
+# This image has no baked-in default command (D-010: two ASGI apps share one
+# image — delta.ingest.app:create_app and delta.allocation_admin.app:
+# create_app — plus the migration/`alembic current` use). If a command was
+# supplied (uvicorn for a serve target, alembic for the migration Job, sh for
+# debugging), exec it; otherwise the migrate/provision work above is done —
+# exit cleanly (the original D-003 migration-only-image behavior).
 if [ "$#" -gt 0 ]; then
     exec "$@"
 fi

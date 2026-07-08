@@ -1,0 +1,18 @@
+apiVersion: v2
+name: delta
+description: Delta — FinOps / ERP / budget-policy ledger, enforcement ingest, and allocation-admin console (D-010)
+type: application
+# Chart version is independent of the app version (SemVer for the chart itself).
+version: 0.1.0
+# appVersion tracks the Delta release (single source of truth: pyproject.toml).
+appVersion: "0.2.0"
+keywords:
+  - finops
+  - budget-policy
+  - ledger
+  - enforcement
+home: https://github.com/TeamAnoryx/anoryx-ecosystem
+sources:
+  - https://github.com/TeamAnoryx/anoryx-ecosystem
+maintainers:
+  - name: Anoryx

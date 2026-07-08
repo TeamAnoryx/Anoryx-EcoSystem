@@ -1,0 +1,55 @@
+Delta {{ .Chart.AppVersion }} has been deployed as release "{{ .Release.Name }}".
+
+1. Check rollout status (two Deployments):
+   kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "delta.fullname" . }}-ingest
+   kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "delta.fullname" . }}-admin
+
+2. Watch the pods (a pre-upgrade migration Job runs first):
+   kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+
+3. Port-forward and probe locally:
+   # Ingest — the runtime enforcement hot path (POST /v1/ingest/usage):
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "delta.fullname" . }}-ingest 8000:{{ .Values.ingest.service.port }}
+   curl -fs http://localhost:8000/health
+
+   # Admin — the internal operator console (D-007/D-008/D-009). INTERNAL ONLY
+   # by NetworkPolicy default — this port-forward is the intended access path,
+   # not an Ingress:
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "delta.fullname" . }}-admin 8001:{{ .Values.admin.service.port }}
+   curl -fs http://localhost:8001/health
+
+4. Logs:
+   kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=ingest --tail=100
+   kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=admin --tail=100
+
+{{- if not .Values.envSecret }}
+{{- if not .Values.createEnvSecret }}
+
+WARNING: no `envSecret` is set and `createEnvSecret` is false. Delta needs
+DELTA_INGEST_HMAC_SECRET (ingest, fail-loud), DELTA_ADMIN_TOKEN (admin,
+fail-loud), and ORCH_SERVICE_TOKEN (only required when budgetEngineEnabled or
+killSwitchEnabled is true — and, in external DB mode, DATABASE_URL /
+APP_DATABASE_URL). Create the Secret with the helper (keeps secrets out of the
+repo):
+   bash deploy/helm/gen-k8s-secret.sh {{ .Release.Namespace }} {{ .Release.Name }}
+   helm upgrade {{ .Release.Name }} ... --set envSecret={{ include "delta.envSecretName" . }}
+Until then, neither app can start (both DELTA_INGEST_HMAC_SECRET and
+DELTA_ADMIN_TOKEN are fail-loud).
+{{- end }}
+{{- end }}
+{{- if .Values.postgres.bundled }}
+
+NOTE: bundled Postgres is DEV/DEMO-GRADE. For production, set
+postgres.bundled=false and point at a managed service (see deploy/DEPLOY-K8s.md).
+{{- end }}
+
+NOTE: no Redis is bundled by this chart. This is a deliberate, documented
+scope decision (see deploy/DEPLOY-K8s.md) — zero Delta code imports/uses
+Redis, unlike the roadmap's generic "Postgres + Redis" phrasing.
+
+NOTE: mTLS between Delta and the Orchestrator's O-004 distribution seam is NOT
+provisioned by this chart — the interim peer authenticator is the shared
+ORCH_SERVICE_TOKEN bearer (mirroring Anoryx-AI-Orchestrator's own O-008
+deferral of mTLS to later hardening, itself mirroring Anoryx-Sentinel's F-010
+Vault/mTLS deferral). Vault/KMS for secret material is likewise deferred —
+this chart uses native K8s Secrets.
