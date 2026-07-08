@@ -113,11 +113,21 @@ _MAX_SDP_LEN = 65536  # Signal.offer/answer.sdp maxLength
 _MAX_CANDIDATE_LEN = 1024  # Signal.ice-candidate.candidate maxLength
 _SdpStr = Annotated[str, StringConstraints(max_length=_MAX_SDP_LEN)]
 
+# R-011 (ADR-0011 Fork A/B): ADDITIVE cap on top of the always-required peer_user_id — total
+# invitees <= 1 + MAX_ADDITIONAL_HUDDLE_PARTICIPANTS, total participants (incl. caller) <=
+# huddle.MAX_HUDDLE_PARTICIPANTS. Absent/empty means the exact R-007 1-on-1 shape.
+MAX_ADDITIONAL_HUDDLE_PARTICIPANTS = 4
+
 
 class HuddleInviteFrame(BaseModel):
     model_config = ConfigDict(extra="forbid")
     msg_type: Literal["huddle.invite"]
     peer_user_id: _Uuid
+    # R-011: OPTIONAL group-huddle extension. Omitted/None (the R-007 default) is a strict 1-on-1
+    # invite, byte-for-byte the original wire shape — this field is purely additive.
+    additional_participant_user_ids: (
+        Annotated[list[_Uuid], Field(max_length=MAX_ADDITIONAL_HUDDLE_PARTICIPANTS)] | None
+    ) = None
     channel_id: _Uuid | None = None
 
 
@@ -315,15 +325,22 @@ def build_huddle_update(
     tenant_id: str,
     peer_user_id: str,
     state: str,
+    additional_participant_user_ids: list[str] | None = None,
     archive: HuddleArchive | None = None,
 ) -> dict:
     """The server->client huddle.update frame. ``peer_user_id`` is relative to the RECIPIENT.
+
+    ``additional_participant_user_ids`` (R-011) carries any OTHER participants beyond
+    ``peer_user_id``, also relative to the recipient — omitted for the 1-on-1 case, producing
+    the EXACT R-007 wire shape byte-for-byte.
 
     ``archival`` is attached IFF ``archive`` is given — the caller only supplies it once the
     huddle reaches its durable ``ended`` state AND the DB archive write succeeds
     (contracts/messages.schema.json HuddleUpdate description), matching the chat.message
     archival posture. A failed archive write degrades to no ``archival`` field, never blocks
     the ``ended`` broadcast itself (see ``realtime/pipeline.py``'s best-effort archiving).
+    R-011 group (3+ participant) huddles never carry ``archival`` at all — group archival is a
+    named deferral (ADR-0011 §Honest deferrals), not an intermittent best-effort failure.
     """
     frame = {
         "msg_type": "huddle.update",
@@ -332,6 +349,8 @@ def build_huddle_update(
         "peer_user_id": peer_user_id,
         "state": state,
     }
+    if additional_participant_user_ids:
+        frame["additional_participant_user_ids"] = additional_participant_user_ids
     if archive is not None:
         frame["archival"] = _huddle_archival_meta(archive)
     return frame

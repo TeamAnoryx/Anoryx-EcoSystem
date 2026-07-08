@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "rendly:messages:v1",
   "title": "Rendly Real-Time Message Catalog",
-  "description": "The single source of truth for every frame exchanged over the Rendly real-time WebSocket (chat + 1-on-1 huddle signaling). Mirrors the Sentinel contract dialect: JSON Schema Draft 2020-12, dispatch is SOLELY via oneOf + the unique `msg_type` const on each variant (the consts are unique and the variants are mutually exclusive, so exactly one matches a valid frame). All objects are closed (additionalProperties:false) and all fields are bounded (maxLength/maximum/maxItems): closed schemas remove a silent smuggling channel and bounded fields remove a DoS-via-parse vector. On SERVER->client frames, tenant_id is the SERVER-RESOLVED value from the verified access token (see the contracts/openapi.yaml `oauth2` scheme and contracts/ids.md JWT->ID binding); it lets the client independently confirm the connection's tenant. CLIENT->server frames deliberately OMIT tenant_id (and user_id) -- the server resolves them from the session token and NEVER trusts a client-supplied value. The identity-agnostic `error` frame carries no tenant_id (it can fire before identity resolves), mirroring the REST Error envelope. HONESTY BOUNDARIES (non-removable): (1) huddle signaling is 1-on-1 ONLY -- exactly two peers; group/multi-party huddles are R-011 (post-investment) and are out of scope. (2) The `inspection` object is a SEAM ONLY -- R-001 reserves the result fields and the fail-closed `chat.ack` semantics; the actual PII/injection/secret detection is R-008 and is NOT implemented here. Huddle MEDIA (the P2P WebRTC streams) is NEVER content-inspected; only chat message content and signaling metadata pass the inspection seam. (3) The `archival` object carries hash-chain-ready fields DEFINE-ONLY -- immutable archiving (the actual chain construction/verification) is R-009 and is NOT implemented here.",
+  "description": "The single source of truth for every frame exchanged over the Rendly real-time WebSocket (chat + 1-on-1/group huddle signaling). Mirrors the Sentinel contract dialect: JSON Schema Draft 2020-12, dispatch is SOLELY via oneOf + the unique `msg_type` const on each variant (the consts are unique and the variants are mutually exclusive, so exactly one matches a valid frame). All objects are closed (additionalProperties:false) and all fields are bounded (maxLength/maximum/maxItems): closed schemas remove a silent smuggling channel and bounded fields remove a DoS-via-parse vector. On SERVER->client frames, tenant_id is the SERVER-RESOLVED value from the verified access token (see the contracts/openapi.yaml `oauth2` scheme and contracts/ids.md JWT->ID binding); it lets the client independently confirm the connection's tenant. CLIENT->server frames deliberately OMIT tenant_id (and user_id) -- the server resolves them from the session token and NEVER trusts a client-supplied value. The identity-agnostic `error` frame carries no tenant_id (it can fire before identity resolves), mirroring the REST Error envelope. HONESTY BOUNDARIES (non-removable): (1) huddle signaling supports a SMALL, FIXED, invite-time participant list -- the inviter plus `peer_user_id` plus up to 4 more via `additional_participant_user_ids` (6 total, R-011, ADR-0011). It is FULL-MESH P2P ONLY -- there is no SFU/media-relay server, so this does not scale to large calls, and the participant list cannot change after the invite (no mid-call add; any hangup/disconnect ends the WHOLE huddle for every remaining participant -- no partial-leave-and-continue). Only the classic 2-participant case is archived (R-009); 3+ participant sessions are NOT archived (R-011 names this as a deferral, not a silent gap). (2) The `inspection` object is a SEAM ONLY -- R-001 reserves the result fields and the fail-closed `chat.ack` semantics; the actual PII/injection/secret detection is R-008 and is NOT implemented here. Huddle MEDIA (the P2P WebRTC streams) is NEVER content-inspected; only chat message content and signaling metadata pass the inspection seam. (3) The `archival` object carries hash-chain-ready fields DEFINE-ONLY -- immutable archiving (the actual chain construction/verification) is R-009 and is NOT implemented here.",
 
   "oneOf": [
     { "$ref": "#/$defs/SessionWelcome" },
@@ -58,7 +58,7 @@
       "format": "uuid",
       "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
       "maxLength": 64,
-      "description": "1-on-1 huddle session identifier (UUID v4), server-assigned. Doubles as the archival record id for the huddle. UUID-shape pattern bounds it against log injection."
+      "description": "Huddle session identifier (UUID v4, 1-on-1 or group), server-assigned. Doubles as the archival record id for a 2-participant huddle (R-011 group sessions are not archived). UUID-shape pattern bounds it against log injection."
     },
     "client_msg_id": {
       "type": "string",
@@ -170,7 +170,7 @@
     },
 
     "Signal": {
-      "description": "A single WebRTC signaling payload for a 1-on-1 huddle. Dispatch by the `kind` const. Group/SFU signaling is out of scope (1-on-1 only).",
+      "description": "A single WebRTC signaling payload for a huddle (1-on-1 or group, R-011). Dispatch by the `kind` const. Relayed full-mesh to every OTHER participant -- there is no SFU (out of scope).",
       "oneOf": [
         {
           "type": "object",
@@ -439,11 +439,18 @@
     "HuddleInvite": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Client->server. Start a 1-on-1 huddle with exactly one peer. The server assigns the huddle_id and signals the peer. 1-ON-1 ONLY: there is no participant list -- group huddles are R-011 (post-investment).",
+      "description": "Client->server. Start a huddle with peer_user_id plus, OPTIONALLY (R-011, ADR-0011), up to 4 more named participants. The server assigns the huddle_id and signals every invitee. Omitting additional_participant_user_ids is the ORIGINAL R-007 1-on-1 shape, byte-for-byte. FULL-MESH P2P ONLY (no SFU): 6 participants total (inviter + peer_user_id + up to 4 more) is the disclosed cap.",
       "required": ["msg_type", "peer_user_id"],
       "properties": {
         "msg_type": { "type": "string", "const": "huddle.invite" },
         "peer_user_id": { "$ref": "#/$defs/user_id" },
+        "additional_participant_user_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/user_id" },
+          "maxItems": 4,
+          "uniqueItems": true,
+          "description": "R-011: further invitees beyond peer_user_id, named at invite time only (no mid-call add). Must not repeat peer_user_id or the inviter -- the server rejects that as invalid_message."
+        },
         "channel_id": { "$ref": "#/$defs/channel_id" }
       },
       "examples": [
@@ -451,6 +458,11 @@
           "msg_type": "huddle.invite",
           "peer_user_id": "9f8e7d6c-5b4a-3210-fedc-ba9876543210",
           "channel_id": "b3c4d5e6-abcd-1234-ef01-234567890abc"
+        },
+        {
+          "msg_type": "huddle.invite",
+          "peer_user_id": "9f8e7d6c-5b4a-3210-fedc-ba9876543210",
+          "additional_participant_user_ids": ["1a2b3c4d-5e6f-7890-abcd-ef1234567890"]
         }
       ]
     },
@@ -458,13 +470,20 @@
     "HuddleUpdate": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Server->client. 1-on-1 huddle lifecycle. The two peers are the inviter and exactly one peer_user_id. archival is present once the huddle reaches a durable (ended) state so R-009 can archive the session record.",
+      "description": "Server->client. Huddle lifecycle (1-on-1 or group, R-011). peer_user_id + additional_participant_user_ids are relative to THIS recipient -- together they are every OTHER participant. additional_participant_user_ids is omitted for the 1-on-1 case (the original R-007 shape). archival is present IFF the huddle reaches a durable (ended) state AND has exactly 2 participants -- group (3+) sessions are never archived (R-011 names this as a deferral).",
       "required": ["msg_type", "huddle_id", "tenant_id", "peer_user_id", "state"],
       "properties": {
         "msg_type": { "type": "string", "const": "huddle.update" },
         "huddle_id": { "$ref": "#/$defs/huddle_id" },
         "tenant_id": { "$ref": "#/$defs/tenant_id" },
         "peer_user_id": { "$ref": "#/$defs/user_id" },
+        "additional_participant_user_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/user_id" },
+          "maxItems": 4,
+          "uniqueItems": true,
+          "description": "R-011: every OTHER participant beyond peer_user_id, relative to this recipient. Omitted for the 1-on-1 case."
+        },
         "state": {
           "type": "string",
           "enum": ["ringing", "accepted", "active", "declined", "ended", "busy"]
@@ -514,7 +533,7 @@
     "SignalSend": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Client->server. WebRTC signaling for a 1-on-1 huddle, carried over the SAME chat WebSocket (FORK E). The server relays it to the single peer as signal.relay. Signaling metadata is governed by the inspection seam; the resulting MEDIA stream is P2P and NOT content-inspected (honesty boundary).",
+      "description": "Client->server. WebRTC signaling for a huddle (1-on-1 or group, R-011), carried over the SAME chat WebSocket (FORK E). The server relays it to every OTHER participant (full-mesh) as signal.relay -- each pair negotiates its own P2P connection. Signaling metadata is governed by the inspection seam; the resulting MEDIA streams are P2P and NOT content-inspected (honesty boundary).",
       "required": ["msg_type", "huddle_id", "signal"],
       "properties": {
         "msg_type": { "type": "string", "const": "signal.send" },
@@ -538,7 +557,7 @@
     "SignalRelay": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Server->client. A relayed WebRTC signaling payload from the single huddle peer (FORK E, over the chat WebSocket). from_user_id identifies the peer that sent it.",
+      "description": "Server->client. A relayed WebRTC signaling payload from one huddle participant (FORK E, over the chat WebSocket) -- delivered to every OTHER participant (full-mesh, R-011). from_user_id identifies the participant that sent it.",
       "required": ["msg_type", "tenant_id", "huddle_id", "from_user_id", "signal"],
       "properties": {
         "msg_type": { "type": "string", "const": "signal.relay" },

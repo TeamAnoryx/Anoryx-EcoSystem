@@ -22,9 +22,14 @@ from ..auth.errors import new_request_id
 from ..auth.tokens import TokenVerificationError, verify
 from ..persistence import chat_repo
 from ..persistence.async_database import get_tenant_session
-from .frames import build_error, build_huddle_update, build_presence_update, build_session_welcome
+from .frames import build_error, build_presence_update, build_session_welcome
 from .huddle import HuddleState
-from .pipeline import RuntimeContext, archive_ended_huddle_best_effort, dispatch_frame
+from .pipeline import (
+    RuntimeContext,
+    _huddle_update_for_recipient,
+    archive_ended_huddle_best_effort,
+    dispatch_frame,
+)
 from .registry import Connection
 
 _BEARER_PREFIX = "Bearer "
@@ -137,34 +142,37 @@ async def realtime_endpoint(websocket: WebSocket) -> None:
         audience = [c for c in ctx.registry.sharing_connections(conn) if c is not conn]
         ctx.registry.discard(conn)
         await _broadcast_presence(ctx, conn, "offline", audience=audience)
-        # R-007: a dropped socket ends any live 1-on-1 huddle this user was in — real telephony
-        # semantics (a network drop ends the call), and it prevents a stale ringing/active huddle
-        # from lingering in the single-instance manager after its last connection is gone. Only
-        # fires when the disconnecting user has NO remaining live connection (multi-device: the
-        # huddle stays up on their other sockets).
+        # A dropped socket ends any live huddle this user was in — real telephony semantics (a
+        # network drop ends the call), and it prevents a stale ringing/active huddle from
+        # lingering in the single-instance manager after its last connection is gone. Only fires
+        # when the disconnecting user has NO remaining live connection (multi-device: the huddle
+        # stays up on their other sockets). R-011: a group (3+ participant) huddle ends for EVERY
+        # remaining participant too — there is no partial-leave-and-continue (ADR-0011 Fork D).
         if not ctx.registry.user_connections(conn.tenant_id, conn.user_id):
             ended = ctx.huddles.end_all_for_user(conn.tenant_id, conn.user_id)
             if ended is not None:
                 # SHIELDED: by the time a dropped socket reaches this cleanup, Starlette/anyio
                 # has already cancelled this connection's task-group scope. The archive write is
                 # real socket I/O (a fresh DB connection) that actually suspends the coroutine —
-                # an unshielded await here (or the peer send right after it) gets re-cancelled at
-                # that suspension point, silently dropping the `ended` notice entirely (not just
-                # the archive). Shielding this whole block — archive AND the peer send — is what
-                # guarantees the disconnect-triggered peer still learns the huddle ended, exactly
-                # as the pre-R-009 code already did before an actual DB round-trip was added here.
+                # an unshielded await here (or the peer sends right after it) gets re-cancelled
+                # at that suspension point, silently dropping the `ended` notice entirely (not
+                # just the archive). Shielding this whole block — archive AND the peer sends — is
+                # what guarantees every other live participant still learns the huddle ended,
+                # exactly as the pre-R-009 code already did before an actual DB round-trip was
+                # added here.
                 with anyio.CancelScope(shield=True):
-                    archive = await archive_ended_huddle_best_effort(
-                        ended, ended_at=datetime.now(timezone.utc)
-                    )
-                    peer_id = ended.peer_of(conn.user_id)
-                    for peer_conn in ctx.registry.user_connections(conn.tenant_id, peer_id):
-                        await peer_conn.send(
-                            build_huddle_update(
-                                huddle_id=ended.huddle_id,
-                                tenant_id=conn.tenant_id,
-                                peer_user_id=conn.user_id,
-                                state=HuddleState.ENDED.value,
-                                archive=archive,
-                            )
+                    archive = None
+                    if ended.is_pairwise:
+                        # Only the classic 2-participant case is archived (ADR-0011 Fork F).
+                        callee_id = ended.others_of(ended.caller_id)[0]
+                        archive = await archive_ended_huddle_best_effort(
+                            ended, callee_id=callee_id, ended_at=datetime.now(timezone.utc)
                         )
+                    for other_id in ended.others_of(conn.user_id):
+                        frame = _huddle_update_for_recipient(
+                            ended, other_id, HuddleState.ENDED, archive=archive
+                        )
+                        if frame is None:  # pragma: no cover - defensive
+                            continue
+                        for peer_conn in ctx.registry.user_connections(conn.tenant_id, other_id):
+                            await peer_conn.send(frame)
