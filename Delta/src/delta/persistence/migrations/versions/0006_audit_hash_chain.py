@@ -194,6 +194,11 @@ def downgrade() -> None:
     op.drop_column(_TABLE, "row_hash", schema=_SCHEMA)
     op.drop_column(_TABLE, "prev_hash", schema=_SCHEMA)
     op.execute(f"ALTER TABLE {_SCHEMA}.{_TABLE} ALTER COLUMN sequence_number DROP DEFAULT")
-    op.drop_column(_TABLE, "sequence_number", schema=_SCHEMA)
+    # REVOKE before dropping the column: the sequence is OWNED BY sequence_number
+    # (upgrade() step 3), so Postgres auto-drops the sequence as soon as that column
+    # is dropped — a REVOKE issued afterward hits "relation ... does not exist"
+    # (caught by migration-roundtrip CI on this exact PR). The trailing DROP SEQUENCE
+    # IF EXISTS is now a no-op safety net, not the primary removal path.
     op.execute(f"REVOKE ALL ON SEQUENCE {_SCHEMA}.{_SEQ} FROM {_APP_ROLE}")
+    op.drop_column(_TABLE, "sequence_number", schema=_SCHEMA)
     op.execute(f"DROP SEQUENCE IF EXISTS {_SCHEMA}.{_SEQ}")
