@@ -156,7 +156,10 @@ def test_message_history_keyset_pagination(make_client, seed_user, mint_token, n
     assert [m["content"] for m in page1["messages"]] == ["m2", "m1"]
     assert page1["messages"][0]["archival"]["seq"] == 2
     assert page1["messages"][0]["inspection"]["status"] == "pass"
-    assert page1["messages"][0]["archival"]["prev_record_hash"] is None
+    # R-009: m2 (seq 2) chains from m1's (seq 1) content_hash — both on this same page.
+    assert page1["messages"][0]["archival"]["prev_record_hash"] == (
+        page1["messages"][1]["archival"]["content_hash"]
+    )
     assert page1["next_cursor"] == "1"
 
     # Page 2: the remaining oldest message.
@@ -165,6 +168,10 @@ def test_message_history_keyset_pagination(make_client, seed_user, mint_token, n
     ).json()
     assert [m["content"] for m in page2["messages"]] == ["m0"]
     assert page2["next_cursor"] is None
+    # R-009: m0 (seq 0), the channel's first-ever message, chains from the genesis constant.
+    from rendly.persistence import hash_chain
+
+    assert page2["messages"][0]["archival"]["prev_record_hash"] == hash_chain.MESSAGE_GENESIS_HASH
 
 
 def test_history_requires_membership(make_client, seed_user, mint_token, new_uuid):

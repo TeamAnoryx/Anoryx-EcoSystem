@@ -2,11 +2,10 @@
 
 Mirrors ``ConnectionRegistry``'s stated FORK B boundary (ADR-0005): a huddle is tracked ONLY
 for the lifetime of this process, keyed by ``(tenant_id, huddle_id)``. There is no migration and
-no new table — ``identifiers.py`` already notes that ``huddle_id`` "identif[ies] real-time/
-archival records owned by the [realtime] runtime, not [the R-002] domain", and R-009 (immutable
-archiving of the SESSION RECORD) is a separate, later task. The archival fields R-001 reserves on
-a terminal ``huddle.update`` are DEFINE-ONLY here (``prev_record_hash``/``content_hash`` stay
-null) — the same posture R-005 takes for chat messages pre-R-009.
+no new table for the LIVE state — ``identifiers.py`` already notes that ``huddle_id``
+"identif[ies] real-time/archival records owned by the [realtime] runtime, not [the R-002]
+domain". R-009 persists the SESSION RECORD at the exact ``ended`` transition
+(``persistence/huddle_repo.archive_ended_huddle``) — see :class:`HuddleArchive` below.
 
 CROSS-TENANT ISOLATION: exactly like the connection registry, every lookup is keyed by
 ``tenant_id`` first, and a huddle is only ever created between two connections that were
@@ -26,7 +25,6 @@ claim that the two peers are actually media-connected.
 
 from __future__ import annotations
 
-import itertools
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -51,6 +49,23 @@ TERMINAL_STATES = frozenset({HuddleState.DECLINED, HuddleState.ENDED})
 def new_huddle_id() -> str:
     """Mint a server-assigned huddle id (canonical dashed-hex UUID v4 — matches the wire)."""
     return str(uuid.uuid4())
+
+
+@dataclass(frozen=True)
+class HuddleArchive:
+    """The persisted archival record for an ENDED huddle session (R-009), chained per tenant.
+
+    The huddle-side analog of ``Message``'s archival fields (``realtime/message.py``) — the
+    runtime-facing value ``realtime/frames.py`` builds the wire's ``ArchivalMeta`` from. Built
+    by ``persistence/huddle_repo.archive_ended_huddle`` (the DB assigns ``seq`` and computes
+    the chain under a per-tenant lock; nothing here is guessed client-side or in-memory).
+    """
+
+    huddle_id: str
+    created_at: datetime
+    seq: int
+    prev_record_hash: str
+    content_hash: str
 
 
 @dataclass
@@ -84,14 +99,6 @@ class HuddleManager:
     def __init__(self) -> None:
         self._huddles: dict[tuple[str, str], Huddle] = {}
         self._by_user: dict[tuple[str, str], str] = {}
-        # A per-tenant, in-process-only monotonic archival seq for huddles (mirrors the chat
-        # per-channel seq, ADR-0005 Fork C) — NOT persisted; resets on restart (stated
-        # single-instance limitation, same as the connection registry).
-        self._seq: dict[str, itertools.count] = {}
-
-    def next_seq(self, tenant_id: str) -> int:
-        counter = self._seq.setdefault(tenant_id, itertools.count(1))
-        return next(counter)
 
     def active_huddle_id(self, tenant_id: str, user_id: str) -> str | None:
         return self._by_user.get((tenant_id, user_id))

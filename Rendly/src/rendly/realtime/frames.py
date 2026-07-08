@@ -19,7 +19,7 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from .huddle import Huddle
+from .huddle import HuddleArchive
 from .inspector import DetectorFinding, InspectionOutcome
 from .message import Message
 
@@ -184,15 +184,16 @@ def build_session_welcome(*, tenant_id: str, user_id: str) -> dict:
 
 
 def _archival_meta(msg: Message) -> dict:
-    # FORK C baked-now: record_id = message_id, created_at + seq populated; the hash fields are
-    # RESERVED (always null in R-005 — R-009 computes the chain).
+    # FORK C baked-now: record_id = message_id, created_at + seq populated. R-009: the hash
+    # fields surface whatever chat_repo.insert_message computed — None only for a Message
+    # rebuilt from a row inserted before R-009 shipped (no chain to link into yet).
     return {
         "schema_version": "1",
         "record_id": msg.message_id,
         "created_at": _iso(msg.created_at),
         "seq": msg.seq,
-        "prev_record_hash": None,
-        "content_hash": None,
+        "prev_record_hash": msg.prev_record_hash,
+        "content_hash": msg.content_hash,
     }
 
 
@@ -295,16 +296,16 @@ def build_presence_update(*, tenant_id: str, user_id: str, status: str) -> dict:
     }
 
 
-def _huddle_archival_meta(huddle: Huddle, *, seq: int) -> dict:
-    # Same DEFINE-ONLY posture as chat's _archival_meta: record_id = huddle_id, created_at + seq
-    # populated; the hash fields are RESERVED (always null until R-009 builds the chain).
+def _huddle_archival_meta(archive: HuddleArchive) -> dict:
+    # record_id = huddle_id; R-009 populates real, per-tenant-chained hash fields (the caller
+    # only ever passes an `archive` once persistence.huddle_repo.archive_ended_huddle succeeds).
     return {
         "schema_version": "1",
-        "record_id": huddle.huddle_id,
-        "created_at": _iso(huddle.created_at),
-        "seq": seq,
-        "prev_record_hash": None,
-        "content_hash": None,
+        "record_id": archive.huddle_id,
+        "created_at": _iso(archive.created_at),
+        "seq": archive.seq,
+        "prev_record_hash": archive.prev_record_hash,
+        "content_hash": archive.content_hash,
     }
 
 
@@ -314,14 +315,15 @@ def build_huddle_update(
     tenant_id: str,
     peer_user_id: str,
     state: str,
-    huddle: Huddle | None = None,
-    seq: int | None = None,
+    archive: HuddleArchive | None = None,
 ) -> dict:
     """The server->client huddle.update frame. ``peer_user_id`` is relative to the RECIPIENT.
 
-    ``archival`` is attached IFF both ``huddle`` and ``seq`` are given — the caller only supplies
-    them once the huddle reaches its durable ``ended`` state (contracts/messages.schema.json
-    HuddleUpdate description), matching the chat.message archival posture.
+    ``archival`` is attached IFF ``archive`` is given — the caller only supplies it once the
+    huddle reaches its durable ``ended`` state AND the DB archive write succeeds
+    (contracts/messages.schema.json HuddleUpdate description), matching the chat.message
+    archival posture. A failed archive write degrades to no ``archival`` field, never blocks
+    the ``ended`` broadcast itself (see ``realtime/pipeline.py``'s best-effort archiving).
     """
     frame = {
         "msg_type": "huddle.update",
@@ -330,8 +332,8 @@ def build_huddle_update(
         "peer_user_id": peer_user_id,
         "state": state,
     }
-    if huddle is not None and seq is not None:
-        frame["archival"] = _huddle_archival_meta(huddle, seq=seq)
+    if archive is not None:
+        frame["archival"] = _huddle_archival_meta(archive)
     return frame
 
 

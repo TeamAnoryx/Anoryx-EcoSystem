@@ -1,9 +1,11 @@
 """R-007 1-on-1 huddle signaling — non-stubbed e2e over the real chat app + real ASGI WebSocket.
 
 Mirrors ``test_chat_ws.py``'s posture: every test drives the REAL app (Starlette TestClient), no
-mocks of the runtime itself. Huddles are ephemeral/in-memory (``realtime/huddle.py``, ADR-0007),
-so there is no DB assertion here — but the suite still lives in ``tests/realtime`` (the DB-backed
-lane) because it needs the real chat app (auth + WS + registry), same as the chat suite.
+mocks of the runtime itself. LIVE huddle state is ephemeral/in-memory (``realtime/huddle.py``,
+ADR-0007), so most tests here assert only the wire behavior — but R-009 persists a real DB
+record at the terminal ``ended`` transition, so a couple of tests below additionally read that
+row back (real DB assertion, not a stub) to prove the hash chain the wire's ``archival`` object
+claims actually landed in Postgres.
 """
 
 from __future__ import annotations
@@ -126,8 +128,14 @@ def test_full_lifecycle_signal_relay_accept_active_then_hangup_ends(
         assert ended1["archival"]["record_id"] == huddle_id
         assert ended1["archival"]["schema_version"] == "1"
         assert isinstance(ended1["archival"]["seq"], int)
-        assert ended1["archival"]["prev_record_hash"] is None
-        assert ended1["archival"]["content_hash"] is None
+        # R-009: a real, DB-computed SHA-256 hex chain link + digest — never null on an ended
+        # huddle (the DB archive write happens BEFORE this broadcast; see realtime/pipeline.py).
+        assert ended1["archival"]["prev_record_hash"] is not None
+        assert len(ended1["archival"]["prev_record_hash"]) == 64
+        assert ended1["archival"]["content_hash"] is not None
+        assert len(ended1["archival"]["content_hash"]) == 64
+        # Both peers' frames describe the SAME archived record.
+        assert ended2["archival"] == ended1["archival"]
 
         # The huddle is now terminal/released — a further signal on it is unavailable.
         ws1.send_json(
@@ -436,3 +444,72 @@ def test_multi_device_disconnect_only_ends_when_the_last_socket_closes(
                 }
             )
             assert recv_until(ws1, "signal.relay")["signal"]["sdp"] == "still-up"
+
+
+def _huddle_row(tenant_id: str, huddle_id: str):
+    """R-009: read the persisted session record back — a real DB read, not a stub."""
+    from sqlalchemy import select
+
+    from rendly.persistence.chat_models import HuddleRow
+    from rendly.persistence.database import get_tenant_session
+
+    with get_tenant_session(tenant_id) as s:
+        return s.execute(
+            select(HuddleRow).where(
+                HuddleRow.tenant_id == tenant_id, HuddleRow.huddle_id == huddle_id
+            )
+        ).scalar_one()
+
+
+def test_ended_huddle_is_persisted_with_a_real_hash_chain(
+    make_client, seed_user, mint_token, new_uuid
+):
+    """R-009 non-stubbed e2e: the wire's ``archival`` object matches a REAL persisted row, and a
+    second ended huddle for the SAME tenant chains from the first one's ``content_hash``."""
+    tenant = new_uuid()
+    u1, u2 = new_uuid(), new_uuid()
+    seed_user(tenant_id=tenant, user_id=u1)
+    seed_user(tenant_id=tenant, user_id=u2)
+    client = make_client()
+    t1 = mint_token(user_id=u1, tenant_id=tenant, scope=_FULL_SCOPE)
+    t2 = mint_token(user_id=u2, tenant_id=tenant, scope=_FULL_SCOPE)
+
+    # First call: invite -> hangup -> ended.
+    with (
+        client.websocket_connect(_REALTIME, headers=_auth(t2)) as ws2,
+        client.websocket_connect(_REALTIME, headers=_auth(t1)) as ws1,
+    ):
+        ws2.receive_json()
+        ws1.receive_json()
+        ws1.send_json({"msg_type": "huddle.invite", "peer_user_id": u2})
+        huddle_id_1 = recv_until(ws1, "huddle.update")["huddle_id"]
+        recv_until(ws2, "huddle.update")
+        ws1.send_json({"msg_type": "huddle.hangup", "huddle_id": huddle_id_1})
+        ended_1 = recv_until(ws1, "huddle.update")
+
+    row_1 = _huddle_row(tenant, huddle_id_1)
+    assert row_1.state == "ended"
+    assert row_1.seq == 0
+    assert row_1.content_hash == ended_1["archival"]["content_hash"]
+    assert row_1.prev_record_hash == ended_1["archival"]["prev_record_hash"]
+
+    from rendly.persistence import hash_chain
+
+    assert row_1.prev_record_hash == hash_chain.HUDDLE_GENESIS_HASH
+
+    # Second call, same tenant: chains from the first call's content_hash, seq advances to 1.
+    with (
+        client.websocket_connect(_REALTIME, headers=_auth(t2)) as ws2,
+        client.websocket_connect(_REALTIME, headers=_auth(t1)) as ws1,
+    ):
+        ws2.receive_json()
+        ws1.receive_json()
+        ws1.send_json({"msg_type": "huddle.invite", "peer_user_id": u2})
+        huddle_id_2 = recv_until(ws1, "huddle.update")["huddle_id"]
+        recv_until(ws2, "huddle.update")
+        ws1.send_json({"msg_type": "huddle.hangup", "huddle_id": huddle_id_2})
+        recv_until(ws1, "huddle.update")
+
+    row_2 = _huddle_row(tenant, huddle_id_2)
+    assert row_2.seq == 1
+    assert row_2.prev_record_hash == row_1.content_hash

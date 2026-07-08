@@ -117,8 +117,11 @@ def test_real_ws_roundtrip_persists_and_delivers(make_client, seed_user, mint_to
         assert frame["archival"]["schema_version"] == "1"
         assert frame["archival"]["record_id"] == message_id
         assert frame["archival"]["seq"] == 0
-        assert frame["archival"]["prev_record_hash"] is None  # RESERVED (R-009)
-        assert frame["archival"]["content_hash"] is None
+        # R-009: the channel's first-ever message chains from the genesis constant.
+        from rendly.persistence import hash_chain
+
+        assert frame["archival"]["prev_record_hash"] == hash_chain.MESSAGE_GENESIS_HASH
+        assert len(frame["archival"]["content_hash"]) == 64
         assert frame["inspection"]["status"] == "pass"
 
     # Persisted exactly once in real Postgres.

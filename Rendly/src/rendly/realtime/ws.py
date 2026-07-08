@@ -13,6 +13,9 @@ socket is closed before accept — no session is opened). The handshake gate is 
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
+import anyio
 from starlette.websockets import WebSocket
 
 from ..auth.errors import new_request_id
@@ -21,7 +24,7 @@ from ..persistence import chat_repo
 from ..persistence.async_database import get_tenant_session
 from .frames import build_error, build_huddle_update, build_presence_update, build_session_welcome
 from .huddle import HuddleState
-from .pipeline import RuntimeContext, dispatch_frame
+from .pipeline import RuntimeContext, archive_ended_huddle_best_effort, dispatch_frame
 from .registry import Connection
 
 _BEARER_PREFIX = "Bearer "
@@ -142,16 +145,26 @@ async def realtime_endpoint(websocket: WebSocket) -> None:
         if not ctx.registry.user_connections(conn.tenant_id, conn.user_id):
             ended = ctx.huddles.end_all_for_user(conn.tenant_id, conn.user_id)
             if ended is not None:
-                seq = ctx.huddles.next_seq(conn.tenant_id)
-                peer_id = ended.peer_of(conn.user_id)
-                for peer_conn in ctx.registry.user_connections(conn.tenant_id, peer_id):
-                    await peer_conn.send(
-                        build_huddle_update(
-                            huddle_id=ended.huddle_id,
-                            tenant_id=conn.tenant_id,
-                            peer_user_id=conn.user_id,
-                            state=HuddleState.ENDED.value,
-                            huddle=ended,
-                            seq=seq,
-                        )
+                # SHIELDED: by the time a dropped socket reaches this cleanup, Starlette/anyio
+                # has already cancelled this connection's task-group scope. The archive write is
+                # real socket I/O (a fresh DB connection) that actually suspends the coroutine —
+                # an unshielded await here (or the peer send right after it) gets re-cancelled at
+                # that suspension point, silently dropping the `ended` notice entirely (not just
+                # the archive). Shielding this whole block — archive AND the peer send — is what
+                # guarantees the disconnect-triggered peer still learns the huddle ended, exactly
+                # as the pre-R-009 code already did before an actual DB round-trip was added here.
+                with anyio.CancelScope(shield=True):
+                    archive = await archive_ended_huddle_best_effort(
+                        ended, ended_at=datetime.now(timezone.utc)
                     )
+                    peer_id = ended.peer_of(conn.user_id)
+                    for peer_conn in ctx.registry.user_connections(conn.tenant_id, peer_id):
+                        await peer_conn.send(
+                            build_huddle_update(
+                                huddle_id=ended.huddle_id,
+                                tenant_id=conn.tenant_id,
+                                peer_user_id=conn.user_id,
+                                state=HuddleState.ENDED.value,
+                                archive=archive,
+                            )
+                        )
