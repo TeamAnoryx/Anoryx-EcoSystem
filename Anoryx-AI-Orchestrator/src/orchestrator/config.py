@@ -770,3 +770,69 @@ def get_command_center_settings() -> CommandCenterSettings:
             minimum=1,
         ),
     )
+
+
+# =========================================================================== #
+# Predictive scaling — ingest-traffic current-rate projection (O-015, ADR-0015) —
+# ADDITIVE, STANDALONE. Reuses the EXISTING operator credential
+# (CoordinationSettings.admin_token) at the router call site — no new trust root. No
+# master enable/disable switch: this is a pure read, and it takes no autoscaling action
+# of any kind (there is nothing to gate — see ADR-0015 Fork A).
+# =========================================================================== #
+
+#: Default bucket size (hours) for the current/previous traffic windows.
+DEFAULT_PREDICTIVE_SCALING_WINDOW_HOURS: int = 1
+#: Default projection horizon (hours) the forecast holds the current rate over.
+DEFAULT_PREDICTIVE_SCALING_HORIZON_HOURS: int = 24
+#: Default current/previous rate ratio at or above which spike_detected is true.
+DEFAULT_PREDICTIVE_SCALING_SPIKE_RATIO_THRESHOLD: float = 2.0
+
+
+@dataclass(frozen=True, slots=True)
+class PredictiveScalingSettings:
+    """Resolved predictive-scaling configuration (O-015, ADR-0015).
+
+    window_hours bounds the size of the two adjacent (current, previous) ingest-count
+    buckets the forecast compares. horizon_hours is how far forward the CURRENT window's
+    observed rate is held constant and projected (`current_rate_projection_v1` — mirrors
+    Delta's D-011 ADR-0011 Fork 1 exactly, ecosystem-wide method-name consistency).
+    spike_ratio_threshold is the current/previous rate ratio at or above which
+    `spike_detected` is true; a previous window with zero events cannot compute a ratio
+    at all (`insufficient_data: true`, never a divide-by-zero or a fabricated verdict).
+    """
+
+    window_hours: int
+    horizon_hours: int
+    spike_ratio_threshold: float
+
+
+def get_predictive_scaling_settings() -> PredictiveScalingSettings:
+    """Resolve predictive-scaling settings from the environment (NON-FATAL on absence).
+
+    Env vars:
+      ORCH_PREDICTIVE_SCALING_WINDOW_HOURS          current/previous bucket size in hours
+                                                    (default 1, >= 1).
+      ORCH_PREDICTIVE_SCALING_HORIZON_HOURS         projection horizon in hours
+                                                    (default 24, >= 1).
+      ORCH_PREDICTIVE_SCALING_SPIKE_RATIO_THRESHOLD current/previous rate ratio that
+                                                    triggers spike_detected (default 2.0,
+                                                    >= 1.0 — a ratio below 1.0 would flag
+                                                    a DECREASE as a "spike").
+    """
+    return PredictiveScalingSettings(
+        window_hours=_env_int(
+            "ORCH_PREDICTIVE_SCALING_WINDOW_HOURS",
+            DEFAULT_PREDICTIVE_SCALING_WINDOW_HOURS,
+            minimum=1,
+        ),
+        horizon_hours=_env_int(
+            "ORCH_PREDICTIVE_SCALING_HORIZON_HOURS",
+            DEFAULT_PREDICTIVE_SCALING_HORIZON_HOURS,
+            minimum=1,
+        ),
+        spike_ratio_threshold=_env_float(
+            "ORCH_PREDICTIVE_SCALING_SPIKE_RATIO_THRESHOLD",
+            DEFAULT_PREDICTIVE_SCALING_SPIKE_RATIO_THRESHOLD,
+            minimum=1.0,
+        ),
+    )

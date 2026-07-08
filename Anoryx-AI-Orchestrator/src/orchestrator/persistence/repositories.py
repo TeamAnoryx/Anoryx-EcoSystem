@@ -2532,3 +2532,27 @@ async def validate_rollback_chain(session: AsyncSession) -> bool:
             return False
         expected_prev = row.row_hash
     return True
+
+
+async def count_ingest_events_in_window(
+    session: AsyncSession, *, since: datetime, until: datetime
+) -> int:
+    """Count ingest_events rows with event_timestamp in [since, until) (PRIVILEGED
+    session, cross-tenant fleet triage). Used by the O-015 predictive-scaling forecast to
+    bucket adjacent (current, previous) traffic windows.
+
+    Mirrors count_ingest_events_since's string-formatting discipline (event_timestamp is
+    a caller-supplied TEXT column, not a real timestamptz) — both bounds are formatted as
+    'Z'-suffixed RFC-3339 strings before binding.
+    """
+    since_str = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+    until_str = until.strftime("%Y-%m-%dT%H:%M:%SZ")
+    result = await session.execute(
+        text(
+            "SELECT count(*) FROM ingest_events "
+            "WHERE event_timestamp >= :since AND event_timestamp < :until"
+        ),
+        {"since": since_str, "until": until_str},
+    )
+    return int(result.scalar_one())
+    return True

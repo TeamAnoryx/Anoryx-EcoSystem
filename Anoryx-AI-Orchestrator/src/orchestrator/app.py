@@ -30,9 +30,12 @@ O-014, ADR-0014: a read-only fleet-health snapshot over metrics the Orchestrator
 collects, plus one OPERATOR-TRIGGERED re-submission of a policy's prior signed record via
 the existing O-004 distribution engine, NOT the roadmap's literal cross-product command
 center or autonomous failure-detection-triggered rollback — see ADR-0014's honesty
-boundaries), plus a health probe. The query/distribution seams derive a per-tenant
-principal (require_tenant_principal); a missing/invalid token -> a uniform 401. mTLS
-termination is O-008.
+boundaries), predictive scaling (GET /v1/admin/traffic-forecast — O-015, ADR-0015: a
+read-only current-rate projection over the O-003 ingest stream, `method:
+"current_rate_projection_v1"`, NOT actual autoscaling and NOT a trained model — see
+ADR-0015's honesty boundaries), plus a health probe. The query/distribution seams derive
+a per-tenant principal (require_tenant_principal); a missing/invalid token -> a uniform
+401. mTLS termination is O-008.
 """
 
 from __future__ import annotations
@@ -54,6 +57,7 @@ from orchestrator.config import (
     get_identity_settings,
     get_ingest_settings,
     get_messaging_settings,
+    get_predictive_scaling_settings,
 )
 from orchestrator.coordination.router import router as coordination_router
 from orchestrator.distribution.router import router as distribution_router
@@ -62,6 +66,7 @@ from orchestrator.external_gateway.router import router as external_gateway_rout
 from orchestrator.identity.router import router as identity_router
 from orchestrator.ingest.router import router as ingest_router
 from orchestrator.messaging.router import router as messaging_router
+from orchestrator.predictive_scaling.router import router as predictive_scaling_router
 from orchestrator.query.router import router as query_router
 from orchestrator.relay.router import router as relay_router
 from orchestrator.security import PrincipalAuthError
@@ -112,6 +117,10 @@ def create_app() -> FastAPI:
     # already requires the operator bearer plus an explicit (tenant_id, policy_id) target
     # — there is no autonomous trigger to gate (ADR-0014).
     app.state.command_center_settings = get_command_center_settings()
+    # Predictive scaling (O-015) settings resolve NON-FATALLY. No master switch: this is
+    # a pure read that takes no autoscaling action of any kind — there is nothing
+    # autonomous to gate (ADR-0015).
+    app.state.predictive_scaling_settings = get_predictive_scaling_settings()
 
     @app.exception_handler(Exception)
     async def _fail_safe_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -200,4 +209,5 @@ def create_app() -> FastAPI:
     app.include_router(messaging_router)
     app.include_router(external_gateway_router)
     app.include_router(command_center_router)
+    app.include_router(predictive_scaling_router)
     return app
