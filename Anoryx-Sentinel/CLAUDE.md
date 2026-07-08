@@ -7,6 +7,8 @@ It is ITSELF a security product. Its own code is a target. Build accordingly.
 
 ## Source layout (inside Anoryx-Sentinel/)
 - src/gateway/          — reverse proxy, multi-provider routing, key vaulting
+                           (src/gateway/keyvault/: pluggable env/Vault/KMS
+                           provider-key backend + rotation, see docs/adr/0033)
 - src/data_protection/  — PII detection, masking, tokenization, custom PII engine
 - src/defense/          — prompt injection detection, secret leak detection
 - src/code_scan/        — LLM code output scanning (v2)

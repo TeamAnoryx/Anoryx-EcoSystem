@@ -14,6 +14,8 @@ A structlog processor (gateway/logging.py) drops any log key matching
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -82,6 +84,13 @@ class GatewaySettings(BaseSettings):
     # Injected when a client omits max_tokens for Anthropic (which requires it).
     router_anthropic_default_max_tokens: int = 1024
 
+    # --- F-027 provider key vaulting (ADR-0033) ---
+    # "env" (default) is byte-identical to pre-F-027 behavior: raw secrets
+    # above. "vault"/"kms" mean anthropic_api_key/aws_* are intentionally left
+    # unset — real credentials come from gateway/keyvault/ at registry init +
+    # periodic refresh (gateway/main.py). See KeyVaultSettings for backend config.
+    keyvault_backend: Literal["env", "vault", "kms"] = "env"
+
     @field_validator("max_body_bytes")
     @classmethod
     def _validate_max_body_bytes(cls, v: int) -> int:
@@ -146,11 +155,25 @@ class GatewaySettings(BaseSettings):
         """Return the set of providers that have credentials configured.
 
         OpenAI is always configured (it uses the required upstream_base_url).
-        Anthropic requires anthropic_api_key. Bedrock requires all three AWS
-        fields. A provider not in this set is fail-closed unavailable for every
-        tenant regardless of any routing policy listing it (ADR-0008 §3 / §10).
+
+        keyvault_backend="env" (default): Anthropic requires anthropic_api_key;
+        Bedrock requires all three AWS fields — exactly pre-F-027 behavior.
+
+        keyvault_backend="vault"/"kms": raw env secrets are intentionally
+        unset, so "configured" instead means "declared in
+        router_default_providers" — the real credential presence/absence is
+        checked at registry init time via gateway/keyvault/ (fail-closed there
+        too: a provider whose vault/kms fetch fails is not initialised).
+
+        A provider not in this set is fail-closed unavailable for every
+        tenant regardless of any routing policy listing it (ADR-0008 §3/§10).
         """
         providers = {"openai"}
+        if self.keyvault_backend != "env":
+            for name in ("anthropic", "bedrock"):
+                if name in self.router_default_providers:
+                    providers.add(name)
+            return providers
         if self.anthropic_api_key:
             providers.add("anthropic")
         if self.aws_region and self.aws_access_key_id and self.aws_secret_access_key:

@@ -147,6 +147,17 @@ class BedrockAdapter:
         self._secret_access_key = secret_access_key
         self._session_factory = session_factory
 
+    def set_credentials(self, *, region: str, access_key_id: str, secret_access_key: str) -> None:
+        """Swap the in-use region/credentials (F-027 runtime rotation, ADR-0033).
+
+        Takes effect on the NEXT call — _client_cm() reads these fresh
+        per-request rather than caching a client at construction, so no
+        in-flight request is affected. Never logged (key material).
+        """
+        self._region = region
+        self._access_key_id = access_key_id
+        self._secret_access_key = secret_access_key
+
     def _session(self) -> Any:
         if self._session_factory is not None:
             return self._session_factory()

@@ -21,6 +21,8 @@ import httpx
 import structlog
 
 from gateway.config import GatewaySettings
+from gateway.keyvault.base import ProviderKeySource
+from gateway.keyvault.exceptions import KeyVaultError
 from gateway.middleware.egress_monitor import egress_request_hook
 from gateway.router.providers.anthropic_provider import AnthropicAdapter
 from gateway.router.providers.bedrock_provider import BedrockAdapter
@@ -83,6 +85,43 @@ class ProviderRegistry:
         self._initialized = True
         # Log only the provider NAMES that are available — never any credential.
         log.info("provider_registry_initialized", providers=sorted(self._adapters.keys()))
+
+    async def refresh_credentials(
+        self, key_source: ProviderKeySource, *, strict: bool = False
+    ) -> None:
+        """Re-fetch anthropic/bedrock credentials and swap them into the live
+        adapters (F-027, ADR-0033) — no adapter/client recreation needed.
+
+        strict=True (startup, before the app starts serving): a fetch failure
+        for a provider that's supposed to be available REMOVES its adapter —
+        fail-closed, matching init()'s posture for a provider with no key.
+
+        strict=False (periodic background refresh of an already-serving
+        gateway): a fetch failure logs an error and KEEPS the last-known-good
+        credential — bounded-lag rotation trades an instant-revoke guarantee
+        for not cutting off an already-working provider on a transient
+        Vault/KMS blip (see docs/adr/0033 "why not fail-closed on refresh").
+        """
+        for provider in ("anthropic", "bedrock"):
+            if provider not in self._adapters:
+                continue
+            try:
+                creds = await key_source.fetch_credentials(provider)
+            except KeyVaultError as exc:
+                log.error("provider_credential_refresh_failed", provider=provider, error=str(exc))
+                if strict:
+                    del self._adapters[provider]
+                continue
+
+            if provider == "anthropic":
+                self._adapters["anthropic"].set_api_key(creds.values.get("api_key", ""))
+            elif provider == "bedrock":
+                self._adapters["bedrock"].set_credentials(
+                    region=creds.values.get("region", ""),
+                    access_key_id=creds.values.get("access_key_id", ""),
+                    secret_access_key=creds.values.get("secret_access_key", ""),
+                )
+            log.info("provider_credential_refreshed", provider=provider)
 
     async def teardown(self) -> None:
         """Close per-provider clients. Idempotent."""
