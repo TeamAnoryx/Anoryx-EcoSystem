@@ -18,6 +18,7 @@ import logging
 from datetime import datetime, timezone
 
 from ..ingest.errors import is_transient
+from ..persistence.audit_log import append_history
 from ..persistence.database import get_tenant_session
 from .config import EngineSettings
 from .decision import is_over_cost_cap, soft_warning_band
@@ -36,6 +37,11 @@ from .state import (
 from .warnings import emit_budget_warning
 
 logger = logging.getLogger("delta.budget_engine.evaluator")
+
+# Reserved system-actor slug for audit rows this module writes itself (D-009) — an
+# enforcement decision has no human operator behind it; honest attribution names the
+# deciding system, mirroring Sentinel's reserved principal-slug convention.
+_ACTOR = "budget-engine"
 
 
 async def evaluate_after_post(record, settings: EngineSettings) -> None:
@@ -190,4 +196,16 @@ async def _enqueue(
         transition=transition,
         policy_payload=payload,
         now=now,
+    )
+    # D-009: every enforcement decision is hash-chain audited in the SAME transaction
+    # as the outbox enqueue (both roll back together on any later failure in this txn).
+    await append_history(
+        session,
+        tenant_id=budget.tenant_id,
+        entity_type="budget_enforcement",
+        entity_id=budget.budget_id,
+        action=transition,
+        actor=_ACTOR,
+        now=now,
+        note=f"policy_id={budget.policy_id} version={version} scope={budget.scope.value}",
     )

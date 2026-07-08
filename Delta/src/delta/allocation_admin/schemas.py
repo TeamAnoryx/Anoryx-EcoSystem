@@ -132,3 +132,14 @@ class ChangeHistoryEntryView(BaseModel):
     actor: str
     note: str | None
     created_at: datetime
+
+
+class ChainVerificationView(BaseModel):
+    """D-009 — the result of walking one tenant's change-history hash chain."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    is_valid: bool
+    rows_checked: int
+    first_mismatch_sequence: int | None
+    error_detail: str | None
