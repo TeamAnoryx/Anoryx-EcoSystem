@@ -8,6 +8,12 @@ import type {
   AllocationView,
   ApprovalDecisionRequest,
   ChangeHistoryEntryView,
+  DashboardBucket,
+  DashboardGroupDimension,
+  DashboardScope,
+  GroupSpendView,
+  SpendSummaryView,
+  TimeSeriesPointView,
 } from "@/lib/types";
 
 /**
@@ -95,6 +101,60 @@ export const adminApi = {
   listHistory: (tenantId: string, entityType?: string, entityId?: string) =>
     adminFetch<ChangeHistoryEntryView[]>("/history", {
       query: { tenant_id: tenantId, entity_type: entityType, entity_id: entityId },
+    }),
+
+  // D-008 dashboards — read-only, RFC3339 start/end (UTC), optional team/project/
+  // agent scope narrows the window before aggregation ("client/team-set parameters").
+  getSummary: (tenantId: string, start: string, end: string, scope: DashboardScope = {}) =>
+    adminFetch<SpendSummaryView>("/dashboards/summary", {
+      query: {
+        tenant_id: tenantId,
+        start,
+        end,
+        team_id: scope.team_id,
+        project_id: scope.project_id,
+        agent_id: scope.agent_id,
+      },
+    }),
+
+  getTimeSeries: (
+    tenantId: string,
+    start: string,
+    end: string,
+    bucket: DashboardBucket = "day",
+    scope: DashboardScope = {},
+  ) =>
+    adminFetch<TimeSeriesPointView[]>("/dashboards/timeseries", {
+      query: {
+        tenant_id: tenantId,
+        start,
+        end,
+        bucket,
+        team_id: scope.team_id,
+        project_id: scope.project_id,
+        agent_id: scope.agent_id,
+      },
+    }),
+
+  getTopSpenders: (
+    tenantId: string,
+    start: string,
+    end: string,
+    groupBy: DashboardGroupDimension,
+    limit = 10,
+    scope: DashboardScope = {},
+  ) =>
+    adminFetch<GroupSpendView[]>("/dashboards/top-spenders", {
+      query: {
+        tenant_id: tenantId,
+        start,
+        end,
+        group_by: groupBy,
+        limit,
+        team_id: scope.team_id,
+        project_id: scope.project_id,
+        agent_id: scope.agent_id,
+      },
     }),
 };
 

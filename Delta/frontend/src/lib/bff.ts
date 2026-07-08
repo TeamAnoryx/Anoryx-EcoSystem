@@ -19,7 +19,7 @@ import type { SessionPayload } from "@/lib/session-token";
  *    upstream JSON passes through.
  */
 
-export const ALLOWED_ROOTS = new Set(["allocations", "history"]);
+export const ALLOWED_ROOTS = new Set(["allocations", "history", "dashboards"]);
 
 export interface ProxyResult {
   status: number;

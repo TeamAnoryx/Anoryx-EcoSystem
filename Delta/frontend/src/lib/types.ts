@@ -72,3 +72,36 @@ export interface ChangeHistoryEntryView {
   note: string | null;
   created_at: string;
 }
+
+/**
+ * D-008 dashboards (Delta/src/delta/dashboards/schemas.py). Read-only aggregates
+ * over the D-003 ledger — no request/mutation shapes, only views.
+ */
+export type DashboardGroupDimension = "team_id" | "project_id" | "agent_id";
+export type DashboardBucket = "hour" | "day";
+
+export interface DashboardScope {
+  team_id?: string;
+  project_id?: string;
+  agent_id?: string;
+}
+
+export interface SpendSummaryView {
+  total_cost_cents: number;
+  request_count: number;
+  /** null when request_count is 0 (never a divide-by-zero placeholder). */
+  cost_per_request_cents: number | null;
+  burn_rate_cents_per_hour: number;
+}
+
+export interface TimeSeriesPointView {
+  bucket_start: string;
+  cost_cents: number;
+  request_count: number;
+}
+
+export interface GroupSpendView {
+  group_key: string;
+  cost_cents: number;
+  request_count: number;
+}
