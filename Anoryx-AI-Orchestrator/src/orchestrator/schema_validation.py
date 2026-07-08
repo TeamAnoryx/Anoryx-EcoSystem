@@ -92,3 +92,23 @@ def policy_schema_errors(policy: object) -> list[str]:
     re-verify the embedded JWS — Sentinel's intake is the verifying authority (ADR-0004).
     """
     return [e.message for e in _policy_validator().iter_errors(policy)]
+
+
+@functools.lru_cache(maxsize=1)
+def known_event_types() -> frozenset[str]:
+    """Return the CLOSED set of F-002 `event_type` const values (O-011, ADR-0011).
+
+    Derived directly from the already-loaded, LOCKED events.schema.json `$defs` — every
+    oneOf variant's `properties.event_type.const` — rather than hand-maintaining a second,
+    divergent list anywhere else in this repo (single source of truth, mirrors the
+    `_events_validator()` / `_policy_validator()` reuse-by-reference discipline above).
+    Used by the O-011 automation-rules engine to validate `trigger_event_type` at
+    rule-creation time (422 `unknown_event_type` on a value outside this set).
+    """
+    schema = _load_json(_EVENTS_SCHEMA_PATH)
+    types: set[str] = set()
+    for definition in schema.get("$defs", {}).values():
+        const = definition.get("properties", {}).get("event_type", {}).get("const")
+        if isinstance(const, str):
+            types.add(const)
+    return frozenset(types)

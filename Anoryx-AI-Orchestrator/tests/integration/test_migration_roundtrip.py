@@ -1,12 +1,13 @@
-"""Migration reversibility on a real Postgres (0001 → 0002 → D-004 → 0004 → 0005 → 0006 → 0007).
+"""Migration reversibility on a real Postgres (0001 → 0002 → D-004 → 0004 → 0005 → 0006 →
+0007 → 0008).
 
 The Orchestrator's migrations must apply clean to head AND reverse cleanly. Proves a
-non-stubbed round-trip across ALL migrations (head = 0007_identity_events): upgrade
+non-stubbed round-trip across ALL migrations (head = 0008_automation_engine): upgrade
 head → tables present → downgrade base → tables gone → upgrade head → tables present again.
 Re-provisions the orchestrator_app password after the final upgrade (downgrade base drops the
-passwordless role) so later tests still connect. The O-005/O-009/O-010 migrations touched no
-EXISTING audit-chain table (each adds its own new one), so all five hash chains stay
-verifiable across the round-trip by construction.
+passwordless role) so later tests still connect. The O-005/O-009/O-010/O-011 migrations
+touched no EXISTING audit-chain table (each adds its own new one), so all six hash chains
+stay verifiable across the round-trip by construction.
 """
 
 from __future__ import annotations
@@ -18,7 +19,8 @@ pytestmark = pytest.mark.integration
 # 0001 (ingest baseline) + 0002 (policy distribution) + d004 (forward_outbox dispatch columns
 # extend forward_outbox, no new table) + 0004 (O-005 sentinel registry) + 0005 (O-006 per-tenant
 # query principal — query_service_tokens) + 0006 (O-009 relay_audit_log) + 0007 (O-010
-# identity_events + identity_audit_log) tables.
+# identity_events + identity_audit_log) + 0008 (O-011 automation_rules + automation_executions)
+# tables.
 _TABLES = (
     "ingest_events",
     "ingest_audit_log",
@@ -33,6 +35,8 @@ _TABLES = (
     "relay_audit_log",
     "identity_events",
     "identity_audit_log",
+    "automation_rules",
+    "automation_executions",
 )
 
 
@@ -41,10 +45,10 @@ async def _table_exists(conn, name: str) -> bool:
 
 
 async def test_migration_round_trip(db_conn, run_alembic, reprovision_app_role):
-    # Single head, and it is the O-010 revision (0007_identity_events).
+    # Single head, and it is the O-011 revision (0008_automation_engine).
     heads = run_alembic("heads")
     assert heads.returncode == 0, heads.stderr
-    assert "0007_identity_events" in heads.stdout, heads.stdout
+    assert "0008_automation_engine" in heads.stdout, heads.stdout
 
     # Start at head (the session fixture already upgraded).
     for table in _TABLES:

@@ -902,3 +902,32 @@ def identity_ready() -> None:
         if require:
             pytest.fail("ORCH_REQUIRE_IDENTITY_E2E=1 but the Orchestrator Postgres is unreachable")
         pytest.skip("Orchestrator Postgres not reachable — identity e2e")
+
+
+# =========================================================================== #
+# O-011 cross-module automation engine harness. APPENDED to the harness above (no edits
+# to it). Adds an automation gate mirroring relay_ready/identity_ready — FAILS (not skips)
+# under ORCH_REQUIRE_AUTOMATION_E2E=1 so the non-stubbed e2e provably EXECUTES on CI. The
+# automation e2e ALSO needs the Sentinel DB + shim (it re-drives a real O-004
+# distribution), so this gate additionally requires the Sentinel DB reachable.
+# =========================================================================== #
+
+
+@pytest.fixture
+def automation_ready() -> None:
+    """Gate the O-011 automation-engine e2e. Skips when either DB is unreachable — UNLESS
+    ORCH_REQUIRE_AUTOMATION_E2E=1, in which case an unreachable DB FAILS the run (a silent
+    skip can never masquerade as a green automation-engine gate on CI)."""
+    require = os.environ.get("ORCH_REQUIRE_AUTOMATION_E2E") == "1"
+    if not _pg_reachable():
+        if require:
+            pytest.fail(
+                "ORCH_REQUIRE_AUTOMATION_E2E=1 but the Orchestrator Postgres is unreachable"
+            )
+        pytest.skip("Orchestrator Postgres not reachable — automation engine e2e")
+    if not _sentinel_pg_reachable():
+        if require:
+            pytest.fail("ORCH_REQUIRE_AUTOMATION_E2E=1 but the Sentinel DB is unreachable")
+        pytest.skip(
+            "Sentinel DB (DATABASE_URL/APP_DATABASE_URL) not reachable — automation engine e2e"
+        )

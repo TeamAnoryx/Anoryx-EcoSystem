@@ -472,6 +472,57 @@ def get_identity_settings() -> IdentitySettings:
     )
 
 
+# =========================================================================== #
+# Cross-module automation-rules engine configuration (O-011, ADR-0011) — ADDITIVE,
+# STANDALONE (not nested in CoordinationSettings — the automation engine has no
+# registry/SSRF/health dependency; it reuses DistributionSettings directly, resolved
+# separately at the app/ingest-router call site). Resolved NON-FATALLY: absence is not
+# fatal. `enabled` DEFAULTS TO FALSE — this is new AUTONOMOUS behavior (a matched rule
+# re-drives an O-004 policy distribution without further human action), so it ships OFF
+# by default: no existing deployment silently starts auto-triggering distributions merely
+# by upgrading. An operator opts in explicitly via ORCH_AUTOMATION_ENABLED=1.
+# =========================================================================== #
+
+#: Default per-tenant automation_rules cap (bounds worst-case per-event rule-evaluation
+#: cost — enforced at rule-creation time, not at evaluation time).
+DEFAULT_AUTOMATION_MAX_RULES_PER_TENANT: int = 20
+
+
+@dataclass(frozen=True, slots=True)
+class AutomationSettings:
+    """Resolved cross-module automation-rules engine configuration (O-011, ADR-0011).
+
+    enabled is the master switch (default False — conservative; see module docstring
+    above). max_rules_per_tenant bounds the per-tenant automation_rules table (enforced
+    at POST /v1/automation/rules time as a 422 `rule_limit_exceeded`, never at evaluation
+    time), which in turn bounds the cost of evaluating rules against every accepted
+    ingest event.
+    """
+
+    enabled: bool
+    max_rules_per_tenant: int
+
+
+def get_automation_settings() -> AutomationSettings:
+    """Resolve automation-engine settings from the environment (NON-FATAL on absence).
+
+    Env vars:
+      ORCH_AUTOMATION_ENABLED               master switch (default false — see the
+                                            module-level comment on why the default is
+                                            conservative).
+      ORCH_AUTOMATION_MAX_RULES_PER_TENANT  per-tenant automation_rules cap (default 20,
+                                            >= 1).
+    """
+    return AutomationSettings(
+        enabled=_env_bool("ORCH_AUTOMATION_ENABLED"),
+        max_rules_per_tenant=_env_int(
+            "ORCH_AUTOMATION_MAX_RULES_PER_TENANT",
+            DEFAULT_AUTOMATION_MAX_RULES_PER_TENANT,
+            minimum=1,
+        ),
+    )
+
+
 def get_coordination_settings() -> CoordinationSettings:
     """Resolve coordination settings from the environment (NON-FATAL on absence).
 

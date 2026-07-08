@@ -323,3 +323,66 @@ def compute_identity_row_hash(data: dict[str, Any]) -> str:
 def verify_identity_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
     """Recompute and compare the identity row_hash for a single row. True iff it matches."""
     return compute_identity_row_hash(row_data) == stored_hash
+
+
+# =========================================================================== #
+# Automation-execution audit chain (O-011, ADR-0011) — ADDITIVE, parallel to the ingest,
+# distribution, registry, relay, and identity chains above. Same canonicalization
+# discipline over a distinct field set and a domain-separated genesis so none of the six
+# chains can ever be confused. The chains above are untouched (byte-identical).
+# =========================================================================== #
+
+# Domain-separated genesis constant, distinct from every other chain's genesis.
+AUTOMATION_GENESIS_HASH = hashlib.sha256(
+    b"anoryx-orchestrator:automation-audit:genesis:v1"
+).hexdigest()
+
+# Fields folded into the canonical hash content, in a fixed documented order.
+# prev_hash MUST be last to surface ordering issues clearly.
+AUTOMATION_CANONICAL_FIELDS = [
+    "rule_id",
+    "tenant_id",
+    "triggering_event_id",
+    "action_type",
+    "disposition",
+    # Chain field — last.
+    "prev_hash",
+]
+
+# Folded in ONLY when non-None (opt-in-when-present). Never add this to
+# AUTOMATION_CANONICAL_FIELDS — that would inject "error_reason":null into every executed
+# link and break verification over historical data.
+_AUTOMATION_OPTIONAL_FIELDS = ("error_reason",)
+
+
+def canonical_automation_json(data: dict[str, Any]) -> bytes:
+    """Serialize automation-execution row data to canonical JSON: sorted keys, no
+    whitespace, UTF-8.
+
+    Only AUTOMATION_CANONICAL_FIELDS are included (missing → None, to prevent omission
+    attacks). error_reason is appended ONLY when not None (opt-in-when-present — a rule
+    that matched and executed successfully hashes identically whether or not the
+    error_reason key was ever present in the input dict).
+    """
+    filtered: dict[str, Any] = {k: data.get(k) for k in AUTOMATION_CANONICAL_FIELDS}
+    for field in _AUTOMATION_OPTIONAL_FIELDS:
+        if data.get(field) is not None:
+            filtered[field] = data[field]
+    return json.dumps(filtered, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+
+
+def compute_automation_row_hash(data: dict[str, Any]) -> str:
+    """Return the 64-char lowercase SHA-256 hex digest of the canonical JSON of *data*.
+
+    *data* MUST include 'prev_hash'.
+    """
+    if "prev_hash" not in data:
+        raise ValueError("row data must include 'prev_hash' to compute row_hash")
+    return hashlib.sha256(canonical_automation_json(data)).hexdigest()
+
+
+def verify_automation_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
+    """Recompute and compare the automation row_hash for a single row. True iff it matches."""
+    return compute_automation_row_hash(row_data) == stored_hash
