@@ -38,6 +38,19 @@ def test_window_exceeding_max_days_rejected() -> None:
         DashboardQuery(**_base(end=_NOW + timedelta(days=401)))
 
 
+def test_window_of_exactly_400_days_plus_hours_rejected() -> None:
+    # Regression for the .days-truncation bug (independent security review
+    # finding #2): 400 days + 23h59m has timedelta.days == 400, so a naive
+    # `.days > 400` comparison would wrongly accept it.
+    with pytest.raises(ValidationError, match="400-day maximum"):
+        DashboardQuery(**_base(end=_NOW + timedelta(days=400, hours=23, minutes=59)))
+
+
+def test_window_of_exactly_400_days_accepted() -> None:
+    query = DashboardQuery(**_base(end=_NOW + timedelta(days=400)))
+    assert query.end - query.start == timedelta(days=400)
+
+
 def test_ordinary_window_accepted() -> None:
     query = DashboardQuery(**_base())
     assert query.end > query.start

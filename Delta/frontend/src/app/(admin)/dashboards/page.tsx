@@ -178,17 +178,25 @@ export default function DashboardsPage({ searchParams }: { searchParams: Search 
   );
 }
 
+const VALID_GROUP_DIMENSIONS: readonly DashboardGroupDimension[] = ["team_id", "project_id", "agent_id"];
+
 /**
  * group_by must never equal a dimension already pinned as a scope filter (the
  * backend rejects that combination as a no-op ranking — 422). Pick the
- * requested group_by if it's valid; otherwise the first dimension that isn't
- * pinned.
+ * requested group_by if it names a real dimension and isn't pinned; otherwise
+ * the first dimension that isn't pinned. A hand-crafted ?group_by=<garbage> is
+ * rejected here rather than cast through unchecked and forwarded to the API
+ * (independent security review, docs/audit/d-008-security-audit.md finding #3
+ * — the backend already 422s it either way, this just fails closer to the
+ * input instead of relying on that downstream check).
  */
 function resolveGroupBy(searchParams: Search): DashboardGroupDimension {
   const pinned = new Set(
     (["team_id", "project_id", "agent_id"] as const).filter((k) => searchParams[k]),
   );
-  const requested = searchParams.group_by as DashboardGroupDimension | undefined;
+  const requested = VALID_GROUP_DIMENSIONS.includes(searchParams.group_by as DashboardGroupDimension)
+    ? (searchParams.group_by as DashboardGroupDimension)
+    : undefined;
   if (requested && !pinned.has(requested)) return requested;
   return GROUP_OPTIONS.map((g) => g.value).find((v) => !pinned.has(v)) ?? "team_id";
 }

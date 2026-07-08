@@ -83,6 +83,24 @@ async def test_time_series_buckets_by_day(tenant_id, seed_usage) -> None:
 
 
 @db_required
+async def test_time_series_row_count_is_capped(tenant_id, seed_usage, monkeypatch) -> None:
+    # Independent security review finding #1: the window-days cap alone still
+    # permits thousands of hour-bucket rows. Prove the row-count LIMIT is real
+    # without seeding thousands of rows — lower the cap to 2 and seed 3 buckets.
+    import delta.dashboards.store as store_module
+
+    monkeypatch.setattr(store_module, "_MAX_TIMESERIES_POINTS", 2)
+    await seed_usage(tenant_id=tenant_id, cost_cents=1_000, timestamp="2026-07-01T01:00:00Z")
+    await seed_usage(tenant_id=tenant_id, cost_cents=1_000, timestamp="2026-07-01T02:00:00Z")
+    await seed_usage(tenant_id=tenant_id, cost_cents=1_000, timestamp="2026-07-01T03:00:00Z")
+
+    async with get_tenant_session(tenant_id) as session:
+        points = await spend_time_series(session, start=_START, end=_END, bucket="hour")
+
+    assert len(points) == 2
+
+
+@db_required
 async def test_top_spenders_ranks_by_cost_desc(tenant_id, seed_usage) -> None:
     import uuid
 

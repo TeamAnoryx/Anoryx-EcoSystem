@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -18,6 +18,7 @@ BucketGranularity = Literal["hour", "day"]
 # business rule). 400 days covers a year-plus daily view; a longer horizon needs
 # server-side rollups this task does not build (see ADR-0008 honesty boundary).
 _MAX_WINDOW_DAYS = 400
+_MAX_WINDOW = timedelta(days=_MAX_WINDOW_DAYS)
 
 
 class DashboardQuery(BaseModel):
@@ -38,7 +39,10 @@ class DashboardQuery(BaseModel):
         require_aware_utc(self.end, "end")
         if self.end <= self.start:
             raise ValueError("end must be strictly after start")
-        if (self.end - self.start).days > _MAX_WINDOW_DAYS:
+        # Compare the exact timedelta, not .days (which truncates — a window of
+        # 400 days + 23h59m has .days == 400 and would silently pass a .days
+        # comparison; independent security review finding #2).
+        if (self.end - self.start) > _MAX_WINDOW:
             raise ValueError(f"window exceeds the {_MAX_WINDOW_DAYS}-day maximum")
         return self
 

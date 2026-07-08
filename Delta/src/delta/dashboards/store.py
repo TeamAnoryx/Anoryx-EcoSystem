@@ -32,6 +32,13 @@ BucketGranularity = Literal["hour", "day"]
 
 _DEBIT = "debit"
 
+# Row cap for spend_time_series (independent security review finding #1,
+# docs/audit/d-008-security-audit.md): the 400-day window cap alone still
+# permits ~9,600 rows at hour granularity. This LIMIT bounds every call
+# regardless of the window/bucket combination, mirroring D-007's list-response
+# cap (store.MAX_LIST_LIMIT in allocation_admin).
+_MAX_TIMESERIES_POINTS = 2000
+
 
 @dataclass(frozen=True)
 class ScopeFilter:
@@ -123,6 +130,7 @@ async def spend_time_series(
         .where(_window_clause(start=start, end=end), *_scope_clauses(scope or ScopeFilter()))
         .group_by(bucket_col)
         .order_by(bucket_col)
+        .limit(_MAX_TIMESERIES_POINTS)
     )
     rows = (await session.execute(stmt)).all()
     return [
