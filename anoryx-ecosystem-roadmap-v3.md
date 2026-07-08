@@ -699,7 +699,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] O-006 Persistence consolidation + tenant-scoped read seams ✅ (#47)
 - [x] O-007 Admin API + minimal UI ✅ (shipped PR #51)
 - [x] O-008 Deployment ✅ (shipped PR #55)
-- [ ] O-009 Centralized Sentinel proxy for all inter-app traffic — Heavy 🏦
+- [x] O-009 Centralized Sentinel proxy for all inter-app traffic — Heavy 🏦 ✅ (shipped PR #60, scoped to a governed dispatch+audit seam — see ADR-0009)
 - [ ] O-010 Unified identity + cross-platform access mgmt — Heavy 🏦
 - [ ] O-011 Event-driven cross-module automation engine — Complex 🏦
 - [ ] O-012 Sub-ms agent-to-agent messaging backbone + state-sync — Heavy 🏦
