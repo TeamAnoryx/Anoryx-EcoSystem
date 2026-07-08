@@ -220,10 +220,7 @@ async def test_deny_update_denied_by_grant_for_app_role(tenant_db, tenant_id: st
     async with tenant_db() as s:
         with pytest.raises(DBAPIError, match="permission denied"):
             await s.execute(
-                text(
-                    "UPDATE delta.change_history SET action = 'tampered' "
-                    "WHERE tenant_id = :t"
-                ),
+                text("UPDATE delta.change_history SET action = 'tampered' " "WHERE tenant_id = :t"),
                 {"t": tenant_id},
             )
             await s.commit()
@@ -323,7 +320,7 @@ async def test_concurrent_appends_produce_an_unbroken_chain(tenant_db_for, tenan
 
 async def test_list_history_filters_and_limits(tenant_db, tenant_id: str) -> None:
     async with tenant_db() as s:
-        for i in range(3):
+        for _i in range(3):
             await append_history(
                 s,
                 tenant_id=tenant_id,

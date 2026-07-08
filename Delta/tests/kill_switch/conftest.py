@@ -324,6 +324,16 @@ async def _read_state(tenant_id: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def _read_history(tenant_id: str, *, entity_id: str | None = None) -> list[dict]:
+    from delta.persistence.audit_log import list_history
+
+    async with open_tenant_session(tenant_id) as s:
+        rows = await list_history(s, entity_type="kill_switch_enforcement", entity_id=entity_id)
+        return [
+            {"entity_id": r.entity_id, "action": r.action, "actor": r.actor} for r in reversed(rows)
+        ]
+
+
 @pytest.fixture
 def read_outbox() -> Callable[[str], Awaitable[list[dict]]]:
     return _read_outbox
@@ -332,3 +342,9 @@ def read_outbox() -> Callable[[str], Awaitable[list[dict]]]:
 @pytest.fixture
 def read_state() -> Callable[[str], Awaitable[list[dict]]]:
     return _read_state
+
+
+@pytest.fixture
+def read_history() -> Callable[..., Awaitable[list[dict]]]:
+    """D-009: change_history rows for entity_type='kill_switch_enforcement', oldest first."""
+    return _read_history
