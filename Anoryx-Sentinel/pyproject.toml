@@ -100,7 +100,14 @@ code-scan = [
     "semgrep>=1.60,<2",
     "bandit>=1.7,<2",
 ]
-all = ["anoryx-sentinel[bedrock,pii-spacy,otlp-grpc,saml,bulk,code-scan]"]
+dr-s3 = [
+    # F-024 disaster recovery: S3/MinIO off-cluster backup sink
+    # (src/dr/backends/s3.py). Same lib family as [bulk]/[bedrock]; LAZY-imported
+    # so the slim image / a local-sink-only deploy (the default — src/dr/config.py)
+    # does not need boto3 installed (ADR-0030).
+    "boto3>=1.34,<2",
+]
+all = ["anoryx-sentinel[bedrock,pii-spacy,otlp-grpc,saml,bulk,code-scan,dr-s3]"]
 dev = [
     "ruff>=0.4,<1",
     "black>=24,<26",
@@ -121,6 +128,8 @@ dev = [
 [project.scripts]
 # F-008 operator CLI (ADR-0009 §11): sign + push a policy, or generate a dev keypair.
 sentinel-cli = "policy.cli:main"
+# F-024 operator CLI (ADR-0030): backup / restore / list disaster-recovery dumps.
+sentinel-dr = "dr.cli:main"
 
 [tool.ruff]
 target-version = "py312"
@@ -137,8 +146,8 @@ ignore = ["S603", "S607", "S110"]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests use assert as their core assertion mechanism; S101 doesn't apply.
-# S106: test fixtures use hardcoded sentinel values (fake credentials) — not production secrets.
-"tests/**/*.py" = ["S101", "S106"]
+# S105/S106: test fixtures use hardcoded sentinel values (fake credentials) — not production secrets.
+"tests/**/*.py" = ["S101", "S105", "S106"]
 
 [tool.black]
 target-version = ["py312"]

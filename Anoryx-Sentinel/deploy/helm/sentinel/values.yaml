@@ -248,6 +248,34 @@ migrations:
   # provision the sentinel_app role on first run (F-003b).
   provisionAppRole: true
 
+# --- F-024 disaster recovery: scheduled pg_dump backup (ADR-0030) ----------- #
+# OFF by default — byte-identical render to before F-024 when enabled=false.
+# Runs `sentinel-dr backup` (src/dr/cli.py) on a CronJob schedule. Restore is
+# NEVER scheduled/automated — see deploy/DISASTER-RECOVERY.md; an operator runs
+# `sentinel-dr restore` manually with an explicit --target-database-url.
+backup:
+  enabled: false
+  schedule: "0 3 * * *"          # daily 03:00 UTC
+  # "local" — a dedicated PVC (backup-pvc.yaml, gated the same as this block).
+  #   HONEST LIMITATION: does NOT survive loss of the cluster/volume it lives
+  #   on — see deploy/DISASTER-RECOVERY.md. Zero extra infra; the safe default.
+  # "s3"    — S3/MinIO off-cluster durability (src/dr/backends/s3.py). Requires
+  #   the [dr-s3] image extra (INSTALL_EXTRAS=all or dr-s3) and
+  #   DR_S3_ACCESS_KEY / DR_S3_SECRET_KEY in the app envSecret.
+  sink: local
+  retentionDays: 14
+  local:
+    dir: /var/lib/sentinel/backups
+    pvcSize: 20Gi
+    storageClassName: ""
+  s3:
+    endpoint: ""                 # empty => AWS S3; set for MinIO/self-host
+    bucket: sentinel-dr-backups
+    region: us-east-1
+  activeDeadlineSeconds: 1800
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+
 resources:
   requests: { cpu: 250m, memory: 512Mi }
   limits: { cpu: 500m, memory: 1Gi }

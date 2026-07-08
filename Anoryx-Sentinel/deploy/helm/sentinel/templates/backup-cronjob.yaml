@@ -1,0 +1,78 @@
+{{- if .Values.backup.enabled -}}
+# F-024 (ADR-0030) scheduled backup CronJob. Runs `sentinel-dr backup` (src/dr/
+# cli.py) through the same entrypoint shim migration-job.yaml uses, so
+# DATABASE_URL is assembled from the password secretKeyRef exactly the same way
+# (never lands in the pod spec). OFF by default (backup.enabled=false) — renders
+# nothing, byte-identical to the chart before F-024.
+#
+# Restore is intentionally NOT here: there is no scheduled/automated restore
+# path (see deploy/DISASTER-RECOVERY.md) — an operator runs `sentinel-dr
+# restore --target-database-url ...` manually, with an explicit target that is
+# never defaulted to this deployment's own DATABASE_URL.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "sentinel.fullname" . }}-backup
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ .Values.backup.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.backup.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: {{ .Values.backup.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            {{- include "sentinel.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: backup
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "sentinel.serviceAccountName" . }}
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          {{- $waitPg := include "sentinel.waitForPostgres" . | trim }}
+          {{- if $waitPg }}
+          initContainers:
+            {{- $waitPg | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: backup
+              image: {{ include "sentinel.image" . }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              command: ["/usr/local/bin/docker-entrypoint.sh"]
+              args: ["sentinel-dr", "backup"]
+              env:
+                {{- include "sentinel.pgEnv" . | nindent 16 }}
+                {{- include "sentinel.drEnv" . | nindent 16 }}
+              {{- if or .Values.envSecret .Values.createEnvSecret }}
+              envFrom:
+                - secretRef:
+                    name: {{ include "sentinel.envSecretName" . }}
+              {{- end }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+                {{- if eq .Values.backup.sink "local" }}
+                - name: backup-storage
+                  mountPath: {{ .Values.backup.local.dir }}
+                {{- end }}
+          volumes:
+            - name: tmp
+              emptyDir: {}
+            {{- if eq .Values.backup.sink "local" }}
+            - name: backup-storage
+              persistentVolumeClaim:
+                claimName: {{ include "sentinel.fullname" . }}-backup
+            {{- end }}
+{{- end }}

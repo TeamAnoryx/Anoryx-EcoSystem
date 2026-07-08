@@ -675,7 +675,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] F-021 Advanced governance UI
 - [x] F-022 Multi-region deployment — merged #49; reconciled + independently audited (PR #50): allowlist-enforced residency scope, call-site-gated byte-identical render, fail-hard replication bootstrap, least-privilege secret, verify-full TLS. ⚠️ 1 High open (passive read-only NOT enforced — docs/audit/f-022-security-audit.md, docs/followups/f-022-passive-readonly-enforcement.md) → human remediation required before operating a serving passive region.
 - [x] F-023 Performance hardening 🔮 (shipped PR #52)
-- [ ] F-024 Disaster recovery 🔮
+- [x] F-024 Disaster recovery 🔮 (shipped PR #59)
 - [ ] F-025 Self-serve onboarding 🔮
 - [ ] F-026 MCP & Third-Party Integration Layer 🔮
 - [ ] F-027 Provider Key Vaulting 🔮
