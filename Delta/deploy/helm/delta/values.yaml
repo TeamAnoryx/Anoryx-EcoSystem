@@ -1,0 +1,200 @@
+# Delta Helm values (D-010).
+# Mirrors Anoryx-AI-Orchestrator's O-008 Helm pattern (ADR-0008), which itself mirrors
+# Anoryx-Sentinel's F-010 pattern (ADR-0012/ADR-0027) — adapted for Delta's TWO ASGI
+# services instead of one: `ingest` (the runtime enforcement hot path,
+# POST /v1/ingest/usage) and `admin` (the internal operator console, D-007/D-008/D-009).
+#
+# No Redis is bundled — zero Delta code imports it. This is a deliberate, documented
+# scope decision (see deploy/DEPLOY-K8s.md), not a silent omission of the roadmap's
+# generic "Postgres + Redis" phrase, mirroring the Orchestrator's own ADR-0008 Fork E
+# dropping subsystems its product doesn't have.
+#
+# Production checklist (see deploy/DEPLOY-K8s.md):
+#   - Set postgres.bundled=false -> point at a managed service.
+#   - Pre-create the envSecret (DELTA_INGEST_HMAC_SECRET, DELTA_ADMIN_TOKEN,
+#     ORCH_SERVICE_TOKEN, and in external-DB mode DATABASE_URL / APP_DATABASE_URL) and
+#     set envSecret below.
+#   - Wire ingress + TLS (cert-manager) at your edge for the ingest service only — the
+#     admin console is INTERNAL-ONLY (see networkPolicy.admin below); do not expose it.
+#   - mTLS between Delta and the Orchestrator's O-004 distribution seam is NOT
+#     provisioned by this chart — an honest, explicit deferral (see DEPLOY-K8s.md
+#     "Honest deferrals", mirroring Anoryx-AI-Orchestrator's ADR-0008 and Anoryx-
+#     Sentinel's ADR-0012/ADR-0027). The interim peer authenticator is the shared
+#     ORCH_SERVICE_TOKEN bearer.
+
+image:
+  repository: ghcr.io/teamanoryx/anoryx-delta
+  # Defaults to the chart's AppVersion (e.g. 0.2.0). Set to pin an explicit tag.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# --- Ingest service (delta.ingest.app:create_app) — the runtime hot path ---- #
+# Called by the Orchestrator/Sentinel for live POST /v1/ingest/usage traffic.
+ingest:
+  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 8000
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { cpu: 500m, memory: 1Gi }
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+
+# --- Admin service (delta.allocation_admin.app:create_app) — internal only -- #
+# Operator console (D-007 allocations + D-008 dashboards + D-009 audit-verify).
+# Low-traffic internal surface: no autoscaling, single replica by default.
+admin:
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 8001
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: 250m, memory: 512Mi }
+
+# Placeholder only — this chart renders NO ingress.yaml template (independent security
+# review, D-010). Matches every other product's chart in this repo (Sentinel F-010,
+# Orchestrator O-008, Rendly R-010 — none render one either): "public TLS / cert-manager /
+# hardened production Ingress" is a named, honest deferral everywhere, not a Delta-specific
+# gap. Wire your own Ingress + cert-manager at the edge for the ingest component ONLY —
+# never for admin (see networkPolicy.extraAdminIngress if the admin console genuinely needs
+# more than in-cluster access). Kept here (inert) only for values-shape consistency with the
+# sibling charts' identical placeholder block.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+# --- Sensitive config -------------------------------------------------------- #
+# Name of a PRE-EXISTING Kubernetes Secret holding both services' sensitive env,
+# surfaced via envFrom: secretRef. Create it WITHOUT committing values — see
+# deploy/helm/gen-k8s-secret.sh. Required keys (bundled-store demo):
+#   DELTA_INGEST_HMAC_SECRET   inbound signature verification on POST /v1/ingest/usage
+#   DELTA_ADMIN_TOKEN          break-glass bearer for the admin app (fail-loud if unset)
+#   ORCH_SERVICE_TOKEN         outbound Bearer to the Orchestrator O-004 distribution seam
+#                              (may be empty when budgetEngineEnabled/killSwitchEnabled
+#                              are both false — see below)
+# External-store mode (bundled=false) ALSO needs: DATABASE_URL, APP_DATABASE_URL.
+envSecret: ""
+# Set true ONLY to have the chart render the Secret from secretData below (not
+# recommended for production — prefer an externally-managed Secret / ESO).
+createEnvSecret: false
+secretData: {}                 # map of KEY: value, used only when createEnvSecret=true
+
+# --- Non-secret config (plain env vars) -------------------------------------- #
+# DELTA_ORCH_DISTRIBUTION_URL — the Orchestrator's O-004 base URL. Not sensitive
+# (no credentials). Required (along with ORCH_SERVICE_TOKEN in envSecret) when
+# budgetEngineEnabled or killSwitchEnabled is true.
+orchestratorDistributionUrl: ""
+# The D-005 budget engine and D-006 kill-switch are BOTH fail-loud at ingest-app
+# startup when enabled (their own module default) without a valid
+# orchestratorDistributionUrl + ORCH_SERVICE_TOKEN. Both default to false here so a
+# minimal deploy (no reachable Orchestrator configured yet) starts cleanly; set both
+# true — and supply orchestratorDistributionUrl + ORCH_SERVICE_TOKEN — to enable real
+# enforcement publishing.
+budgetEngineEnabled: false
+killSwitchEnabled: false
+# Optional numeric ceiling (DELTA_KILL_SWITCH_MAX_TX_COST_CENTS); empty = the
+# anomalous-single-transaction trigger never fires (opt-in, ADR-0006 Fork 2).
+killSwitchMaxTxCostCents: ""
+env: []                        # list of {name, value}, applied to BOTH services
+extraEnv: []
+
+# --- Bundled Postgres (bundled by default; escape hatch below) --------------- #
+postgres:
+  bundled: true
+  image: postgres:16-alpine
+  storage: 8Gi
+  storageClassName: ""
+  auth:
+    username: delta
+    database: delta_dev
+    # Dev-grade default password for the BUNDLED instance. Production uses
+    # bundled=false + an external secret.
+    password: delta
+    existingSecret: ""         # Secret with POSTGRES_PASSWORD (else password above is used)
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+  # Escape hatch — set bundled=false and fill these to use managed Postgres.
+  external:
+    host: ""
+    port: 5432
+    database: delta
+    secretName: ""             # Secret providing DATABASE_URL / APP_DATABASE_URL
+
+# --- Schema migrations (pre-upgrade Alembic Job) ------------------------------ #
+migrations:
+  enabled: true
+  # provision the delta_app role password on first run.
+  provisionAppRole: true
+
+# No top-level `autoscaling` key — see ingest.autoscaling above. The admin
+# console never autoscales (low-traffic internal surface), so it has no
+# autoscaling knob at all.
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# --- NetworkPolicy (restrictive by default, with an honest FQDN limitation) -- #
+networkPolicy:
+  enabled: true
+  # Plain k8s NetworkPolicy cannot match egress by hostname. The chart scopes
+  # in-cluster egress to the bundled Postgres pod on its specific port, plus DNS +
+  # arbitrary :443 (the Orchestrator's base URL is operator-supplied and not known
+  # at chart-render time). To RESTRICT egress by IP set CIDRs here (FQDN rules need
+  # a Cilium/Calico CNI).
+  orchestratorEgressCIDRs: []  # e.g. ["203.0.113.0/24"]
+  extraEgress: []
+  # Ingress: the ingest component's POST /v1/ingest/usage is called by Sentinel/
+  # Orchestrator instances that may live in a different namespace or cluster —
+  # their source is not known at chart-render time, so ingress on the ingest port
+  # is OPEN by default (defense-in-depth is the HMAC signature check at the app
+  # layer). Set ingressCIDRs to restrict inbound to known caller ranges.
+  ingressCIDRs: []             # e.g. ["203.0.113.0/24"] — empty = open to any source
+  extraIngress: []
+  # The admin component is INTERNAL-ONLY: same-namespace + monitoring-namespace
+  # ingress ONLY, ALWAYS — there is no admin equivalent of ingressCIDRs. An
+  # operator who genuinely needs external access to the break-glass console
+  # should use extraAdminIngress (explicit opt-in), never an open-by-default rule.
+  extraAdminIngress: []
+  # Namespace allowed to scrape /metrics + probes (Prometheus).
+  monitoringNamespace: monitoring
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# --- Security contexts -------------------------------------------------------- #
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}

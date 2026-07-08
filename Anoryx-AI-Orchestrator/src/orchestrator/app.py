@@ -15,10 +15,14 @@ operator-scoped admin API + minimal UI (GET /v1/admin/events/recent,
 AI traffic (POST /v1/relay/dispatch — O-009, ADR-0009), the cross-product identity-event
 correlation seam (POST + GET /v1/identity/events, GET /v1/admin/identity/events/recent —
 O-010, ADR-0010), the cross-module automation-rules engine (POST/GET/PATCH/DELETE
-/v1/automation/rules, GET /v1/automation/executions — O-011, ADR-0011), plus a health
-probe. The query/distribution seams derive a per-tenant principal
-(require_tenant_principal); a missing/invalid token → a uniform 401. mTLS termination is
-O-008.
+/v1/automation/rules, GET /v1/automation/executions — O-011, ADR-0011), the agent mailbox
+relay + shared state store (POST /v1/messaging/messages, GET /v1/messaging/inbox/...,
+PUT + GET /v1/state/{state_key} — O-012, ADR-0012: durable, ordered, poll-based messaging
+and single-Postgres-instance optimistic-concurrency state, NOT the roadmap's literal
+sub-millisecond messaging backbone / global consensus state-sync — see ADR-0012's honesty
+boundaries), plus a health probe. The query/distribution seams derive a per-tenant
+principal (require_tenant_principal); a missing/invalid token -> a uniform 401. mTLS
+termination is O-008.
 """
 
 from __future__ import annotations
@@ -36,11 +40,13 @@ from orchestrator.config import (
     get_distribution_settings,
     get_identity_settings,
     get_ingest_settings,
+    get_messaging_settings,
 )
 from orchestrator.coordination.router import router as coordination_router
 from orchestrator.distribution.router import router as distribution_router
 from orchestrator.identity.router import router as identity_router
 from orchestrator.ingest.router import router as ingest_router
+from orchestrator.messaging.router import router as messaging_router
 from orchestrator.query.router import router as query_router
 from orchestrator.relay.router import router as relay_router
 from orchestrator.security import PrincipalAuthError
@@ -74,6 +80,12 @@ def create_app() -> FastAPI:
     # master switch DEFAULTS OFF (ORCH_AUTOMATION_ENABLED), so an unconfigured deployment
     # never silently starts auto-triggering distributions.
     app.state.automation_settings = get_automation_settings()
+    # Agent mailbox relay + shared state store (O-012) settings resolve NON-FATALLY. NO
+    # master enable/disable switch here (unlike automation_settings above) — sending a
+    # message or writing state is ordinary CALLER-INITIATED CRUD gated by the same
+    # require_tenant_principal credential every other tenant-write seam already requires,
+    # not new autonomous behavior (ADR-0012).
+    app.state.messaging_settings = get_messaging_settings()
 
     @app.exception_handler(Exception)
     async def _fail_safe_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -134,4 +146,5 @@ def create_app() -> FastAPI:
     app.include_router(relay_router)
     app.include_router(identity_router)
     app.include_router(automation_router)
+    app.include_router(messaging_router)
     return app

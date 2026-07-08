@@ -69,11 +69,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: azure/setup-helm@v4
+        # D-010: makes tests/deploy/test_helm.py's lint/template/NetworkPolicy
+        # assertions execute for real here instead of self-skipping (helm absent
+        # is the ecosystem-wide default for the other three products' own deploy
+        # tests — this is a deliberate, Delta-scoped improvement, not a gap fix
+        # applied unilaterally elsewhere). See docs/audit/d-010-security-audit.md.
+        with:
+          version: v3.15.4
       - name: Install
         run: pip install -e ".[dev]"
       - name: Ledger DB tests (+ coverage)
         # The persistence/ suite runs only here (it requires the live DB). Coverage
         # over the whole src tree; the ledger-core modules are held to >=90% below.
+        # tests/deploy/ (D-010) rides this same untargeted run — testpaths sweeps
+        # it in automatically (pyproject.toml).
         run: |
           pytest --tb=short -q --cov=src --cov-report=term-missing
       - name: Ledger-core coverage floor (>=90%)

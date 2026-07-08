@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "delta.fullname" . }}-ingest
+  labels:
+    {{- include "delta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+spec:
+  type: {{ .Values.ingest.service.type }}
+  selector:
+    {{- include "delta.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+  ports:
+    - name: http
+      port: {{ .Values.ingest.service.port }}
+      targetPort: http
+      protocol: TCP

@@ -702,7 +702,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] O-009 Centralized Sentinel proxy for all inter-app traffic — Heavy 🏦 ✅ (shipped PR #60, scoped to a governed dispatch+audit seam — see ADR-0009)
 - [x] O-010 Unified identity + cross-platform access mgmt — Heavy 🏦 ✅ (shipped PR #65, scoped to a cross-product identity-event correlation seam — see ADR-0010)
 - [x] O-011 Event-driven cross-module automation engine — Complex 🏦 ✅ (shipped PR #67, scoped to a tenant-owned rule-triggered redistribution seam — see ADR-0011)
-- [ ] O-012 Sub-ms agent-to-agent messaging backbone + state-sync — Heavy 🏦
+- [x] O-012 Sub-ms agent-to-agent messaging backbone + state-sync — Heavy 🏦 ✅ (shipped PR #74, scoped to an intra-tenant mailbox relay + optimistic-concurrency state store — see ADR-0012)
 - [ ] O-013 Global API gateway for third-party interactions — Heavy 🏦
 - [ ] O-014 Command dashboard + automated rollback — Complex 🏦
 - [ ] O-015 Predictive scaling — Complex 🔮
@@ -718,7 +718,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-007 Budget allocation UI ✅ (shipped PR #57)
 - [x] D-008 Live cost-to-value dashboards (param-driven) ✅ (shipped PR #62)
 - [x] D-009 Immutable financial-workflow audit trails ✅ (shipped PR #68)
-- [ ] D-010 Deployment — Easy-Tricky (6-10h)
+- [x] D-010 Deployment ✅ (shipped PR #71)
 - [ ] D-011 Predictive SaaS/cloud budget optimization — Tricky (12-16h) ➕
 - [ ] D-012 Chargeback/showback + anomaly detection — Tricky (12-16h) ➕
 - [ ] D-013 Unified CRM — Heavy 🏦

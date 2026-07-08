@@ -386,3 +386,124 @@ def compute_automation_row_hash(data: dict[str, Any]) -> str:
 def verify_automation_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
     """Recompute and compare the automation row_hash for a single row. True iff it matches."""
     return compute_automation_row_hash(row_data) == stored_hash
+
+
+# =========================================================================== #
+# Agent-messaging audit chain (O-012, ADR-0012) — ADDITIVE, parallel to the ingest,
+# distribution, registry, relay, identity, and automation chains above. Same
+# canonicalization discipline over a distinct field set and a domain-separated genesis so
+# none of the seven chains can ever be confused. The chains above are untouched
+# (byte-identical). Records every SEND ATTEMPT (a fresh 'sent' AND a deduped resend both
+# get a chain link — mirrors O-003's ingest_audit_log "was this attempt durably
+# processed" semantics, NOT O-011's automation_executions "did an action actually fire"
+# semantics; see ADR-0012 for the full comparison).
+# =========================================================================== #
+
+# Domain-separated genesis constant, distinct from every other chain's genesis.
+MESSAGING_GENESIS_HASH = hashlib.sha256(
+    b"anoryx-orchestrator:messaging-audit:genesis:v1"
+).hexdigest()
+
+# Fields folded into the canonical hash content, in a fixed documented order.
+# prev_hash MUST be last to surface ordering issues clearly.
+MESSAGING_CANONICAL_FIELDS = [
+    "tenant_id",
+    "sender_agent_id",
+    "recipient_agent_id",
+    "message_type",
+    "idempotency_key",
+    "disposition",
+    # Chain field — last.
+    "prev_hash",
+]
+
+
+def canonical_messaging_json(data: dict[str, Any]) -> bytes:
+    """Serialize agent-message audit row data to canonical JSON: sorted keys, no
+    whitespace, UTF-8.
+
+    Only MESSAGING_CANONICAL_FIELDS are included (missing -> None, to prevent omission
+    attacks). There are no opt-in-when-present fields for this chain — every field is
+    always present on both a 'sent' and a 'deduped' link.
+    """
+    filtered: dict[str, Any] = {k: data.get(k) for k in MESSAGING_CANONICAL_FIELDS}
+    return json.dumps(filtered, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+
+
+def compute_messaging_row_hash(data: dict[str, Any]) -> str:
+    """Return the 64-char lowercase SHA-256 hex digest of the canonical JSON of *data*.
+
+    *data* MUST include 'prev_hash'.
+    """
+    if "prev_hash" not in data:
+        raise ValueError("row data must include 'prev_hash' to compute row_hash")
+    return hashlib.sha256(canonical_messaging_json(data)).hexdigest()
+
+
+def verify_messaging_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
+    """Recompute and compare the messaging row_hash for a single row. True iff it matches."""
+    return compute_messaging_row_hash(row_data) == stored_hash
+
+
+# =========================================================================== #
+# Shared-state audit chain (O-012, ADR-0012) — ADDITIVE, parallel to every chain above.
+# Same canonicalization discipline over a distinct field set and a domain-separated
+# genesis so this chain can never be confused with any other. The chains above are
+# untouched (byte-identical). Mirrors O-011's automation_executions "only the meaningful
+# outcome" semantics, NOT the messaging chain's "every attempt" semantics: a
+# version-CONFLICT rejection (409) produces NO row here (see ADR-0012).
+# =========================================================================== #
+
+# Domain-separated genesis constant, distinct from every other chain's genesis.
+STATE_GENESIS_HASH = hashlib.sha256(b"anoryx-orchestrator:state-audit:genesis:v1").hexdigest()
+
+# Fields folded into the canonical hash content, in a fixed documented order.
+# prev_hash MUST be last to surface ordering issues clearly.
+STATE_CANONICAL_FIELDS = [
+    "tenant_id",
+    "state_key",
+    "version",
+    "disposition",
+    # Chain field — last.
+    "prev_hash",
+]
+
+# Folded in ONLY when non-None (opt-in-when-present). Never add this to
+# STATE_CANONICAL_FIELDS — that would inject "updated_by_agent_id":null into every link
+# that never supplied attribution and break verification over historical data.
+_STATE_OPTIONAL_FIELDS = ("updated_by_agent_id",)
+
+
+def canonical_state_json(data: dict[str, Any]) -> bytes:
+    """Serialize shared-state audit row data to canonical JSON: sorted keys, no
+    whitespace, UTF-8.
+
+    Only STATE_CANONICAL_FIELDS are included (missing -> None, to prevent omission
+    attacks). updated_by_agent_id is appended ONLY when not None (opt-in-when-present —
+    a write with no caller-supplied attribution hashes identically whether or not the key
+    was ever present in the input dict).
+    """
+    filtered: dict[str, Any] = {k: data.get(k) for k in STATE_CANONICAL_FIELDS}
+    for field in _STATE_OPTIONAL_FIELDS:
+        if data.get(field) is not None:
+            filtered[field] = data[field]
+    return json.dumps(filtered, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+
+
+def compute_state_row_hash(data: dict[str, Any]) -> str:
+    """Return the 64-char lowercase SHA-256 hex digest of the canonical JSON of *data*.
+
+    *data* MUST include 'prev_hash'.
+    """
+    if "prev_hash" not in data:
+        raise ValueError("row data must include 'prev_hash' to compute row_hash")
+    return hashlib.sha256(canonical_state_json(data)).hexdigest()
+
+
+def verify_state_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
+    """Recompute and compare the state row_hash for a single row. True iff it matches."""
+    return compute_state_row_hash(row_data) == stored_hash

@@ -64,8 +64,7 @@ change-history log (hash-chained by D-009). See
 - **Frontend:** `frontend/` — a Next.js admin console, BFF-only (mirrors
   `Anoryx-Sentinel/frontend/`: the browser only ever holds a signed session cookie, never the
   bearer token). See [`frontend/README.md`](frontend/README.md).
-- **Not** wired into `docker-compose.yml` — no Delta HTTP app is (D-004's ingest app and
-  D-005/D-006's engines ship the same way); full service wiring is D-010 (Deployment).
+- Wired into `docker-compose.yml` as the `delta-admin` service as of D-010 (Deployment).
 
 ## D-008 — Live Cost-to-Value Dashboards
 
@@ -111,6 +110,37 @@ allocation-reconciliation failures. See
   encrypted at rest beyond the deployment's own Postgres-level encryption (no envelope encryption,
   mirroring Sentinel's audit table). `verify_chain` is pull-based, not push-alerted.
 
+## D-010 — Deployment (Docker + Helm + K8s-native secrets)
+
+D-010 packages the two Delta ASGI apps (`delta.ingest.app` — the runtime enforcement hot path, and
+`delta.allocation_admin.app` — the internal operator console) plus a bundled Postgres into a
+`docker compose` stack and a Helm chart, mirroring the pattern Anoryx-Sentinel's F-010 and
+Anoryx-AI-Orchestrator's O-008 already established. Zero application code changed — both apps and
+their `/health` endpoints already existed; this task is pure packaging. See
+[`docs/adr/0010-delta-deployment.md`](docs/adr/0010-delta-deployment.md) and
+[`deploy/DEPLOY-K8s.md`](deploy/DEPLOY-K8s.md).
+
+- **Docker:** `Dockerfile` — multi-stage, non-root (uid 1000), no baked secrets, one image serving
+  both apps via an explicit `command` per service. `docker-entrypoint.sh` bridges file-based
+  Docker secrets (`/run/secrets/*`) or Kubernetes `Secret`/env to the app's config, runs migrations,
+  and provisions the `delta_app` SCRAM password (unchanged from D-003/D-009).
+- **Compose:** `docker-compose.yml` — `postgres` + `delta-migrate` (existing) plus two new services,
+  `delta-ingest` (port 8000) and `delta-admin` (port 8001), both gated on `delta-migrate` completing
+  successfully. Secrets are file-based throughout (`deploy/secrets/gen-dev-secrets.sh` generates
+  dev-only values; never commit real credentials).
+- **Helm:** `deploy/helm/delta/` — two Deployments/Services/NetworkPolicies/PDBs (`ingest`, `admin`),
+  a bundled-Postgres subchart-style set of templates (`postgres.bundled=true` default, `.external`
+  escape hatch), and a migration Job gated by `wait-for-postgres`/`wait-for-migrate` init containers.
+  The admin console's NetworkPolicy is same-namespace + monitoring-namespace ingress ONLY — no
+  open-by-default external rule, unlike the ingest component (which, like Sentinel's and the
+  Orchestrator's own ingest seams, cannot know its external callers' addresses at chart-render time).
+- **Honesty boundary:** real Vault/KMS integration and real mTLS between Delta and the Orchestrator's
+  O-004 distribution seam are explicitly, honestly deferred — there is no reference implementation
+  for either anywhere in this repository yet (same deferral Sentinel's F-010 and the Orchestrator's
+  O-008 both made). The interim peer authenticator is the existing `ORCH_SERVICE_TOKEN` bearer. No
+  Redis is bundled — zero Delta code imports it; the roadmap's generic "Postgres + Redis" phrasing is
+  not a reviewed dependency list.
+
 ## Layout
 
 ```
@@ -121,6 +151,7 @@ src/delta/dashboards/        D-008 read-only spend aggregates (summary, time ser
 frontend/         D-007/D-008 Next.js admin console (BFF-only, see frontend/README.md)
 contracts/        Delta-owned JSON Schemas (Draft 2020-12, additionalProperties:false)
 tests/            non-stubbed proofs of every invariant + the Budget round-trip
+deploy/           D-010 Helm chart (deploy/helm/delta) + K8s deploy guide + dev-secret generators
 docs/adr/         Delta architecture decision records
 docs/audit/       security audit records
 ```
