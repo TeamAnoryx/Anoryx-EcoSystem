@@ -198,6 +198,19 @@ tags:
       (source_product + idempotency_key); every ingest attempt — fresh accept or duplicate —
       is hash-chain audited.
 
+  - name: messaging
+    description: |
+      O-012 agent-to-agent mailbox relay + shared key-value state store. TWO narrow,
+      INTRA-TENANT, Postgres-backed primitives -- NOT the roadmap's literal "sub-millisecond
+      messaging backbone" or "global state-sync engine for flawless cross-product state
+      consistency" (ADR-0012 honesty boundary). The mailbox relay is durable, ordered, and
+      POLL-BASED (never push); ordinary HTTP+Postgres request/response latency applies, not
+      measured or guaranteed as an SLA here. The state store uses single-Postgres-instance
+      OPTIMISTIC CONCURRENCY (a version number, compare-and-swap) -- not distributed
+      consensus. Both reuse the EXISTING per-tenant service token (`require_tenant_principal`)
+      -- no new trust root -- and there is NO cross-tenant messaging or state sharing:
+      tenant isolation is enforced structurally by RLS.
+
 paths:
   /v1/ingest/events:
     post:
@@ -1519,6 +1532,193 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
+
+  /v1/messaging/messages:
+    post:
+      operationId: sendAgentMessage
+      tags: [messaging]
+      summary: Send one agent-to-agent message (O-012)
+      description: |
+        Durable, ordered, POLL-BASED relay (NOT push, NOT sub-millisecond -- ADR-0012
+        honesty boundary). `body` is an OPAQUE JSON payload -- relayed byte-for-byte,
+        NEVER inspected or acted on by the Orchestrator. `idempotency_key` is the
+        sender's own dedup key: a resend with the SAME key is NOT an error -- it is an
+        idempotent no-op returning the ORIGINAL message's sequence_number/created_at
+        unchanged (`disposition: "deduped"`). There is NO cross-tenant messaging --
+        sender and recipient are both scoped to the caller's OWN tenant.
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentMessageSendRequest'
+            examples:
+              ping:
+                summary: One agent pings another within the same tenant
+                value:
+                  sender_team_id: "team-a"
+                  sender_project_id: "proj-a"
+                  sender_agent_id: "agent-a"
+                  recipient_team_id: "team-a"
+                  recipient_project_id: "proj-a"
+                  recipient_agent_id: "agent-b"
+                  message_type: "ping"
+                  body: { "hello": "world" }
+                  idempotency_key: "msg-a1b2c3"
+      responses:
+        '202':
+          description: The message was durably recorded (fresh send or idempotent dedup).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentMessageSendAccepted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /v1/messaging/inbox/{team_id}/{project_id}/{agent_id}:
+    get:
+      operationId: getAgentInbox
+      tags: [messaging]
+      summary: Poll one agent's inbox, ordered by sequence_number ascending (O-012)
+      description: |
+        Cursor-paginated poll-based read. `since_sequence` is a PLAIN INTEGER exclusive
+        lower bound (sequence_number is already a bare monotonic position, not sensitive
+        -- no opaque-cursor encoding is used here, unlike the identity/automation reads).
+        Tenant-scoped RLS means a tenant can only ever poll inboxes for agents within ITS
+        OWN tenant.
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      parameters:
+        - name: team_id
+          in: path
+          required: true
+          schema: { type: string, maxLength: 64 }
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, maxLength: 64 }
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, maxLength: 64 }
+        - name: since_sequence
+          in: query
+          required: false
+          description: Exclusive lower bound on sequence_number.
+          schema: { type: integer, minimum: 0 }
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of messages to return (bounded by ORCH_MESSAGING_MAX_INBOX_PAGE_SIZE).
+          schema: { type: integer, minimum: 1, default: 50 }
+      responses:
+        '200':
+          description: A cursor-paginated page of this agent's inbox.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentMessagePage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /v1/state/{state_key}:
+    put:
+      operationId: writeSharedState
+      tags: [messaging]
+      summary: Compare-and-swap write of one shared-state key (O-012)
+      description: |
+        Optimistic concurrency (a version number), NOT distributed consensus, NOT
+        "flawless" cross-product sync (ADR-0012 honesty boundary) -- a single Postgres
+        instance's row is the sole source of truth for a key's current version.
+        `expected_version: null` means create-only-if-absent (an existing key -> 409
+        `already_exists`, echoing the CURRENT version). A non-null `expected_version`
+        that does not match the row's current stored version -> 409 `version_conflict`
+        (echoing the current version so the caller can retry). Race-safe under
+        concurrent writers to the SAME key via an atomic `UPDATE ... WHERE version =
+        :expected` (no separate lock statement).
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      parameters:
+        - name: state_key
+          in: path
+          required: true
+          schema: { type: string, maxLength: 256 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StateWriteRequest'
+            examples:
+              createOnly:
+                summary: Create a new key only if it does not already exist
+                value:
+                  expected_version: null
+                  value: { "counter": 0 }
+              casUpdate:
+                summary: Update an existing key, contingent on its current version
+                value:
+                  expected_version: 3
+                  value: { "counter": 1 }
+                  updated_by_agent_id: "agent-a"
+      responses:
+        '200':
+          description: The write succeeded (created or updated); version incremented by exactly 1.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentStateWriteResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: |
+            `already_exists` (expected_version was null but the key already exists) or
+            `version_conflict` (a non-null expected_version did not match the current
+            stored version). Both echo `current_version` (null if the key does not exist
+            at all, e.g. a non-null expected_version against a key that was never
+            created).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateConflictError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    get:
+      operationId: readSharedState
+      tags: [messaging]
+      summary: Read one shared-state key (O-012)
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      parameters:
+        - name: state_key
+          in: path
+          required: true
+          schema: { type: string, maxLength: 256 }
+      responses:
+        '200':
+          description: The current stored value + version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No state_key exists for this tenant (unknown key, or RLS-hidden).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
 components:
 
@@ -2888,6 +3088,171 @@ components:
           type: string
           nullable: true
           maxLength: 512
+
+    AgentMessageSendRequest:
+      type: object
+      description: |
+        O-012 agent-to-agent message send request. `body` is an OPAQUE JSON object --
+        relayed byte-for-byte, NEVER inspected or acted on by the Orchestrator (unlike the
+        O-011 automation matcher, which deliberately DOES inspect event payloads).
+        `idempotency_key` is the sender's own dedup key.
+      additionalProperties: false
+      required:
+        [
+          sender_team_id,
+          sender_project_id,
+          sender_agent_id,
+          recipient_team_id,
+          recipient_project_id,
+          recipient_agent_id,
+          message_type,
+          body,
+          idempotency_key,
+        ]
+      properties:
+        sender_team_id: { type: string, maxLength: 64 }
+        sender_project_id: { type: string, maxLength: 64 }
+        sender_agent_id: { type: string, maxLength: 64 }
+        recipient_team_id: { type: string, maxLength: 64 }
+        recipient_project_id: { type: string, maxLength: 64 }
+        recipient_agent_id: { type: string, maxLength: 64 }
+        message_type:
+          type: string
+          maxLength: 64
+          description: |
+            A free-text label the sender chooses -- purely descriptive metadata, NEVER
+            interpreted, parsed, or executed by the Orchestrator.
+        body:
+          type: object
+          description: Opaque payload, relayed byte-for-byte (bounded by ORCH_MESSAGING_MAX_BODY_BYTES).
+        idempotency_key: { type: string, maxLength: 128 }
+
+    AgentMessageSendAccepted:
+      type: object
+      required: [sequence_number, created_at, disposition]
+      properties:
+        sequence_number:
+          type: integer
+          format: int64
+          description: The global insert order -- also the inbox pagination cursor.
+        created_at:
+          type: string
+          format: date-time
+        disposition:
+          type: string
+          enum: [sent, deduped]
+
+    AgentMessage:
+      type: object
+      description: One agent-to-agent message, as returned by the inbox read.
+      required:
+        [
+          sequence_number,
+          tenant_id,
+          sender_team_id,
+          sender_project_id,
+          sender_agent_id,
+          recipient_team_id,
+          recipient_project_id,
+          recipient_agent_id,
+          message_type,
+          body,
+          idempotency_key,
+          created_at,
+        ]
+      properties:
+        sequence_number: { type: integer, format: int64 }
+        tenant_id: { type: string, format: uuid }
+        sender_team_id: { type: string }
+        sender_project_id: { type: string }
+        sender_agent_id: { type: string }
+        recipient_team_id: { type: string }
+        recipient_project_id: { type: string }
+        recipient_agent_id: { type: string }
+        message_type: { type: string }
+        body: { type: object }
+        idempotency_key: { type: string }
+        created_at: { type: string, format: date-time }
+
+    AgentMessagePage:
+      type: object
+      description: |
+        A cursor-paginated page of one agent's inbox (ascending sequence order).
+        next_since_sequence is a PLAIN INTEGER (not a base64 cursor) -- pass it back as the
+        next request's `since_sequence` query param.
+      required: [data]
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/AgentMessage'
+        next_since_sequence:
+          type: integer
+          format: int64
+          nullable: true
+
+    StateWriteRequest:
+      type: object
+      description: |
+        O-012 shared-state compare-and-swap write request. `expected_version: null` means
+        create-only-if-absent; a non-null value must match the key's CURRENT stored version.
+      additionalProperties: false
+      required: [expected_version, value]
+      properties:
+        expected_version:
+          type: integer
+          format: int64
+          nullable: true
+          minimum: 1
+        value:
+          type: object
+          description: Opaque payload, relayed byte-for-byte (bounded by ORCH_MESSAGING_MAX_STATE_VALUE_BYTES).
+        updated_by_agent_id:
+          type: string
+          maxLength: 64
+          description: Opt-in attribution -- the caller MAY say which agent made this write.
+
+    AgentStateWriteResult:
+      type: object
+      required: [state_key, version, updated_at]
+      properties:
+        state_key: { type: string, maxLength: 256 }
+        version: { type: integer, format: int64 }
+        updated_at: { type: string, format: date-time }
+
+    AgentState:
+      type: object
+      required: [state_key, value, version, updated_at]
+      properties:
+        state_key: { type: string, maxLength: 256 }
+        value: { type: object }
+        version: { type: integer, format: int64 }
+        updated_at: { type: string, format: date-time }
+
+    StateConflictError:
+      type: object
+      description: |
+        A 409 response for the shared-state write seam -- the standard Error envelope PLUS
+        the current_version the caller can retry with (null if the key does not exist at
+        all, e.g. a non-null expected_version against a key that was never created).
+      additionalProperties: false
+      required: [error, current_version]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [already_exists, version_conflict]
+            message: { type: string, maxLength: 512 }
+            request_id: { type: string, maxLength: 64 }
+        current_version:
+          type: integer
+          format: int64
+          nullable: true
 
   responses:
     Unauthorized:

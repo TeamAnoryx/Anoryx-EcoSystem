@@ -523,6 +523,103 @@ def get_automation_settings() -> AutomationSettings:
     )
 
 
+# =========================================================================== #
+# Agent-messaging + shared-state-store configuration (O-012, ADR-0012) — ADDITIVE,
+# STANDALONE (not nested in CoordinationSettings — messaging has no registry/SSRF/health
+# dependency; it reuses the EXISTING `require_tenant_principal` credential, resolved
+# separately at the app/router call site, exactly like AutomationSettings). Resolved
+# NON-FATALLY: absence is not fatal. UNLIKE O-011's automation engine, there is NO master
+# enable/disable switch here — sending a message or writing state is ordinary
+# CALLER-INITIATED CRUD gated by the same `require_tenant_principal` credential every
+# other tenant-write seam already requires (e.g. POST /v1/policies/distributions, POST
+# /v1/automation/rules), not new AUTONOMOUS behavior triggered without an interactive
+# caller. A default-off switch would mirror O-011's form without its underlying reasoning.
+# =========================================================================== #
+
+#: Default request-body size cap (bytes) for one agent_messages.body.
+DEFAULT_MESSAGING_MAX_BODY_BYTES: int = 16384
+
+#: Default request-body size cap (bytes) for one agent_state.state_value.
+DEFAULT_MESSAGING_MAX_STATE_VALUE_BYTES: int = 16384
+
+#: Default hard ceiling on GET /v1/messaging/inbox/... `limit` (the request's own limit is
+#: clamped to this, mirroring every other cursor-paginated read's _MAX_LIMIT).
+DEFAULT_MESSAGING_MAX_INBOX_PAGE_SIZE: int = 200
+
+#: Default per-tenant cap on total agent_messages row count (security-auditor follow-up:
+#: bounds unbounded per-tenant table growth, a cross-tenant AVAILABILITY concern on the
+#: single shared Postgres instance — mirrors ORCH_AUTOMATION_MAX_RULES_PER_TENANT).
+DEFAULT_MESSAGING_MAX_MESSAGES_PER_TENANT: int = 100000
+
+#: Default per-tenant cap on distinct agent_state key count (same reasoning as above,
+#: applied to the shared-state-store table instead of the mailbox table).
+DEFAULT_MESSAGING_MAX_STATE_KEYS_PER_TENANT: int = 10000
+
+
+@dataclass(frozen=True, slots=True)
+class MessagingSettings:
+    """Resolved agent-messaging + shared-state-store configuration (O-012, ADR-0012).
+
+    No master enable/disable switch (see the module-level comment above for why —
+    contrast with AutomationSettings.enabled). max_message_body_bytes and
+    max_state_value_bytes bound the two opaque JSON payloads this seam ever persists;
+    max_inbox_page_size is the hard ceiling GET /v1/messaging/inbox/... clamps its own
+    `limit` query param to. max_messages_per_tenant and max_state_keys_per_tenant are
+    per-tenant TOTAL ROW/KEY COUNT caps (security-auditor follow-up, mirrors
+    AutomationSettings.max_rules_per_tenant) — they bound unbounded per-tenant table
+    growth, a cross-tenant availability concern on the single shared Postgres instance;
+    they do NOT bound the send/write RATE (see ADR-0012 Residual risk).
+    """
+
+    max_message_body_bytes: int
+    max_state_value_bytes: int
+    max_inbox_page_size: int
+    max_messages_per_tenant: int
+    max_state_keys_per_tenant: int
+
+
+def get_messaging_settings() -> MessagingSettings:
+    """Resolve agent-messaging settings from the environment (NON-FATAL on absence).
+
+    Env vars:
+      ORCH_MESSAGING_MAX_BODY_BYTES        agent_messages.body size cap in bytes
+                                           (default 16384, >= 1).
+      ORCH_MESSAGING_MAX_STATE_VALUE_BYTES  agent_state.state_value size cap in bytes
+                                           (default 16384, >= 1).
+      ORCH_MESSAGING_MAX_INBOX_PAGE_SIZE    hard ceiling on the inbox read's `limit`
+                                           query param (default 200, >= 1).
+      ORCH_MESSAGING_MAX_MESSAGES_PER_TENANT   per-tenant agent_messages row-count cap
+                                           (default 100000, >= 1).
+      ORCH_MESSAGING_MAX_STATE_KEYS_PER_TENANT  per-tenant agent_state distinct-key-count
+                                           cap (default 10000, >= 1).
+    """
+    return MessagingSettings(
+        max_message_body_bytes=_env_int(
+            "ORCH_MESSAGING_MAX_BODY_BYTES", DEFAULT_MESSAGING_MAX_BODY_BYTES, minimum=1
+        ),
+        max_state_value_bytes=_env_int(
+            "ORCH_MESSAGING_MAX_STATE_VALUE_BYTES",
+            DEFAULT_MESSAGING_MAX_STATE_VALUE_BYTES,
+            minimum=1,
+        ),
+        max_inbox_page_size=_env_int(
+            "ORCH_MESSAGING_MAX_INBOX_PAGE_SIZE",
+            DEFAULT_MESSAGING_MAX_INBOX_PAGE_SIZE,
+            minimum=1,
+        ),
+        max_messages_per_tenant=_env_int(
+            "ORCH_MESSAGING_MAX_MESSAGES_PER_TENANT",
+            DEFAULT_MESSAGING_MAX_MESSAGES_PER_TENANT,
+            minimum=1,
+        ),
+        max_state_keys_per_tenant=_env_int(
+            "ORCH_MESSAGING_MAX_STATE_KEYS_PER_TENANT",
+            DEFAULT_MESSAGING_MAX_STATE_KEYS_PER_TENANT,
+            minimum=1,
+        ),
+    )
+
+
 def get_coordination_settings() -> CoordinationSettings:
     """Resolve coordination settings from the environment (NON-FATAL on absence).
 
