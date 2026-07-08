@@ -63,6 +63,14 @@ class CultureOptIn(BaseModel):
 
     Immutable. Absence of a ``CultureOptIn`` for a user is the ONLY "opted out" state
     this module models — there is no separate boolean to forget to check.
+
+    Direct ``CultureOptIn(...)`` construction with hand-supplied ids is a lower-level
+    primitive that is NOT validated against any real ``Profile`` (mirrors
+    :class:`rendly.membership.Membership`'s same reservation, ADR-0002 §7); it exists
+    for rehydrating an already-validated record. All application code that mints a
+    NEW opt-in MUST use :func:`bind_culture_opt_in`. ``suggest_connection`` /
+    ``rank_connections`` still cross-check every profile/opt-in pair it is given
+    (``_require_bound``), so a mismatched pair fails at use time either way.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -80,15 +88,15 @@ class CultureOptIn(BaseModel):
     @field_validator("interests")
     @classmethod
     def _bounded_and_deduped(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        # Tags are opaque, case-sensitive, not normalized (casefolding is a product
+        # decision out of scope here). Duplicates are rejected outright rather than
+        # silently collapsed, so a caller sees its own mistake instead of a silently
+        # shrunk list.
         if len(value) > MAX_INTERESTS:
             raise ValueError(f"interests must not exceed {MAX_INTERESTS} tags")
-        # Order-independent dedup, case-sensitive (tags are opaque, not normalized —
-        # normalization/casefolding is a product decision out of scope here). A
-        # stable, deterministic order is kept for reproducible serialization.
-        deduped = tuple(dict.fromkeys(value))
-        if len(deduped) != len(value):
+        if len(set(value)) != len(value):
             raise ValueError("interests must not contain duplicates")
-        return deduped
+        return value
 
 
 def bind_culture_opt_in(
@@ -187,6 +195,12 @@ def rank_connections(
     is clamped to ``[0, MAX_SUGGESTIONS]``; ``candidates`` beyond ``MAX_CANDIDATES``
     is rejected outright rather than silently truncated (a caller must page its own
     candidate pool, not rely on this function to hide an unbounded scan).
+
+    This function does no I/O and has no way to know the true candidate set, so it
+    does NOT de-duplicate ``candidates`` by ``candidate_user_id`` — a caller passing
+    the same candidate twice gets that candidate scored (and possibly listed) twice.
+    A future persistence-backed candidate-pool loader owns supplying a de-duplicated
+    pool; this seam trusts its input the same way ``suggest_connection`` does.
     """
     if len(candidates) > MAX_CANDIDATES:
         raise ValueError(f"candidates must not exceed {MAX_CANDIDATES} entries")

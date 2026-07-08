@@ -141,10 +141,16 @@ def test_suggest_connection_none_for_same_known_team():
     assert suggestion is None
 
 
-def test_suggest_connection_allows_pair_with_unknown_team():
-    # Missing team info does not block a suggestion -- only a *known* shared team does.
-    subject = _profile("11111111-1111-4111-8111-111111111111", team=None)
-    candidate = _profile("22222222-2222-4222-8222-222222222222", team="design")
+@pytest.mark.parametrize(
+    ("subject_team", "candidate_team"),
+    [(None, "design"), ("platform", None)],
+    ids=["subject-unknown", "candidate-unknown"],
+)
+def test_suggest_connection_allows_pair_with_unknown_team(subject_team, candidate_team):
+    # Missing team info does not block a suggestion -- only a *known* shared team
+    # does, symmetrically regardless of which side is unknown.
+    subject = _profile("11111111-1111-4111-8111-111111111111", team=subject_team)
+    candidate = _profile("22222222-2222-4222-8222-222222222222", team=candidate_team)
     suggestion = suggest_connection(
         subject,
         _opt_in(subject, ("climbing",)),
@@ -177,6 +183,19 @@ def test_suggest_connection_rejects_mismatched_profile_opt_in_pair():
             _opt_in(other, ("climbing",)),  # opt-in belongs to a DIFFERENT profile
             candidate,
             _opt_in(candidate, ("climbing",)),
+        )
+
+
+def test_suggest_connection_rejects_mismatched_candidate_pair():
+    subject = _profile("11111111-1111-4111-8111-111111111111")
+    candidate = _profile("22222222-2222-4222-8222-222222222222")
+    other = _profile("33333333-3333-4333-8333-333333333333")
+    with pytest.raises(ValueError, match="candidate"):
+        suggest_connection(
+            subject,
+            _opt_in(subject, ("climbing",)),
+            candidate,
+            _opt_in(other, ("climbing",)),  # opt-in belongs to a DIFFERENT profile
         )
 
 
@@ -251,4 +270,22 @@ def test_rank_connections_rejects_oversized_candidate_pool():
     candidates = [(huge_candidate, huge_opt_in)] * 501
 
     with pytest.raises(ValueError, match="candidates"):
+        rank_connections(subject, subject_opt_in, candidates)
+
+
+def test_rank_connections_rejects_cross_tenant_pair_in_pool():
+    # The tenant guard is not bypassable by hiding a cross-tenant pair inside an
+    # otherwise-valid candidate pool -- the whole batch fails closed.
+    subject = _profile("11111111-1111-4111-8111-111111111111", team="platform")
+    subject_opt_in = _opt_in(subject, ("climbing",))
+    same_tenant = _profile("22222222-2222-4222-8222-222222222222", team="design")
+    other_tenant = _profile(
+        "33333333-3333-4333-8333-333333333333", tenant_id=_OTHER_TENANT, team="design"
+    )
+    candidates = [
+        (same_tenant, _opt_in(same_tenant, ("climbing",))),
+        (other_tenant, _opt_in(other_tenant, ("climbing",))),
+    ]
+
+    with pytest.raises(ValueError, match="cross-tenant"):
         rank_connections(subject, subject_opt_in, candidates)
