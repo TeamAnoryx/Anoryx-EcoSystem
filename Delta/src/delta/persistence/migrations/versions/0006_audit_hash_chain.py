@@ -38,6 +38,7 @@ sequence. Retains the ``delta`` schema and never touches D-001..D-008 data other
 
 from __future__ import annotations
 
+from datetime import timezone
 from typing import Sequence, Union
 
 import sqlalchemy as sa
@@ -125,7 +126,15 @@ def upgrade() -> None:
                 "action": row["action"],
                 "actor": row["actor"],
                 "note": row["note"],
-                "created_at": row["created_at"].isoformat(),
+                # Normalize to UTC before hashing: this migration runs on the sync
+                # driver, which returns TIMESTAMPTZ in the connection's session
+                # TimeZone (not necessarily UTC), while the live append/verify path
+                # runs on asyncpg, which always returns UTC. Hashing an un-normalized
+                # offset here would desync a backfilled row's hash from what
+                # verify_chain (delta.persistence.audit_log, which normalizes the
+                # same way) recomputes later — a false "tampered" positive on
+                # legitimately migrated data. See ADR-0009 §5 vector 1-adjacent.
+                "created_at": row["created_at"].astimezone(timezone.utc).isoformat(),
                 "prev_hash": prev_hash,
             }
         )

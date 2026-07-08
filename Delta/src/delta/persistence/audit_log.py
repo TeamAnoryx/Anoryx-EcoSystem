@@ -40,7 +40,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -64,9 +64,14 @@ _CANONICAL_REQUIRED_FIELDS = (
 
 
 def _canonical_json(data: dict) -> bytes:
-    filtered = {k: data[k] for k in _CANONICAL_REQUIRED_FIELDS}
+    # str()-coerce every hashed field: every current caller already passes str, but
+    # without this an app-layer bug that passed e.g. entity_id=5 (int) would hash the
+    # JSON number 5 while every DB round-trip (the column is String(64)) reads back
+    # the string "5" — a permanent, unrecoverable false "tampered" mismatch at verify
+    # time for that row, not a real tamper.
+    filtered = {k: str(data[k]) for k in _CANONICAL_REQUIRED_FIELDS}
     if data.get("note") is not None:
-        filtered["note"] = data["note"]  # opt-in-when-present
+        filtered["note"] = str(data["note"])  # opt-in-when-present
     return json.dumps(filtered, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
         "utf-8"
     )
@@ -122,7 +127,13 @@ def _row_hash_data(
         "action": action,
         "actor": actor,
         "note": note,
-        "created_at": created_at.isoformat(),
+        # Normalize to UTC before formatting: TIMESTAMPTZ round-trips through different
+        # drivers with different tzinfo offsets for the SAME instant (e.g. a sync
+        # migration connection's session TimeZone vs. asyncpg, which always returns
+        # UTC) — isoformat() on an un-normalized value would hash a different string
+        # for the identical point in time, desyncing a write's hash from a later
+        # verify's recompute. Astimezone is a no-op when already UTC.
+        "created_at": created_at.astimezone(timezone.utc).isoformat(),
         "prev_hash": prev_hash,
     }
 

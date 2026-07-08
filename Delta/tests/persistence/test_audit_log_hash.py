@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from delta.persistence.audit_log import GENESIS_HASH, compute_row_hash
+from delta.persistence.audit_log import GENESIS_HASH, _row_hash_data, compute_row_hash
 
 _NOW = datetime(2026, 7, 8, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -82,3 +82,30 @@ def test_note_value_is_bound_into_the_hash() -> None:
     a = compute_row_hash(_base(note="reason A"))
     b = compute_row_hash(_base(note="reason B"))
     assert a != b
+
+
+def test_created_at_hash_is_timezone_representation_invariant() -> None:
+    # A migration backfill runs on a SYNC driver, which returns TIMESTAMPTZ in the
+    # connection's session TimeZone (not necessarily UTC), while the live append/
+    # verify path runs on asyncpg, which always returns UTC — two different Python
+    # datetime objects for the EXACT SAME instant. _row_hash_data (called by both
+    # append_history and verify_chain) must normalize before hashing, or a
+    # legitimately migrated row would permanently fail verification (security
+    # review finding, D-009).
+    kwargs = dict(
+        tenant_id="11111111-1111-1111-1111-111111111111",
+        entity_type="allocation",
+        entity_id="22222222-2222-2222-2222-222222222222",
+        action="requested",
+        actor="operator-1",
+        note=None,
+        prev_hash=GENESIS_HASH,
+    )
+    utc_instant = _NOW
+    same_instant_minus_four = _NOW.astimezone(timezone(timedelta(hours=-4)))
+    assert utc_instant == same_instant_minus_four  # same point in time, different tzinfo
+    assert utc_instant.isoformat() != same_instant_minus_four.isoformat()  # different string
+
+    hash_a = compute_row_hash(_row_hash_data(created_at=utc_instant, **kwargs))
+    hash_b = compute_row_hash(_row_hash_data(created_at=same_instant_minus_four, **kwargs))
+    assert hash_a == hash_b
