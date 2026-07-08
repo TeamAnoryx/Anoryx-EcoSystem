@@ -8,6 +8,10 @@ target_metadata. Do NOT run alembic autogenerate against them.
 
 from __future__ import annotations
 
+from orchestrator.persistence.models.agent_message import AgentMessage
+from orchestrator.persistence.models.agent_messaging_audit_log import AgentMessagingAuditLog
+from orchestrator.persistence.models.agent_state import AgentState
+from orchestrator.persistence.models.agent_state_audit_log import AgentStateAuditLog
 from orchestrator.persistence.models.base import Base
 from orchestrator.persistence.models.dead_letter import DeadLetterEntry
 from orchestrator.persistence.models.distribution_audit_log import DistributionAuditLog
@@ -43,4 +47,9 @@ __all__ = [
     # O-010 cross-product identity correlation (ADR-0010).
     "IdentityEvent",
     "IdentityAuditLog",
+    # O-012 agent messaging + shared state store (ADR-0012).
+    "AgentMessage",
+    "AgentMessagingAuditLog",
+    "AgentState",
+    "AgentStateAuditLog",
 ]

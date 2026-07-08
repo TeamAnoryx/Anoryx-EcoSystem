@@ -25,6 +25,11 @@ The R-002 persistence domain (Tenant / User / Profile / Channel / Membership) us
 three of the five locked ids; ``message_id`` and ``huddle_id`` identify
 real-time/archival records owned by the R-005 runtime, not this domain, so they
 are intentionally not defined here.
+
+``EventId``/``SessionId`` (R-013) follow the same shape for the same reason as
+``ChannelId``: they identify records of a pure-domain seam (``event.py``) that,
+like R-002 before R-004, has no persistence yet — the id shape is fixed now so a
+future persistence layer has nothing to reconcile.
 """
 
 from __future__ import annotations
@@ -45,3 +50,5 @@ UuidStr = Annotated[str, StringConstraints(pattern=_UUID_PATTERN, max_length=_ID
 TenantId = UuidStr
 UserId = UuidStr
 ChannelId = UuidStr
+EventId = UuidStr
+SessionId = UuidStr
