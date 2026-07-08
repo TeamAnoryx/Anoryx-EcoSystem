@@ -126,10 +126,25 @@ def test_huddle_update_without_archive_has_no_archival_field() -> None:
     frame = frames.build_huddle_update(
         huddle_id="d1e2f3a4-0000-1111-2222-333344445555",
         tenant_id="t",
-        peer_user_id="u2",
+        participant_ids=["u2"],
         state="ringing",
     )
     assert "archival" not in frame
+    # R-011: peer_user_id is back-compat-populated as participant_ids[0].
+    assert frame["peer_user_id"] == "u2"
+    assert frame["participant_ids"] == ["u2"]
+
+
+def test_huddle_update_group_participant_ids_preserve_order() -> None:
+    # R-011: a 3+-participant session's participant_ids is a real list (not just a scalar peer).
+    frame = frames.build_huddle_update(
+        huddle_id="d1e2f3a4-0000-1111-2222-333344445555",
+        tenant_id="t",
+        participant_ids=["u2", "u3"],
+        state="active",
+    )
+    assert frame["peer_user_id"] == "u2"
+    assert frame["participant_ids"] == ["u2", "u3"]
 
 
 def test_huddle_update_with_archive_surfaces_real_hash_chain_fields() -> None:
@@ -146,7 +161,7 @@ def test_huddle_update_with_archive_surfaces_real_hash_chain_fields() -> None:
     frame = frames.build_huddle_update(
         huddle_id=archive.huddle_id,
         tenant_id="t",
-        peer_user_id="u2",
+        participant_ids=["u2"],
         state="ended",
         archive=archive,
     )
