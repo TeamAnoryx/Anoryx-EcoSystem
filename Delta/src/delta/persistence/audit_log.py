@@ -261,11 +261,13 @@ async def verify_chain(session: AsyncSession, *, tenant_id: str) -> ChainValidat
     rows = (await session.execute(stmt)).all()
 
     expected_prev = GENESIS_HASH
+    checked = 0
     for row in rows:
+        checked += 1
         if row.prev_hash != expected_prev:
             return ChainValidationResult(
                 is_valid=False,
-                rows_checked=row.sequence_number,
+                rows_checked=checked,
                 first_mismatch_sequence=row.sequence_number,
                 error_detail=(
                     f"prev_hash mismatch at sequence_number={row.sequence_number}: "
@@ -287,7 +289,7 @@ async def verify_chain(session: AsyncSession, *, tenant_id: str) -> ChainValidat
         if recomputed != row.row_hash:
             return ChainValidationResult(
                 is_valid=False,
-                rows_checked=row.sequence_number,
+                rows_checked=checked,
                 first_mismatch_sequence=row.sequence_number,
                 error_detail=(
                     f"row_hash mismatch at sequence_number={row.sequence_number}: "
@@ -297,5 +299,5 @@ async def verify_chain(session: AsyncSession, *, tenant_id: str) -> ChainValidat
         expected_prev = row.row_hash
 
     return ChainValidationResult(
-        is_valid=True, rows_checked=len(rows), first_mismatch_sequence=None, error_detail=None
+        is_valid=True, rows_checked=checked, first_mismatch_sequence=None, error_detail=None
     )
