@@ -5,10 +5,12 @@ name: Anoryx-AI-Orchestrator CI
 #                              F-002 schemas). No DB.
 #   orchestrator-integration — O-003 ingest pipeline + O-004 policy distribution + O-005
 #                              coordination + O-009 governed relay + O-010 identity
-#                              correlation, on a fresh Postgres. Runs the NON-STUBBED e2e
-#                              (incl. the O-004 allow/deny distribution e2e and the O-009
-#                              relay dispatch e2e, both of which drive a real Sentinel-shim
-#                              over a genuine loopback socket).
+#                              correlation + O-011 cross-module automation engine, on a
+#                              fresh Postgres. Runs the NON-STUBBED e2e (incl. the O-004
+#                              allow/deny distribution e2e, the O-009 relay dispatch e2e,
+#                              and the O-011 automation-engine e2e — which re-drives a
+#                              real O-004 distribution — all of which drive a real
+#                              Sentinel-shim over a genuine loopback socket).
 #                              CI on a fresh DB is the authority of record (local green can
 #                              mask drift).
 # Triggers on the Orchestrator tree AND on the Sentinel contracts it references by $ref.
@@ -42,7 +44,7 @@ jobs:
         run: pytest Anoryx-AI-Orchestrator/tests --tb=short -q
 
   orchestrator-integration:
-    name: Integration (ingest + distribution + coordination + relay + identity; migrations to 0007 on Postgres)
+    name: Integration (ingest + distribution + coordination + relay + identity + automation; migrations to 0008 on Postgres)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -119,4 +121,7 @@ jobs:
           # O-010: same fail-not-skip discipline for the identity-correlation e2e — a silent
           # skip must never masquerade as a green identity-correlation gate.
           ORCH_REQUIRE_IDENTITY_E2E: "1"
+          # O-011: same fail-not-skip discipline for the cross-module automation-engine
+          # e2e — a silent skip must never masquerade as a green automation-engine gate.
+          ORCH_REQUIRE_AUTOMATION_E2E: "1"
         run: pytest tests --tb=short -q

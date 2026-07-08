@@ -14,9 +14,11 @@ operator-scoped admin API + minimal UI (GET /v1/admin/events/recent,
 /v1/admin/distributions/recent, /admin — O-007, ADR-0007), the governed relay for inter-app
 AI traffic (POST /v1/relay/dispatch — O-009, ADR-0009), the cross-product identity-event
 correlation seam (POST + GET /v1/identity/events, GET /v1/admin/identity/events/recent —
-O-010, ADR-0010), plus a health probe. The query/distribution seams derive a per-tenant
-principal (require_tenant_principal); a missing/invalid token → a uniform 401. mTLS
-termination is O-008.
+O-010, ADR-0010), the cross-module automation-rules engine (POST/GET/PATCH/DELETE
+/v1/automation/rules, GET /v1/automation/executions — O-011, ADR-0011), plus a health
+probe. The query/distribution seams derive a per-tenant principal
+(require_tenant_principal); a missing/invalid token → a uniform 401. mTLS termination is
+O-008.
 """
 
 from __future__ import annotations
@@ -27,7 +29,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from orchestrator.admin.router import router as admin_router
+from orchestrator.automation.router import router as automation_router
 from orchestrator.config import (
+    get_automation_settings,
     get_coordination_settings,
     get_distribution_settings,
     get_identity_settings,
@@ -66,6 +70,10 @@ def create_app() -> FastAPI:
     # Identity-event correlation (O-010) settings resolve NON-FATALLY; the ingest seam's
     # request boundary enforces a matching source token fail-closed, not construction.
     app.state.identity_settings = get_identity_settings()
+    # Cross-module automation-rules engine (O-011) settings resolve NON-FATALLY; the
+    # master switch DEFAULTS OFF (ORCH_AUTOMATION_ENABLED), so an unconfigured deployment
+    # never silently starts auto-triggering distributions.
+    app.state.automation_settings = get_automation_settings()
 
     @app.exception_handler(Exception)
     async def _fail_safe_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -125,4 +133,5 @@ def create_app() -> FastAPI:
     app.include_router(admin_router)
     app.include_router(relay_router)
     app.include_router(identity_router)
+    app.include_router(automation_router)
     return app

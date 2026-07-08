@@ -1324,6 +1324,202 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /v1/automation/rules:
+    post:
+      operationId: createAutomationRule
+      tags: [automation]
+      summary: Create a tenant-scoped automation rule (O-011)
+      description: |
+        A rule reacts to ONE F-002 event (`trigger_event_type`, closed to the known
+        event_type consts already declared in the locked events.schema.json), optionally
+        filtered by `trigger_source_product`, and matches a FLAT `trigger_conditions` dict
+        of payload-top-level-field -> expected SCALAR value (string/number/boolean) by
+        equality ONLY — no nesting, no regex, no operators, no code. On a match, exactly
+        ONE closed action fires: v1 supports only `redistribute_policy`, which re-drives
+        an EXISTING O-004 distribution belonging to the SAME tenant (validated at creation
+        time — a rule can never reference another tenant's distribution).
+
+        HONESTY BOUNDARY (ADR-0011): this is NOT a multi-step workflow engine and does NOT
+        chain — a matched rule triggers exactly one action, once, and that action's own
+        completion is the end of this engine's involvement.
+
+        Auth: mTLS (peer = Delta) AND the SAME per-tenant service token that already gates
+        `GET /v1/events` / `GET /v1/identity/events`.
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AutomationRuleCreateRequest'
+            examples:
+              redistributeOnBudgetDeny:
+                summary: Re-drive a distribution when a budget-cost policy denial is seen
+                value:
+                  name: redistribute-on-budget-deny
+                  trigger_event_type: policy_decision_deny
+                  trigger_conditions:
+                    violation_type: budget_cost_exceeded
+                  action_type: redistribute_policy
+                  action_config:
+                    distribution_id: "b8c9d0e1-2345-4f01-8abc-ef0123456789"
+      responses:
+        '201':
+          description: The rule was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomationRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    get:
+      operationId: listAutomationRules
+      tags: [automation]
+      summary: List this tenant's automation rules (O-011)
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: A cursor-paginated page of this tenant's automation rules.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomationRulePage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /v1/automation/rules/{rule_id}:
+    get:
+      operationId: getAutomationRule
+      tags: [automation]
+      summary: Get one automation rule (O-011)
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      parameters:
+        - name: rule_id
+          in: path
+          required: true
+          schema: { type: string, maxLength: 64 }
+      responses:
+        '200':
+          description: The rule.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomationRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: |
+            Unknown rule_id, or the rule belongs to another tenant (RLS makes another
+            tenant's row structurally invisible — a 404, not a 403).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    patch:
+      operationId: patchAutomationRule
+      tags: [automation]
+      summary: Enable or disable an automation rule (O-011)
+      description: |
+        The ONLY mutation v1 supports — a full update is unnecessary scope; delete +
+        recreate covers an edit.
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      parameters:
+        - name: rule_id
+          in: path
+          required: true
+          schema: { type: string, maxLength: 64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AutomationRulePatchRequest'
+      responses:
+        '200':
+          description: The updated rule.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomationRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown rule_id, or the rule belongs to another tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      operationId: deleteAutomationRule
+      tags: [automation]
+      summary: Delete an automation rule (O-011)
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      parameters:
+        - name: rule_id
+          in: path
+          required: true
+          schema: { type: string, maxLength: 64 }
+      responses:
+        '204':
+          description: Deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown rule_id, or the rule belongs to another tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/automation/executions:
+    get:
+      operationId: listAutomationExecutions
+      tags: [automation]
+      summary: List this tenant's automation-rule executions (read-only audit visibility)
+      description: |
+        Every row here corresponds to a rule that GENUINELY MATCHED and was acted on
+        (`executed` or `failed`) — a rule that never matched produces no row. Backed by a
+        tamper-evident global hash chain (`automation_executions`), RLS-scoped to this
+        tenant on read.
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: A cursor-paginated page of this tenant's automation executions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomationExecutionPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
 components:
 
   securitySchemes:
@@ -2529,6 +2725,169 @@ components:
           maxItems: 200
           items:
             $ref: '#/components/schemas/IdentityEvent'
+
+    AutomationRuleCreateRequest:
+      type: object
+      description: |
+        O-011 automation-rule creation request. trigger_conditions is a FLAT dict of
+        payload-top-level-field -> expected SCALAR value (string/number/boolean),
+        matched by equality ONLY — no nesting, no regex, no operators, no code
+        (ADR-0011 Fork B, a hard security invariant). action_config for
+        `redistribute_policy` is exactly `{distribution_id}`, and that distribution MUST
+        belong to the SAME tenant as the rule (validated server-side at creation time).
+      additionalProperties: false
+      required: [name, trigger_event_type, action_type, action_config]
+      properties:
+        name:
+          type: string
+          maxLength: 128
+        trigger_event_type:
+          type: string
+          maxLength: 64
+          description: One of the closed set of F-002 event_type consts (events.schema.json).
+        trigger_source_product:
+          type: string
+          enum: [sentinel, delta, rendly]
+          nullable: true
+          description: Optional filter. Absent/null means "any source_product".
+        trigger_conditions:
+          type: object
+          description: Flat field -> scalar equality map. Defaults to {} (always matches).
+          additionalProperties:
+            oneOf:
+              - type: string
+              - type: number
+              - type: boolean
+        action_type:
+          type: string
+          enum: [redistribute_policy]
+          description: v1 supports EXACTLY one action type (ADR-0011 Fork C).
+        action_config:
+          type: object
+          additionalProperties: false
+          required: [distribution_id]
+          properties:
+            distribution_id:
+              type: string
+              minLength: 1
+        enabled:
+          type: boolean
+          default: true
+
+    AutomationRule:
+      type: object
+      description: One automation rule, as returned by the create/read/patch seams.
+      required:
+        [
+          id,
+          tenant_id,
+          name,
+          enabled,
+          trigger_event_type,
+          trigger_conditions,
+          action_type,
+          action_config,
+          created_at,
+          updated_at,
+        ]
+      properties:
+        id:
+          type: string
+          maxLength: 64
+        tenant_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        enabled:
+          type: boolean
+        trigger_event_type:
+          type: string
+        trigger_source_product:
+          type: string
+          enum: [sentinel, delta, rendly]
+        trigger_conditions:
+          type: object
+        action_type:
+          type: string
+          enum: [redistribute_policy]
+        action_config:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AutomationRulePage:
+      type: object
+      description: A cursor-paginated page of a tenant's own automation rules.
+      required: [data]
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/AutomationRule'
+        next_cursor:
+          type: string
+          nullable: true
+          maxLength: 512
+
+    AutomationRulePatchRequest:
+      type: object
+      description: The ONLY mutation v1 supports — enable/disable.
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+
+    AutomationExecution:
+      type: object
+      description: |
+        One automation-rule execution ATTEMPT — written ONLY when a rule genuinely
+        matched and was acted on (ADR-0011 Fork I). Backed by a tamper-evident global
+        hash chain, RLS-scoped to this tenant on read.
+      required: [rule_id, tenant_id, triggering_event_id, action_type, disposition, created_at]
+      properties:
+        rule_id:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
+        triggering_event_id:
+          type: string
+          description: The F-002 event_id of the ingest event that fired this rule.
+        action_type:
+          type: string
+          enum: [redistribute_policy]
+        disposition:
+          type: string
+          enum: [executed, failed]
+        error_reason:
+          type: string
+          maxLength: 64
+          description: Opt-in-when-present short code (never content). Present only when disposition is failed.
+        created_at:
+          type: string
+          format: date-time
+
+    AutomationExecutionPage:
+      type: object
+      description: A cursor-paginated page of a tenant's own automation-rule executions.
+      required: [data]
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/AutomationExecution'
+        next_cursor:
+          type: string
+          nullable: true
+          maxLength: 512
 
   responses:
     Unauthorized:
