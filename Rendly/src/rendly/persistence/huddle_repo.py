@@ -1,5 +1,6 @@
 """Huddle session-record archiving (R-009) — the DB home for the archival half ADR-0007 (R-007)
-deliberately left ephemeral ("R-009 owns... persisting the session record").
+deliberately left ephemeral ("R-009 owns... persisting the session record"). Generalized to
+2-8 participants by R-011 (ADR-0011 Fork F/G).
 
 Only a TERMINAL ``ended`` session is archived — a ``declined`` ring never connects and carries
 no session content, and the wire contract itself only attaches ``archival`` once a huddle
@@ -23,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..realtime.huddle import HuddleArchive
 from . import hash_chain
-from .chat_models import HuddleChainStateRow, HuddleRow
+from .chat_models import HuddleChainStateRow, HuddleParticipantRow, HuddleRow
 
 
 async def archive_ended_huddle(
@@ -32,19 +33,33 @@ async def archive_ended_huddle(
     tenant_id: str,
     huddle_id: str,
     caller_id: str,
-    callee_id: str,
+    participant_ids: frozenset[str] | set[str],
     created_at: datetime,
     ended_at: datetime,
 ) -> HuddleArchive:
     """Persist the terminal session record for an ENDED huddle, chained per tenant.
 
+    ``participant_ids`` is the FULL set of everyone who was live when the session ended
+    (``caller_id`` included). Writes the convenience ``huddles.callee_id`` column IFF the
+    session had exactly 2 participants (NULL for 3+, ADR-0011 Fork F), and ONE
+    ``huddle_participants`` row per participant — the authoritative full list, uniform for
+    every session size.
+
     Lazily upserts + locks this tenant's ``huddle_chain_state`` row, assigns the next
     per-tenant ``seq``, chains ``content_hash`` from the tenant's current tip (or the
-    ``HUDDLE_GENESIS_HASH`` for that tenant's first-ever archived huddle), inserts the
-    APPEND-ONLY ``huddles`` row, and advances the tip. The caller commits (mirrors every other
-    write helper in this module family — ``chat_repo.insert_message``,
+    ``HUDDLE_GENESIS_HASH`` for that tenant's first-ever archived huddle) over the SORTED
+    ``participant_ids`` (Fork G), inserts the APPEND-ONLY ``huddles`` +
+    ``huddle_participants`` rows, and advances the tip. The caller commits (mirrors every
+    other write helper in this module family — ``chat_repo.insert_message``,
     ``chat_repo.insert_inspection_audit``).
     """
+    sorted_participant_ids = sorted(participant_ids)
+    callee_id = None
+    if len(sorted_participant_ids) == 2:
+        others = [uid for uid in sorted_participant_ids if uid != caller_id]
+        if len(others) == 1:
+            callee_id = others[0]
+
     # Lazily seed the tenant's chain-state row (idempotent no-op if it already exists) so the
     # very first archived huddle for a tenant has a row to lock. ON CONFLICT DO NOTHING is safe
     # under concurrent first-archives: the loser's INSERT is a no-op, then it locks the
@@ -67,8 +82,7 @@ async def archive_ended_huddle(
     hash_fields = {
         "tenant_id": tenant_id,
         "huddle_id": huddle_id,
-        "caller_id": caller_id,
-        "callee_id": callee_id,
+        "participant_ids": sorted_participant_ids,
         "state": "ended",
         "seq": seq,
         "created_at": created_at.astimezone(timezone.utc).isoformat(),
@@ -91,6 +105,12 @@ async def archive_ended_huddle(
             content_hash=content_hash,
         )
     )
+    # Flushed BEFORE the huddle_participants rows are added (rather than relying on the unit of
+    # work to infer cross-table FK insert order on its own) so the parent row is guaranteed to
+    # exist in this transaction before the child rows reference it.
+    await session.flush()
+    for user_id in sorted_participant_ids:
+        session.add(HuddleParticipantRow(tenant_id=tenant_id, huddle_id=huddle_id, user_id=user_id))
     tip.next_seq = seq + 1
     tip.last_row_hash = content_hash
     await session.flush()  # surface FK/CHECK/unique violations before the caller commits

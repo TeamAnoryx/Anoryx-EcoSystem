@@ -13,8 +13,6 @@ socket is closed before accept — no session is opened). The handshake gate is 
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import anyio
 from starlette.websockets import WebSocket
 
@@ -22,9 +20,8 @@ from ..auth.errors import new_request_id
 from ..auth.tokens import TokenVerificationError, verify
 from ..persistence import chat_repo
 from ..persistence.async_database import get_tenant_session
-from .frames import build_error, build_huddle_update, build_presence_update, build_session_welcome
-from .huddle import HuddleState
-from .pipeline import RuntimeContext, archive_ended_huddle_best_effort, dispatch_frame
+from .frames import build_error, build_presence_update, build_session_welcome
+from .pipeline import RuntimeContext, broadcast_huddle_update, dispatch_frame, leave_huddle
 from .registry import Connection
 
 _BEARER_PREFIX = "Bearer "
@@ -137,34 +134,36 @@ async def realtime_endpoint(websocket: WebSocket) -> None:
         audience = [c for c in ctx.registry.sharing_connections(conn) if c is not conn]
         ctx.registry.discard(conn)
         await _broadcast_presence(ctx, conn, "offline", audience=audience)
-        # R-007: a dropped socket ends any live 1-on-1 huddle this user was in — real telephony
-        # semantics (a network drop ends the call), and it prevents a stale ringing/active huddle
-        # from lingering in the single-instance manager after its last connection is gone. Only
-        # fires when the disconnecting user has NO remaining live connection (multi-device: the
-        # huddle stays up on their other sockets).
+        # R-007/R-011: a dropped socket leaves (or, if it was the last participant standing,
+        # ends) any live huddle this user was in — real telephony semantics (a network drop
+        # drops that participant), and it prevents a stale ringing/active huddle from lingering
+        # in the single-instance manager after its last connection is gone. Only fires when the
+        # disconnecting user has NO remaining live connection (multi-device: the huddle stays up
+        # on their other sockets). Applies the SAME leave-vs-end rule as an explicit
+        # huddle.hangup (ADR-0011 Fork D) — never a decline (a dropped connection is not a
+        # deliberate decline), so decline=False unconditionally, matching the pre-R-011 behavior
+        # of always ending (never declining) on disconnect.
         if not ctx.registry.user_connections(conn.tenant_id, conn.user_id):
-            ended = ctx.huddles.end_all_for_user(conn.tenant_id, conn.user_id)
-            if ended is not None:
+            huddle = ctx.huddles.get_active(conn.tenant_id, conn.user_id)
+            if huddle is not None:
                 # SHIELDED: by the time a dropped socket reaches this cleanup, Starlette/anyio
                 # has already cancelled this connection's task-group scope. The archive write is
                 # real socket I/O (a fresh DB connection) that actually suspends the coroutine —
-                # an unshielded await here (or the peer send right after it) gets re-cancelled at
-                # that suspension point, silently dropping the `ended` notice entirely (not just
-                # the archive). Shielding this whole block — archive AND the peer send — is what
-                # guarantees the disconnect-triggered peer still learns the huddle ended, exactly
-                # as the pre-R-009 code already did before an actual DB round-trip was added here.
+                # an unshielded await here (or the peer sends right after it) gets re-cancelled
+                # at that suspension point, silently dropping the notice entirely (not just the
+                # archive). Shielding this whole block — leave/archive AND every peer send — is
+                # what guarantees the disconnect-triggered peers still learn the huddle
+                # ended/shrank, exactly as the pre-R-009 code already did before an actual DB
+                # round-trip was added here.
                 with anyio.CancelScope(shield=True):
-                    archive = await archive_ended_huddle_best_effort(
-                        ended, ended_at=datetime.now(timezone.utc)
+                    resulting_state, archive, notify_ids, id_source = await leave_huddle(
+                        ctx, huddle, conn.user_id, decline=False
                     )
-                    peer_id = ended.peer_of(conn.user_id)
-                    for peer_conn in ctx.registry.user_connections(conn.tenant_id, peer_id):
-                        await peer_conn.send(
-                            build_huddle_update(
-                                huddle_id=ended.huddle_id,
-                                tenant_id=conn.tenant_id,
-                                peer_user_id=conn.user_id,
-                                state=HuddleState.ENDED.value,
-                                archive=archive,
-                            )
-                        )
+                    await broadcast_huddle_update(
+                        ctx,
+                        huddle,
+                        resulting_state,
+                        notify_ids=notify_ids,
+                        id_source=id_source,
+                        archive=archive,
+                    )

@@ -43,8 +43,9 @@ info:
     interpolation). Correlate issues using the `request_id` returned on every response.
 
     ## Honesty boundaries (non-removable — the MVP is narrower than the product name)
-      1. HUDDLES ARE 1-ON-1 ONLY. Group/multi-party huddles are R-011 (post-investment)
-         and are OUT OF SCOPE. There is no participant-list surface here.
+      1. HUDDLES SUPPORT 2-8 PARTICIPANTS (R-011). Media is ALWAYS full-mesh P2P — there
+         is no SFU/media-relay tier, regardless of participant count. Rendly never sees
+         or forwards huddle media.
       2. THE SENTINEL INSPECTION INTEGRATION IS A SEAM ONLY. R-001 reserves the result
          fields and fail-closed error codes; the actual PII/injection/secret detection
          is R-008 and is NOT implemented. Huddle MEDIA is never content-inspected — only
@@ -79,13 +80,14 @@ tags:
     description: Channel message history (read). The SEND path is WebSocket-only — see realtime.
   - name: realtime
     description: |
-      The single real-time WebSocket carrying BOTH team chat and 1-on-1 huddle
+      The single real-time WebSocket carrying BOTH team chat and huddle
       signaling (R-001 FORK E = E1, one transport). Frame shapes are governed by
       contracts/messages.schema.json. This OpenAPI document describes only the HTTP
       upgrade handshake; the message catalog is the source of truth for frames.
   - name: huddles
-    description: 1-on-1 voice/video huddle bootstrap (R-007). ICE/TURN config only; the
-      offer/answer/ICE signaling and huddle lifecycle flow over the realtime WebSocket.
+    description: Voice/video huddle bootstrap, 2-8 participants (R-007, R-011). ICE/TURN
+      config only; the offer/answer/ICE signaling and huddle lifecycle flow over the
+      realtime WebSocket.
   - name: observability
     description: Liveness probe for deployment (R-010). Not part of the client product surface.
 
@@ -474,10 +476,10 @@ paths:
   /realtime:
     get:
       tags: [realtime]
-      summary: Open the real-time WebSocket (chat + 1-on-1 huddle signaling).
+      summary: Open the real-time WebSocket (chat + huddle signaling).
       description: |
         HTTP/1.1 Upgrade to a WebSocket. The SINGLE real-time transport carrying both
-        team chat and 1-on-1 huddle signaling (FORK E = E1). Frame shapes are governed
+        team chat and huddle signaling, 2-8 participants (FORK E = E1; R-011). Frame shapes are governed
         SOLELY by contracts/messages.schema.json (dispatch via the `msg_type` const);
         this operation documents only the handshake.
 
@@ -503,12 +505,13 @@ paths:
   /huddles/ice-servers:
     get:
       tags: [huddles]
-      summary: Get ICE/TURN server configuration for a 1-on-1 huddle.
+      summary: Get ICE/TURN server configuration for a huddle.
       description: |
-        Returns the SELF-HOSTED ICE/TURN configuration the client uses to establish the
-        1-on-1 WebRTC peer connection — Rendly never hands out an external meeting link
-        (no Zoom/Meet URL leaves the org). Credentials are short-lived. Group/SFU media
-        is out of scope (1-on-1 only).
+        Returns the SELF-HOSTED ICE/TURN configuration the client uses to establish a
+        WebRTC peer connection — Rendly never hands out an external meeting link
+        (no Zoom/Meet URL leaves the org). Credentials are short-lived. Each participant
+        of a group huddle (up to 8, R-011) independently calls this endpoint; media is
+        ALWAYS full-mesh P2P — there is no SFU tier.
       operationId: getIceServers
       security: [{ oauth2: ["huddle:initiate"] }]
       responses:
@@ -569,7 +572,7 @@ components:
             "channels:admin": Administer channels and membership (rename, archive, member roles).
             "chat:read": Read channel message history and open the realtime socket for receive.
             "chat:write": Send chat messages over the realtime socket.
-            "huddle:initiate": Start a 1-on-1 huddle and fetch ICE configuration.
+            "huddle:initiate": Start a huddle (2-8 participants) and fetch ICE configuration.
 
   headers:
     XRequestId:
