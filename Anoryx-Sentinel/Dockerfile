@@ -75,6 +75,29 @@ ENV PYTHONUNBUFFERED=1 \
     SENTINEL_WORKERS=1 \
     SENTINEL_PORT=8000
 
+# postgresql-client-16 (pg_dump/pg_restore only — NOT a server): F-024
+# disaster recovery (ADR-0030). The Helm backup CronJob and an operator's
+# `sentinel-dr restore` both run inside this same image. Pinned to major
+# version 16 via the official PGDG apt repo (bookworm's own default package is
+# postgresql-client-15) to EXACTLY match the Postgres server this deploys
+# against (postgres:16-alpine — docker-compose.yml, Helm chart default):
+# pg_dump against a NEWER server than its own major version is not a
+# documented-supported direction, so a same-major client is required, not
+# merely "close enough." curl/gnupg are purged again after — build-only tools,
+# never in the runtime layer (mirrors the builder stage's own toolchain
+# discipline).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+        https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client-16 \
+    && apt-get purge -y --auto-remove curl gnupg \
+    && rm -rf /var/lib/apt/lists/* /etc/apt/sources.list.d/pgdg.list
+
 # Non-root user (R9). nologin shell — the container only ever execs uvicorn.
 RUN groupadd --gid 1000 sentinel \
     && useradd --uid 1000 --gid 1000 --create-home --shell /usr/sbin/nologin sentinel

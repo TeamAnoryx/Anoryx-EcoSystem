@@ -1,0 +1,21 @@
+{{- if and .Values.backup.enabled (eq .Values.backup.sink "local") -}}
+# F-024 (ADR-0030) local backup-sink volume. HONEST LIMITATION: this PVC is
+# generally in the same cluster/failure-domain as postgres-pvc.yaml, so it does
+# NOT provide off-cluster durability — see deploy/DISASTER-RECOVERY.md. Set
+# backup.sink=s3 for genuine disaster-recovery posture.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "sentinel.fullname" . }}-backup
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.backup.local.pvcSize }}
+  {{- if .Values.backup.local.storageClassName }}
+  storageClassName: {{ .Values.backup.local.storageClassName | quote }}
+  {{- end }}
+{{- end }}
