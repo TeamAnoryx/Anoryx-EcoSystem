@@ -18,6 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..budget import BudgetConcept, BudgetPeriod, BudgetScope
 from ..persistence.models import budget_definitions
 
+# List-response bound (mirrors D-007's store.MAX_LIST_LIMIT / D-008's dashboards row cap).
+MAX_LIST_LIMIT = 100
+
 
 @dataclass(frozen=True)
 class BudgetDefinition:
@@ -127,6 +130,32 @@ async def raise_budget_cost_cap(
         .where(budget_definitions.c.budget_id == budget_id)
         .values(limit_cost_cents=new_limit_cost_cents)
     )
+
+
+async def get_budget(session: AsyncSession, *, budget_id: str) -> BudgetDefinition | None:
+    """Look up one budget by id (RLS confines the read to the caller's tenant).
+
+    Returns ``None`` when the id doesn't exist OR belongs to another tenant — the two
+    cases are indistinguishable to the caller by design (no cross-tenant existence leak).
+    """
+    stmt = select(budget_definitions).where(budget_definitions.c.budget_id == budget_id)
+    row = (await session.execute(stmt)).first()
+    return None if row is None else _row_to_definition(row)
+
+
+async def list_budgets(session: AsyncSession, *, limit: int = 100) -> list[BudgetDefinition]:
+    """List the caller's tenant's budgets (RLS-confined), oldest first.
+
+    ``limit`` is clamped to ``[1, MAX_LIST_LIMIT]`` (mirrors D-007's list-response cap —
+    a deliberate resource limit, not a business rule).
+    """
+    stmt = (
+        select(budget_definitions)
+        .order_by(budget_definitions.c.created_at)
+        .limit(max(1, min(limit, MAX_LIST_LIMIT)))
+    )
+    rows = (await session.execute(stmt)).all()
+    return [_row_to_definition(r) for r in rows]
 
 
 async def budgets_for_event(

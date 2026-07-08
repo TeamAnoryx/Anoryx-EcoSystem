@@ -141,6 +141,33 @@ their `/health` endpoints already existed; this task is pure packaging. See
   Redis is bundled — zero Delta code imports it; the roadmap's generic "Postgres + Redis" phrasing is
   not a reviewed dependency list.
 
+## D-011 — Predictive Budget Forecasting
+
+D-011 projects a budget period's end-of-period spend by holding the CURRENT elapsed-period average
+rate constant (the exact "flat average" concept D-008's `burn_rate_cents_per_hour` already uses,
+extended to project forward) and returns deterministic, threshold-based advisory recommendations.
+Deliberately **not** a regression or trained/validated statistical model — no forecasting precedent
+exists anywhere in this ecosystem to build one against. See
+[`docs/adr/0011-delta-budget-forecasting.md`](docs/adr/0011-delta-budget-forecasting.md).
+
+- **Backend:** `src/delta/forecasting/` — `projection.py` (pure current-rate projection +
+  first-half/second-half trend direction, no I/O), `recommendations.py` (deterministic advisory
+  text reusing D-005's `decision.is_over_cost_cap`/`soft_warning_band`), `service.py`
+  (orchestration — every spend figure comes from `budget_engine.spend.scope_spend_cents`, the SAME
+  query enforcement itself uses).
+- **New endpoint:** `GET /v1/admin/forecast/budgets[/{budget_id}]` on the same D-007 admin app —
+  returns current-period spend, burn rate, projected period-end spend, projected exhaustion date
+  (if any), trend direction, and a list of recommendations (`INSUFFICIENT_DATA`, `NO_COST_CAP`,
+  `ALREADY_OVER_CAP`, `SOFT_THRESHOLD_CROSSED`, `PROJECTED_TO_EXCEED`, `RISING_TREND`,
+  `SPEND_CONCENTRATION`).
+- **Zero new migration** — every forecast is computed live from `budget_definitions` (D-005) +
+  `ledger_entries` (D-003); nothing is persisted or historized.
+- **Honesty boundary:** `method: "current_rate_projection_v1"` is always returned — a literal,
+  versioned tag naming the technique honestly. The projection is a `float` estimate, never fed back
+  into an actual enforcement decision (those stay strictly integer, `budget_engine.decision`'s own
+  invariant, unchanged). No forecast-accuracy tracking is built (nothing persists a prediction to
+  later compare against reality) — real, valuable future work this task does not claim to deliver.
+
 ## Layout
 
 ```
@@ -148,6 +175,7 @@ src/delta/        Pydantic v2 domain types + validators (the invariants)
 src/delta/persistence/audit_log.py  D-009 hash-chained audit log (append_history/list_history/verify_chain)
 src/delta/allocation_admin/  D-007 budget-allocation admin API (propose/approve/reject, history)
 src/delta/dashboards/        D-008 read-only spend aggregates (summary, time series, top spenders)
+src/delta/forecasting/       D-011 current-rate budget-forecast projection + advisory recommendations
 frontend/         D-007/D-008 Next.js admin console (BFF-only, see frontend/README.md)
 contracts/        Delta-owned JSON Schemas (Draft 2020-12, additionalProperties:false)
 tests/            non-stubbed proofs of every invariant + the Budget round-trip
