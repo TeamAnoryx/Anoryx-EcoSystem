@@ -130,6 +130,8 @@ dev = [
 sentinel-cli = "policy.cli:main"
 # F-024 operator CLI (ADR-0030): backup / restore / list disaster-recovery dumps.
 sentinel-dr = "dr.cli:main"
+# F-025 operator CLI (ADR-0031): guided sandbox-tenant onboarding.
+sentinel-onboarding = "onboarding.cli:main"
 
 [tool.ruff]
 target-version = "py312"
