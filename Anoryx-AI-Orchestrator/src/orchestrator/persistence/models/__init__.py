@@ -15,6 +15,10 @@ from orchestrator.persistence.models.agent_state_audit_log import AgentStateAudi
 from orchestrator.persistence.models.base import Base
 from orchestrator.persistence.models.dead_letter import DeadLetterEntry
 from orchestrator.persistence.models.distribution_audit_log import DistributionAuditLog
+from orchestrator.persistence.models.external_gateway_audit_log import ExternalGatewayAuditLog
+from orchestrator.persistence.models.external_gateway_rate_limit_counter import (
+    ExternalGatewayRateLimitCounter,
+)
 from orchestrator.persistence.models.forward_outbox import ForwardOutbox
 from orchestrator.persistence.models.identity_audit_log import IdentityAuditLog
 from orchestrator.persistence.models.identity_event import IdentityEvent
@@ -26,6 +30,7 @@ from orchestrator.persistence.models.query_service_token import QueryServiceToke
 from orchestrator.persistence.models.relay_audit_log import RelayAuditLog
 from orchestrator.persistence.models.sentinel_registry import SentinelRegistry
 from orchestrator.persistence.models.sentinel_registry_audit_log import SentinelRegistryAuditLog
+from orchestrator.persistence.models.third_party_api_key import ThirdPartyApiKey
 
 __all__ = [
     "Base",
@@ -52,4 +57,8 @@ __all__ = [
     "AgentMessagingAuditLog",
     "AgentState",
     "AgentStateAuditLog",
+    # O-013 third-party external gateway (ADR-0013).
+    "ThirdPartyApiKey",
+    "ExternalGatewayAuditLog",
+    "ExternalGatewayRateLimitCounter",
 ]

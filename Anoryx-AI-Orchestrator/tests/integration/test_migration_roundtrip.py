@@ -1,13 +1,13 @@
 """Migration reversibility on a real Postgres (0001 -> 0002 -> D-004 -> 0004 -> 0005 -> 0006 ->
-0007 -> 0008 -> 0009).
+0007 -> 0008 -> 0009 -> 0010).
 
 The Orchestrator's migrations must apply clean to head AND reverse cleanly. Proves a
-non-stubbed round-trip across ALL migrations (head = 0009_agent_messaging): upgrade
+non-stubbed round-trip across ALL migrations (head = 0010_external_gateway): upgrade
 head -> tables present -> downgrade base -> tables gone -> upgrade head -> tables present again.
 Re-provisions the orchestrator_app password after the final upgrade (downgrade base drops the
-passwordless role) so later tests still connect. The O-005/O-009/O-010/O-011/O-012 migrations
-touched no EXISTING audit-chain table (each adds its own new one), so all eight hash chains
-stay verifiable across the round-trip by construction.
+passwordless role) so later tests still connect. The O-005/O-009/O-010/O-011/O-012/O-013
+migrations touched no EXISTING audit-chain table (each adds its own new one), so all nine hash
+chains stay verifiable across the round-trip by construction.
 """
 
 from __future__ import annotations
@@ -20,8 +20,9 @@ pytestmark = pytest.mark.integration
 # extend forward_outbox, no new table) + 0004 (O-005 sentinel registry) + 0005 (O-006 per-tenant
 # query principal — query_service_tokens) + 0006 (O-009 relay_audit_log) + 0007 (O-010
 # identity_events + identity_audit_log) + 0008 (O-011 automation_rules + automation_executions) +
-# 0009 (O-012 agent_messages + agent_messaging_audit_log + agent_state + agent_state_audit_log)
-# tables.
+# 0009 (O-012 agent_messages + agent_messaging_audit_log + agent_state + agent_state_audit_log) +
+# 0010 (O-013 third_party_api_keys + external_gateway_audit_log +
+# external_gateway_rate_limit_counters) tables.
 _TABLES = (
     "ingest_events",
     "ingest_audit_log",
@@ -42,6 +43,9 @@ _TABLES = (
     "agent_messaging_audit_log",
     "agent_state",
     "agent_state_audit_log",
+    "third_party_api_keys",
+    "external_gateway_audit_log",
+    "external_gateway_rate_limit_counters",
 )
 
 
@@ -50,10 +54,10 @@ async def _table_exists(conn, name: str) -> bool:
 
 
 async def test_migration_round_trip(db_conn, run_alembic, reprovision_app_role):
-    # Single head, and it is the O-012 revision (0009_agent_messaging).
+    # Single head, and it is the O-013 revision (0010_external_gateway).
     heads = run_alembic("heads")
     assert heads.returncode == 0, heads.stderr
-    assert "0009_agent_messaging" in heads.stdout, heads.stdout
+    assert "0010_external_gateway" in heads.stdout, heads.stdout
 
     # Start at head (the session fixture already upgraded).
     for table in _TABLES:

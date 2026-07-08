@@ -212,13 +212,14 @@ def test_mutualtls_scheme_declared():
 # Recognised app-layer second factors paired with mutualTLS: hmacIngest (O-003 ingest),
 # serviceToken (O-004 peer distribution), operatorBearer (O-005 operator registry/coordinate),
 # relaySourceBearer (O-009 governed relay dispatch), identitySourceBearer (O-010 identity
-# event ingest).
+# event ingest), externalApiKey (O-013 third-party external-gateway read).
 _SECOND_FACTORS = {
     "hmacIngest",
     "serviceToken",
     "operatorBearer",
     "relaySourceBearer",
     "identitySourceBearer",
+    "externalApiKey",
 }
 
 
