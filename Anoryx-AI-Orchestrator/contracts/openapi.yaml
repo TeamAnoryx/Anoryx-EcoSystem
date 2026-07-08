@@ -220,6 +220,16 @@ tags:
       with no live HTTP/MCP proxy endpoint, so there is still no F-026 surface to
       integrate with -- see ADR-0013's honesty boundaries. Every request for which a key
       resolves to a tenant is chain-audited regardless of outcome.
+  - name: commandCenter
+    description: |
+      O-014 fleet command center: a read-only, cross-tenant summary over metrics the
+      Orchestrator already collects (registry health, distribution outcomes, automation
+      executions, external-gateway attempts, ingest throughput), plus ONE guarded,
+      OPERATOR-TRIGGERED policy-distribution rollback action. NOT the roadmap's literal
+      "comprehensive command center... across all products" (Delta/Rendly do not push
+      telemetry here) and NOT "automated rollback if the orchestration loop detects a
+      critical system failure" (there is no autonomous trigger of any kind) -- see
+      ADR-0014's honesty boundaries.
 
 paths:
   /v1/ingest/events:
@@ -1916,6 +1926,87 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /v1/admin/command-center/summary:
+    get:
+      operationId: getCommandCenterSummary
+      tags: [commandCenter]
+      summary: Cross-tenant fleet-health summary (O-014)
+      description: |
+        Operator-gated, read-only. Aggregates ONLY metrics the Orchestrator already
+        tracks (registry health, distribution outcomes, automation executions,
+        external-gateway attempts, ingest throughput) over
+        ORCH_COMMAND_CENTER_LOOKBACK_HOURS (default 24h; registry health is a
+        point-in-time count, not windowed). NOT cross-product -- see ADR-0014.
+      security:
+        - mutualTLS: []
+          operatorBearer: []
+      responses:
+        '200':
+          description: The fleet-health snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandCenterSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: A presented operator token does not match the configured admin token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/admin/policy-distributions/rollback:
+    post:
+      operationId: rollbackPolicyDistribution
+      tags: [commandCenter]
+      summary: Re-submit a policy's immediately-prior distribution (O-014)
+      description: |
+        Operator-gated, OPERATOR-TRIGGERED (never autonomous -- ADR-0014 Fork B). Finds
+        the two most-recent distributions for (tenant_id, policy_id) and byte-identically
+        re-submits the SECOND-most-recent's signed_record as a brand-new distribution,
+        targeting the same sentinel_ids, via the existing O-004 distribution engine.
+      security:
+        - mutualTLS: []
+          operatorBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyDistributionRollbackRequest'
+            examples:
+              rollback:
+                summary: Roll back one tenant's policy to its prior distributed version
+                value:
+                  tenant_id: "11111111-1111-4111-8111-111111111111"
+                  policy_id: "budget-eng-team-q3"
+      responses:
+        '202':
+          description: The rollback was accepted; a new distribution was created and scheduled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyDistributionRollbackAccepted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: A presented operator token does not match the configured admin token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: >-
+            nothing_to_roll_back_to -- fewer than two distributions exist for this
+            (tenant_id, policy_id) pair.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
 components:
 
   securitySchemes:
@@ -3513,6 +3604,69 @@ components:
             api_key:
               type: string
               description: The plaintext third-party key. Shown exactly once, at issuance.
+
+    CommandCenterSummary:
+      type: object
+      description: O-014 cross-tenant fleet-health snapshot (ADR-0014).
+      additionalProperties: false
+      required:
+        [generated_at, lookback_hours, registry, distributions, automation_executions,
+         external_gateway, ingest_events_count, rollbacks_count]
+      properties:
+        generated_at: { type: string, format: date-time }
+        lookback_hours: { type: integer, minimum: 1 }
+        registry:
+          type: object
+          additionalProperties: { type: integer }
+          description: Point-in-time count of sentinel_registry rows by health_status.
+        distributions:
+          type: object
+          additionalProperties: { type: integer }
+          description: Count of policy_distributions created within the lookback window, by state.
+        automation_executions:
+          type: object
+          additionalProperties: { type: integer }
+          description: Count of automation_executions within the lookback window, by disposition.
+        external_gateway:
+          type: object
+          additionalProperties: { type: integer }
+          description: Count of external_gateway_audit_log rows within the lookback window, by outcome.
+        ingest_events_count:
+          type: integer
+          description: Count of ingest_events within the lookback window.
+        rollbacks_count:
+          type: integer
+          description: Count of distribution_rollbacks within the lookback window.
+
+    PolicyDistributionRollbackRequest:
+      type: object
+      description: O-014 guarded rollback request (ADR-0014).
+      additionalProperties: false
+      required: [tenant_id, policy_id]
+      properties:
+        tenant_id: { type: string, maxLength: 64 }
+        policy_id: { type: string, maxLength: 64 }
+
+    PolicyDistributionRollbackAccepted:
+      type: object
+      additionalProperties: false
+      required:
+        [distribution_id, policy_id, state, rolled_back_to_distribution_id,
+         superseded_distribution_id]
+      properties:
+        distribution_id: { type: string, format: uuid }
+        policy_id: { type: string, maxLength: 64 }
+        state:
+          type: string
+          enum: [pending]
+        rolled_back_to_distribution_id:
+          type: string
+          format: uuid
+          description: The prior distribution whose signed_record was re-submitted.
+        superseded_distribution_id:
+          type: string
+          format: uuid
+          description: The distribution that was "current" immediately before this rollback.
 
   responses:
     Unauthorized:

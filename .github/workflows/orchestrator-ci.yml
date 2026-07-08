@@ -6,8 +6,9 @@ name: Anoryx-AI-Orchestrator CI
 #   orchestrator-integration — O-003 ingest pipeline + O-004 policy distribution + O-005
 #                              coordination + O-009 governed relay + O-010 identity
 #                              correlation + O-011 cross-module automation engine + O-012
-#                              agent messaging/state + O-013 external gateway, on a
-#                              fresh Postgres. Runs the NON-STUBBED e2e (incl. the O-004
+#                              agent messaging/state + O-013 external gateway + O-014
+#                              command center/rollback, on a fresh Postgres. Runs the
+#                              NON-STUBBED e2e (incl. the O-004
 #                              allow/deny distribution e2e, the O-009 relay dispatch e2e,
 #                              and the O-011 automation-engine e2e — which re-drives a
 #                              real O-004 distribution — all of which drive a real
@@ -45,7 +46,7 @@ jobs:
         run: pytest Anoryx-AI-Orchestrator/tests --tb=short -q
 
   orchestrator-integration:
-    name: Integration (ingest + distribution + coordination + relay + identity + automation + messaging + external gateway; migrations to 0010 on Postgres)
+    name: Integration (ingest + distribution + coordination + relay + identity + automation + messaging + external gateway + command center; migrations to 0011 on Postgres)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -132,4 +133,7 @@ jobs:
           # O-013: same fail-not-skip discipline for the third-party external-gateway
           # e2e -- a silent skip must never masquerade as a green gateway gate.
           ORCH_REQUIRE_EXTERNAL_GATEWAY_E2E: "1"
+          # O-014: same fail-not-skip discipline for the command-center + guarded-rollback
+          # e2e -- a silent skip must never masquerade as a green command-center gate.
+          ORCH_REQUIRE_COMMAND_CENTER_E2E: "1"
         run: pytest tests --tb=short -q
