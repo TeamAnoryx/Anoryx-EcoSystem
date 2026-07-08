@@ -264,6 +264,51 @@ async def modify_sentinel(
     return updated
 
 
+#: Prefix stamped on `error_reason` by `auto_disable_sentinel`, distinguishing a SYSTEM-driven
+#: trip from an operator's manual `PATCH .../enabled=false` in the registry audit chain. A
+#: manual disable never sets `error_reason` (it is `None`), so `error_reason` starting with
+#: this prefix is an unambiguous, queryable "was this automatic?" signal (O-014, ADR-0014)
+#: without widening `action`'s closed set — `ck_sral_action` narrows to exactly the five
+#: values already covered by every existing register/modify/deregister/enable/disable caller,
+#: so this reuses `action="disable"` rather than adding a sixth value that would need its own
+#: migration AND (append-only chain, no UPDATE/DELETE) an irreversible one.
+AUTO_ROLLBACK_REASON_PREFIX = "auto_rollback:"
+
+
+async def auto_disable_sentinel(sentinel_id: str, *, reason: str) -> dict[str, Any] | None:
+    """System-driven disable (O-014, ADR-0014) — the auto-rollback circuit-breaker action.
+
+    Distinct from an operator's `modify_sentinel(enabled=False)`: this is invoked by
+    `coordination.health` itself (never by an operator request). It writes the SAME `disable`
+    action `modify_sentinel` already uses (no new `action` enum value — see
+    AUTO_ROLLBACK_REASON_PREFIX above), but stamps `error_reason` with the
+    AUTO_ROLLBACK_REASON_PREFIX, so an operator (or `list_recent_registry_audit_admin`'s
+    `error_reason_prefix` filter) can always tell a system trip apart from a manual one.
+
+    Idempotent-safe: re-checks `enabled` INSIDE the same transaction immediately before
+    writing, so a sentinel already disabled (by a prior auto-trip or by an operator racing
+    concurrently) is left untouched and audits nothing further — the health cycle calls this
+    once per newly-observed `unreachable` transition, but a concurrent caller must never be
+    able to double-trip it into two audit links for one incident. Returns the updated row, or
+    None if the sentinel was already disabled or no longer exists (both are no-ops, not errors
+    — the health cycle is a best-effort background loop, not a caller expecting a hard result).
+    """
+    async with get_privileged_session() as psession:
+        async with psession.begin():
+            current = await repo.get_sentinel(psession, sentinel_id)
+            if current is None or not current.get("enabled", True):
+                return None
+            await repo.update_sentinel(psession, sentinel_id=sentinel_id, values={"enabled": False})
+            await repo.append_registry_audit_link(
+                psession,
+                sentinel_id=sentinel_id,
+                action="disable",
+                disposition="accepted",
+                error_reason=f"{AUTO_ROLLBACK_REASON_PREFIX}{reason}",
+            )
+    return await fetch_sentinel(sentinel_id)
+
+
 async def deregister_sentinel(sentinel_id: str) -> None:
     """Deregister (delete) a Sentinel instance + audit `deregister`. 404 on unknown id.
 

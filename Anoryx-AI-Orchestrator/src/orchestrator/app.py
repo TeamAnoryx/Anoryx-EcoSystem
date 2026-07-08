@@ -24,9 +24,14 @@ boundaries), the third-party external gateway (POST/GET /v1/admin/external-keys,
 POST /v1/admin/external-keys/{key_id}/revoke, GET /v1/external/events — O-013, ADR-0013:
 API-key issuance, rate limiting, scope enforcement, and governance audit for one gated
 read seam, NOT the roadmap's literal global cross-product third-party gateway — see
-ADR-0013's honesty boundaries), plus a health probe. The query/distribution seams derive
-a per-tenant principal (require_tenant_principal); a missing/invalid token -> a uniform
-401. mTLS termination is O-008.
+ADR-0013's honesty boundaries), and the command dashboard + auto-rollback circuit-breaker
+(GET /v1/admin/dashboard/summary — O-014, ADR-0014: a bounded aggregation over data the
+admin/registry seams already expose, plus a health-cycle-driven auto-disable of a target
+that goes unreachable, NOT the roadmap's literal command center across all products with
+automated rollback of arbitrary deployments — see ADR-0014's honesty boundaries), plus a
+health probe. The query/distribution seams derive a per-tenant principal
+(require_tenant_principal); a missing/invalid token -> a uniform 401. mTLS termination is
+O-008.
 """
 
 from __future__ import annotations

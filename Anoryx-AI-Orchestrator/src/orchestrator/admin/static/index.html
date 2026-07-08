@@ -34,8 +34,9 @@
 <body>
   <h1>Anoryx Orchestrator — Operator Console</h1>
   <p class="subtitle">
-    Read-only fleet triage (O-007). Registry, recent events, and recent policy
-    distributions across ALL tenants — an operator view, not a tenant-scoped one.
+    Read-only fleet triage (O-007) + a bounded command dashboard (O-014). Registry, recent
+    events, recent policy distributions, and recent auto-rollback trips across ALL
+    tenants — an operator view, not a tenant-scoped one.
   </p>
 
   <div class="auth-bar">
@@ -44,6 +45,17 @@
     <button id="load-all">Load all</button>
   </div>
   <p class="status" id="global-status"></p>
+
+  <section>
+    <h2>Command Dashboard
+      <span class="limit"><label for="dashboard-limit">window</label>
+        <input id="dashboard-limit" type="number" min="1" max="200" value="50"></span>
+      <button data-refresh="dashboard">Refresh</button>
+    </h2>
+    <p class="status" id="dashboard-status"></p>
+    <div class="table-wrap"><table id="dashboard-table"></table></div>
+    <p class="empty" id="dashboard-note"></p>
+  </section>
 
   <section>
     <h2>Registered Sentinels
@@ -131,6 +143,53 @@
     return body;
   }
 
+  function renderKeyValueTable(tableId, pairs) {
+    const table = document.getElementById(tableId);
+    table.innerHTML = "";
+    for (const [key, value] of pairs) {
+      const tr = document.createElement("tr");
+      const th = document.createElement("th");
+      th.textContent = key;
+      const td = document.createElement("td");
+      td.textContent = value;
+      tr.appendChild(th);
+      tr.appendChild(td);
+      table.appendChild(tr);
+    }
+  }
+
+  function formatCounts(counts) {
+    const entries = Object.entries(counts || {});
+    if (!entries.length) return "none";
+    return entries.map(([k, v]) => `${k}: ${v}`).join(", ");
+  }
+
+  async function loadDashboard() {
+    setStatus("dashboard-status", "loading…", false);
+    try {
+      const limit = document.getElementById("dashboard-limit").value || 50;
+      const body = await authedGet(
+        `/v1/admin/dashboard/summary?limit=${encodeURIComponent(limit)}`
+      );
+      const s = body.sentinels || {};
+      const d = body.recent_distributions || {};
+      const r = body.recent_auto_rollbacks || {};
+      renderKeyValueTable("dashboard-table", [
+        ["Sentinels (total)", s.total ?? 0],
+        ["Sentinels by health", formatCounts(s.by_health_status)],
+        ["Sentinels by enabled", formatCounts(s.by_enabled)],
+        [`Distributions (last ${d.window ?? "?"})`, formatCounts(d.by_state)],
+        [`Auto-rollback trips (last ${r.window ?? "?"})`, r.count ?? 0],
+      ]);
+      document.getElementById("dashboard-note").textContent = (r.events || []).length
+        ? `Most recent auto-rollback: ${r.events[0].sentinel_id} at ${r.events[0].created_at} (${r.events[0].error_reason || "no reason recorded"})`
+        : "";
+      setStatus("dashboard-status", "up to date", false);
+    } catch (err) {
+      setStatus("dashboard-status", err.message, true);
+    }
+  }
+
   async function loadRegistry() {
     setStatus("registry-status", "loading…", false);
     try {
@@ -183,7 +242,12 @@
     }
   }
 
-  const loaders = { registry: loadRegistry, events: loadEvents, distributions: loadDistributions };
+  const loaders = {
+    dashboard: loadDashboard,
+    registry: loadRegistry,
+    events: loadEvents,
+    distributions: loadDistributions,
+  };
 
   for (const button of document.querySelectorAll("button[data-refresh]")) {
     button.addEventListener("click", () => loaders[button.dataset.refresh]());

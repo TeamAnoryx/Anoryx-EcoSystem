@@ -61,6 +61,7 @@ def _patch_privileged_session(monkeypatch):
 _ROUTES = [
     ("GET", "/v1/admin/events/recent"),
     ("GET", "/v1/admin/distributions/recent"),
+    ("GET", "/v1/admin/dashboard/summary"),
 ]
 
 
@@ -208,6 +209,108 @@ async def test_recent_distributions_limit_is_clamped_before_repo(app, monkeypatc
     )
     await _get(app, "/v1/admin/distributions/recent?limit=-5", headers=_bearer())
     assert seen["limit"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Dashboard summary (O-014, ADR-0014).
+# --------------------------------------------------------------------------- #
+
+
+def _patch_dashboard_repo(
+    monkeypatch,
+    *,
+    by_health_status=None,
+    by_enabled=None,
+    distributions=None,
+    rollbacks=None,
+):
+    async def _by_health_status(_session):
+        return by_health_status if by_health_status is not None else {}
+
+    async def _by_enabled(_session):
+        return by_enabled if by_enabled is not None else {"enabled": 0, "disabled": 0}
+
+    async def _distributions(_session, *, limit):
+        return distributions if distributions is not None else []
+
+    async def _rollbacks(_session, *, limit, action=None, error_reason_prefix=None):
+        # The dashboard always filters to the ordinary 'disable' action, distinguished from a
+        # manual disable only by the auto-rollback error_reason prefix (ADR-0014 Fork F).
+        assert action == "disable"
+        assert error_reason_prefix == "auto_rollback:"
+        return rollbacks if rollbacks is not None else []
+
+    monkeypatch.setattr(admin_router, "count_sentinels_by_health_status", _by_health_status)
+    monkeypatch.setattr(admin_router, "count_sentinels_by_enabled", _by_enabled)
+    monkeypatch.setattr(admin_router, "list_recent_distributions_admin", _distributions)
+    monkeypatch.setattr(admin_router, "list_recent_registry_audit_admin", _rollbacks)
+
+
+async def test_dashboard_summary_shape_and_counts(app, monkeypatch):
+    _patch_privileged_session(monkeypatch)
+    created = datetime(2026, 7, 8, 0, 0, 0, tzinfo=timezone.utc)
+    _patch_dashboard_repo(
+        monkeypatch,
+        by_health_status={"healthy": 2, "unreachable": 1},
+        by_enabled={"enabled": 2, "disabled": 1},
+        distributions=[
+            {"distribution_id": "d1", "state": "distributed"},
+            {"distribution_id": "d2", "state": "distributed"},
+            {"distribution_id": "d3", "state": "failed"},
+        ],
+        rollbacks=[
+            {
+                "sequence_number": 1,
+                "sentinel_id": "sentinel-c",
+                "action": "disable",
+                "disposition": "accepted",
+                "error_reason": "auto_rollback:connect_error",
+                "created_at": created,
+            }
+        ],
+    )
+    resp = await _get(app, "/v1/admin/dashboard/summary", headers=_bearer())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sentinels"]["total"] == 3  # sum of by_enabled, not by_health_status
+    assert body["sentinels"]["by_health_status"] == {"healthy": 2, "unreachable": 1}
+    assert body["sentinels"]["by_enabled"] == {"enabled": 2, "disabled": 1}
+    assert body["recent_distributions"]["by_state"] == {"distributed": 2, "failed": 1}
+    assert body["recent_auto_rollbacks"]["count"] == 1
+    event = body["recent_auto_rollbacks"]["events"][0]
+    assert event["sentinel_id"] == "sentinel-c"
+    assert event["created_at"] == created.isoformat()
+    # Never leaks endpoint/capabilities (not present in the projection at all).
+    assert "endpoint" not in event
+    assert "capabilities" not in event
+
+
+async def test_dashboard_summary_limit_is_clamped_before_repo(app, monkeypatch):
+    _patch_privileged_session(monkeypatch)
+    seen: dict[str, int] = {}
+
+    async def _by_health_status(_session):
+        return {}
+
+    async def _by_enabled(_session):
+        return {"enabled": 0, "disabled": 0}
+
+    async def _distributions(_session, *, limit):
+        seen["distributions_limit"] = limit
+        return []
+
+    async def _rollbacks(_session, *, limit, action=None, error_reason_prefix=None):
+        seen["rollbacks_limit"] = limit
+        return []
+
+    monkeypatch.setattr(admin_router, "count_sentinels_by_health_status", _by_health_status)
+    monkeypatch.setattr(admin_router, "count_sentinels_by_enabled", _by_enabled)
+    monkeypatch.setattr(admin_router, "list_recent_distributions_admin", _distributions)
+    monkeypatch.setattr(admin_router, "list_recent_registry_audit_admin", _rollbacks)
+
+    await _get(app, "/v1/admin/dashboard/summary?limit=9999", headers=_bearer())
+    assert seen["distributions_limit"] == 200
+    assert seen["rollbacks_limit"] == 200
 
 
 # --------------------------------------------------------------------------- #

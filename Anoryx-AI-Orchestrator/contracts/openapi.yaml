@@ -1347,6 +1347,43 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /v1/admin/dashboard/summary:
+    get:
+      operationId: getDashboardSummary
+      tags: [admin]
+      summary: A bounded operator command-dashboard summary (O-014)
+      description: |
+        Aggregates data the Orchestrator ALREADY tracks via its own existing seams — no new
+        outbound calls, no reach into another product's tree: registry health/enabled counts
+        (O-005), a distribution-state breakdown over the `limit` most-recent policy
+        distributions (O-004, the same bounded page `/v1/admin/distributions/recent` already
+        serves), and the `limit` most-recent `auto_disable` registry-audit circuit-breaker
+        trips (O-014).
+
+        HONESTY BOUNDARY (ADR-0014): this is NOT "system health, API loads, and governance
+        metrics across all [Anoryx] products" — the Orchestrator has no access to Sentinel's,
+        Delta's, or Rendly's internals beyond what already flows through its own ingest/
+        registry/distribution seams. It is a real, honest summary of what the Orchestrator
+        itself already knows, not a cross-product command center.
+
+        Auth: mTLS (operator host) AND an operator bearer token.
+      security:
+        - mutualTLS: []
+          operatorBearer: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A bounded fleet-health + circuit-breaker summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
   /v1/automation/rules:
     post:
       operationId: createAutomationRule
@@ -2350,6 +2387,107 @@ components:
           maxItems: 200
           items:
             $ref: '#/components/schemas/AdminDistributionSummary'
+
+    RegistryAuditSummary:
+      type: object
+      additionalProperties: false
+      required: [sentinel_id, action, disposition, created_at]
+      description: |
+        A cross-tenant summary of one sentinel_registry_audit_log link, for the O-014
+        dashboard's recent-auto-rollback view. Never `endpoint`/`capabilities` (those two
+        columns are allow-listed out of this projection, mirroring the "no payload" reads).
+        In this view every row is an `action=disable` link whose `error_reason` starts with
+        `auto_rollback:` — the O-014 circuit-breaker reuses the ordinary `disable` action
+        (no separate action value) and is distinguished from an operator's manual disable
+        only by that `error_reason` prefix (ADR-0014).
+      properties:
+        sentinel_id:
+          type: string
+          pattern: '^[A-Za-z0-9._-]{1,128}$'
+          maxLength: 128
+        action:
+          type: string
+          enum: [register, modify, deregister, enable, disable]
+          maxLength: 16
+        disposition:
+          type: string
+          enum: [accepted, rejected]
+          maxLength: 16
+        error_reason:
+          type: [string, "null"]
+          maxLength: 512
+        created_at:
+          type: string
+          format: date-time
+          maxLength: 64
+
+    DashboardSummary:
+      type: object
+      additionalProperties: false
+      required: [sentinels, recent_distributions, recent_auto_rollbacks]
+      description: |
+        A bounded operator command-dashboard summary (O-014, ADR-0014). See the honesty
+        boundary on GET /v1/admin/dashboard/summary — this covers only what the Orchestrator
+        itself already tracks, never another product's internals.
+      properties:
+        sentinels:
+          type: object
+          additionalProperties: false
+          required: [total, by_health_status, by_enabled]
+          properties:
+            total:
+              type: integer
+              minimum: 0
+            by_health_status:
+              type: object
+              additionalProperties:
+                type: integer
+                minimum: 0
+              description: '{health_status: count}, e.g. {"healthy": 3, "unreachable": 1}.'
+            by_enabled:
+              type: object
+              additionalProperties: false
+              required: [enabled, disabled]
+              properties:
+                enabled:
+                  type: integer
+                  minimum: 0
+                disabled:
+                  type: integer
+                  minimum: 0
+        recent_distributions:
+          type: object
+          additionalProperties: false
+          required: [window, by_state]
+          properties:
+            window:
+              type: integer
+              minimum: 1
+              maximum: 200
+              description: The bounded "most recent N distributions" this breakdown is over.
+            by_state:
+              type: object
+              additionalProperties:
+                type: integer
+                minimum: 0
+              description: '{state: count} over the window, e.g. {"distributed": 40, "partial": 2}.'
+        recent_auto_rollbacks:
+          type: object
+          additionalProperties: false
+          required: [window, count, events]
+          properties:
+            window:
+              type: integer
+              minimum: 1
+              maximum: 200
+            count:
+              type: integer
+              minimum: 0
+            events:
+              type: array
+              maxItems: 200
+              items:
+                $ref: '#/components/schemas/RegistryAuditSummary'
 
     EventMetadata:
       type: object

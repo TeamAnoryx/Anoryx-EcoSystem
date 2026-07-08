@@ -1,6 +1,7 @@
 """GET /v1/admin/events/recent + /v1/admin/distributions/recent + /v1/admin/identity/events/recent
 — the O-007 admin API (ADR-0007) plus the O-010 identity-correlation admin read (ADR-0010),
-plus GET /admin serving the minimal static operator UI.
+plus GET /v1/admin/dashboard/summary (O-014, ADR-0014, a bounded aggregation over data these
+existing reads already expose), plus GET /admin serving the minimal static operator UI.
 
 Gated by the SAME operator bearer (`ORCH_ADMIN_TOKEN`, `CoordinationSettings.admin_token`)
 that already fronts the O-005 registry seams — the admin API is the same operator
@@ -31,11 +32,15 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from orchestrator.config import CoordinationSettings
+from orchestrator.coordination.registry import AUTO_ROLLBACK_REASON_PREFIX
 from orchestrator.persistence.database import get_privileged_session
 from orchestrator.persistence.repositories import (
+    count_sentinels_by_enabled,
+    count_sentinels_by_health_status,
     list_recent_distributions_admin,
     list_recent_events_admin,
     list_recent_identity_events_admin,
+    list_recent_registry_audit_admin,
 )
 
 router = APIRouter()
@@ -200,6 +205,81 @@ async def recent_identity_events(
     async with get_privileged_session() as session:
         rows = await list_recent_identity_events_admin(session, limit=limit_value)
     body = {"data": [_identity_event_summary_body(row) for row in rows]}
+    return JSONResponse(status_code=200, content=body, headers={"X-Request-Id": request_id})
+
+
+def _distribution_state_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        state = row["state"]
+        counts[state] = counts.get(state, 0) + 1
+    return counts
+
+
+def _registry_audit_summary_body(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sentinel_id": row["sentinel_id"],
+        "action": row["action"],
+        "disposition": row["disposition"],
+        "error_reason": row.get("error_reason"),
+        "created_at": _isoformat(row["created_at"]),
+    }
+
+
+@router.get("/v1/admin/dashboard/summary")
+async def dashboard_summary(
+    request: Request,
+    limit: int | None = Query(default=None),
+) -> JSONResponse:
+    """A bounded operator command-dashboard summary (O-014, ADR-0014).
+
+    Aggregates data the Orchestrator ALREADY tracks — no new tables, no new outbound calls:
+    registry health/enabled counts (O-005), a state-count breakdown over the `limit` most
+    recent policy distributions (O-004, the same bounded page `/v1/admin/distributions/recent`
+    already serves), and the `limit` most recent auto-rollback registry-audit trips (O-014's
+    own circuit-breaker, see `coordination.health`/`coordination.registry`) — the ordinary
+    `disable` action, filtered to the AUTO_ROLLBACK_REASON_PREFIX `error_reason` a manual
+    disable never sets.
+
+    HONESTY BOUNDARY (verbatim, ADR-0014): this is NOT "system health, API loads, and
+    governance metrics across all [four Anoryx] products" — the Orchestrator has no access to
+    Sentinel/Delta/Rendly internals beyond what already flows through its own ingest/registry/
+    distribution seams, and CLAUDE.md's protect-paths boundary means this repo's code must
+    never reach into another product's tree to fetch more. It is a real, honest summary of
+    what the Orchestrator itself already knows.
+    """
+    settings: CoordinationSettings = request.app.state.coordination_settings
+    request_id = _request_id()
+    auth_error = _require_admin(request, settings, request_id)
+    if auth_error is not None:
+        return auth_error
+    limit_value = _clamp_limit(limit)
+    async with get_privileged_session() as session:
+        by_health_status = await count_sentinels_by_health_status(session)
+        by_enabled = await count_sentinels_by_enabled(session)
+        recent_distributions = await list_recent_distributions_admin(session, limit=limit_value)
+        recent_rollbacks = await list_recent_registry_audit_admin(
+            session,
+            limit=limit_value,
+            action="disable",
+            error_reason_prefix=AUTO_ROLLBACK_REASON_PREFIX,
+        )
+    body = {
+        "sentinels": {
+            "total": sum(by_enabled.values()),
+            "by_health_status": by_health_status,
+            "by_enabled": by_enabled,
+        },
+        "recent_distributions": {
+            "window": limit_value,
+            "by_state": _distribution_state_counts(recent_distributions),
+        },
+        "recent_auto_rollbacks": {
+            "window": limit_value,
+            "count": len(recent_rollbacks),
+            "events": [_registry_audit_summary_body(r) for r in recent_rollbacks],
+        },
+    }
     return JSONResponse(status_code=200, content=body, headers={"X-Request-Id": request_id})
 
 

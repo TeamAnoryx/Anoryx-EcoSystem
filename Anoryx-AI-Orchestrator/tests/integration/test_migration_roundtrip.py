@@ -8,6 +8,15 @@ Re-provisions the orchestrator_app password after the final upgrade (downgrade b
 passwordless role) so later tests still connect. The O-005/O-009/O-010/O-011/O-012/O-013
 migrations touched no EXISTING audit-chain table (each adds its own new one), so all nine hash
 chains stay verifiable across the round-trip by construction.
+
+O-014 (ADR-0014) adds NO migration at all: its auto-rollback circuit-breaker reuses the
+EXISTING `disable` registry-audit action (distinguished from a manual disable only by an
+`error_reason` prefix) rather than widening `ck_sral_action` with a new value — deliberately,
+because `sentinel_registry_audit_log` is append-only and accumulates rows across this WHOLE
+integration session (`clean_registry` clears the registry table between tests but leaves the
+audit chain intact by design), so a downgrade that tries to narrow a CHECK constraint on an
+already-populated audit table would fail the instant any test writes the new value before this
+round-trip test runs — exactly the failure this design chose not to risk (see ADR-0014 Fork F).
 """
 
 from __future__ import annotations
@@ -54,7 +63,8 @@ async def _table_exists(conn, name: str) -> bool:
 
 
 async def test_migration_round_trip(db_conn, run_alembic, reprovision_app_role):
-    # Single head, and it is the O-013 revision (0010_external_gateway).
+    # Single head, and it is the O-013 revision (0010_external_gateway). O-014 added no
+    # migration (see module docstring).
     heads = run_alembic("heads")
     assert heads.returncode == 0, heads.stderr
     assert "0010_external_gateway" in heads.stdout, heads.stdout

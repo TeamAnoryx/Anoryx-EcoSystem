@@ -19,6 +19,7 @@ _VARS = (
     "ORCH_HEALTH_HTTP_TIMEOUT",
     "ORCH_HEALTH_STALENESS_SECONDS",
     "ORCH_HEALTH_UNREACHABLE_THRESHOLD",
+    "ORCH_AUTO_ROLLBACK_ENABLED",
 )
 
 
@@ -39,6 +40,7 @@ def test_defaults_are_fail_closed(clean_env) -> None:
     assert s.staleness_seconds == 300
     assert s.unreachable_threshold == 3
     assert isinstance(s.distribution, DistributionSettings)
+    assert s.auto_rollback_enabled is False  # O-014: new autonomous behavior defaults OFF
 
 
 def test_allowlist_is_split_and_lowercased(clean_env) -> None:
@@ -79,3 +81,10 @@ def test_unreachable_threshold_below_minimum_raises(clean_env) -> None:
     clean_env.setenv("ORCH_HEALTH_UNREACHABLE_THRESHOLD", "0")
     with pytest.raises(ConfigError):
         get_coordination_settings()
+
+
+def test_auto_rollback_enabled_flag(clean_env) -> None:
+    clean_env.setenv("ORCH_AUTO_ROLLBACK_ENABLED", "1")
+    assert get_coordination_settings().auto_rollback_enabled is True
+    clean_env.setenv("ORCH_AUTO_ROLLBACK_ENABLED", "false")
+    assert get_coordination_settings().auto_rollback_enabled is False

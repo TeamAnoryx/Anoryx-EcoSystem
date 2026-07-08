@@ -14,6 +14,18 @@ health route is a separate Sentinel task.
 `effective_health_status()` applies the staleness rule at SELECTION time: a `healthy` target
 whose last check is older than the staleness window is treated as `degraded` (stale), so a
 never-re-checked target is never trusted as healthy indefinitely.
+
+O-014 (ADR-0014): when `settings.auto_rollback_enabled` and a target that was ENABLED at the
+START of this cycle transitions to `unreachable`, `run_health_cycle` trips the auto-rollback
+circuit-breaker (`registry.auto_disable_sentinel`) — the "orchestration loop detects a
+critical system failure" the roadmap names, scoped to the one concrete failure signal this
+loop already computes. This is a ONE-WAY trip: recovery is never automatic (see that
+function's honesty boundary) — an operator must confirm the incident is resolved and
+re-enable via the existing `PATCH /v1/registry/sentinels/{id}` seam. Default OFF
+(`ORCH_AUTO_ROLLBACK_ENABLED`); with it off, this module's behavior is byte-identical to
+pre-O-014. The trip is audited as an ordinary `disable` action (no new `action` enum value —
+see `registry.AUTO_ROLLBACK_REASON_PREFIX`), distinguished from a manual disable only by its
+`error_reason` prefix.
 """
 
 from __future__ import annotations
@@ -27,7 +39,7 @@ from orchestrator.coordination.endpoint_validation import (
     EndpointValidationError,
     validate_endpoint_async,
 )
-from orchestrator.coordination.registry import fetch_sentinels
+from orchestrator.coordination.registry import auto_disable_sentinel, fetch_sentinels
 from orchestrator.persistence import repositories as repo
 from orchestrator.persistence.database import get_privileged_session
 
@@ -122,6 +134,7 @@ async def run_health_cycle(*, settings: CoordinationSettings) -> list[dict[str, 
                 }
             )
             continue
+        was_enabled = bool(sentinel.get("enabled", True))
         status, failures, last_healthy_at, reason = await _probe_one(sentinel, settings=settings)
         checked_at = datetime.now(timezone.utc)
         async with get_privileged_session() as psession:
@@ -142,5 +155,14 @@ async def run_health_cycle(*, settings: CoordinationSettings) -> list[dict[str, 
         }
         if reason is not None:
             result["reason"] = reason
+        # O-014 (ADR-0014): trip the circuit-breaker only for a target that was ENABLED at the
+        # start of THIS cycle and is now unreachable — never re-trips an already-disabled target
+        # (auto_disable_sentinel is also independently idempotent, Fork-consistent belt+braces).
+        if settings.auto_rollback_enabled and was_enabled and status == _UNREACHABLE:
+            # auto_disable_sentinel stamps AUTO_ROLLBACK_REASON_PREFIX itself — pass the raw
+            # probe reason, not a pre-prefixed one.
+            tripped = await auto_disable_sentinel(sentinel_id, reason=str(reason))
+            if tripped is not None:
+                result["auto_rollback"] = True
         results.append(result)
     return results

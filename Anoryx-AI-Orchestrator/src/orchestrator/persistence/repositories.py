@@ -1569,6 +1569,85 @@ async def list_recent_distributions_admin(
 
 
 # =========================================================================== #
+# Command dashboard (O-014, ADR-0014) — aggregation reads for GET /v1/admin/dashboard/summary.
+# All privileged, cross-tenant (operator fleet triage, same posture as the O-007 admin reads
+# above). No new tables: this reuses sentinel_registry + sentinel_registry_audit_log (O-005)
+# and policy_distributions (O-004), the same rows the existing admin/registry reads already
+# expose.
+# =========================================================================== #
+
+_ADMIN_REGISTRY_AUDIT_COLUMNS = (
+    "sequence_number",
+    "sentinel_id",
+    "action",
+    "disposition",
+    "error_reason",
+    "created_at",
+)
+
+
+async def count_sentinels_by_health_status(session: AsyncSession) -> dict[str, int]:
+    """Return {health_status: count} across ALL registered sentinels (PRIVILEGED, no RLS)."""
+    result = await session.execute(
+        text("SELECT health_status, count(*) AS n FROM sentinel_registry GROUP BY health_status")
+    )
+    return {row.health_status: int(row.n) for row in result}
+
+
+async def count_sentinels_by_enabled(session: AsyncSession) -> dict[str, int]:
+    """Return {'enabled': n, 'disabled': n} across ALL registered sentinels (PRIVILEGED)."""
+    result = await session.execute(
+        text("SELECT enabled, count(*) AS n FROM sentinel_registry GROUP BY enabled")
+    )
+    counts = {"enabled": 0, "disabled": 0}
+    for row in result:
+        counts["enabled" if row.enabled else "disabled"] = int(row.n)
+    return counts
+
+
+async def list_recent_registry_audit_admin(
+    session: AsyncSession,
+    *,
+    limit: int,
+    action: str | None = None,
+    error_reason_prefix: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return the `limit` most-recent sentinel_registry_audit_log rows, newest first.
+
+    PRIVILEGED, cross-tenant (the registry has no tenant dimension at all). `action` filters
+    to a single action. `error_reason_prefix` additionally filters to rows whose
+    `error_reason` starts with the given prefix (O-014 uses `action="disable"` +
+    `error_reason_prefix="auto_rollback:"` to surface recent auto-rollback trips on the
+    dashboard — `auto_disable_sentinel` writes the ordinary `disable` action, distinguished
+    from a manual disable only by this prefix; see `coordination.registry.
+    AUTO_ROLLBACK_REASON_PREFIX`). Never `endpoint`/`capabilities` (mirrors the "no policy
+    body / payload" discipline of the other admin reads) — those two columns are allow-listed
+    OUT here on purpose, even though the underlying audit row carries them.
+    """
+    columns = ", ".join(_ADMIN_REGISTRY_AUDIT_COLUMNS)
+    clauses: list[str] = []
+    params: dict[str, Any] = {"lim": limit}
+    if action is not None:
+        clauses.append("action = :action")
+        params["action"] = action
+    if error_reason_prefix is not None:
+        clauses.append("error_reason LIKE :reason_prefix")
+        # LIKE wildcards in a caller-controlled prefix would be surprising here, but O-014's
+        # only caller passes a fixed literal ("auto_rollback:") — escape defensively anyway.
+        escaped = error_reason_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        params["reason_prefix"] = f"{escaped}%"
+    where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+    # nosemgrep: avoid-sqlalchemy-text
+    statement = text(
+        f"SELECT {columns} FROM sentinel_registry_audit_log {where}"  # noqa: S608
+        "ORDER BY sequence_number DESC LIMIT :lim"
+    )
+    result = await session.execute(statement, params)
+    rows = result.mappings().all()
+    return [{column: row[column] for column in _ADMIN_REGISTRY_AUDIT_COLUMNS} for row in rows]
+
+
+# =========================================================================== #
 # Agent mailbox relay (O-012, ADR-0012) — data access (tenant session, RLS-scoped) and its
 # audit chain (privileged session, no RLS on writes; RLS-scoped SELECT, mirrors
 # automation_executions).

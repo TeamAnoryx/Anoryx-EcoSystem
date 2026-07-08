@@ -238,6 +238,13 @@ DEFAULT_HEALTH_STALENESS_SECONDS: int = 300
 #: (below it → `degraded`).
 DEFAULT_HEALTH_UNREACHABLE_THRESHOLD: int = 3
 
+#: Master switch for the O-014 auto-rollback circuit-breaker (ADR-0014). DEFAULTS TO FALSE —
+#: this is new AUTONOMOUS behavior (the health cycle disables a registered target itself,
+#: without an operator), so it ships OFF by default: no existing deployment silently starts
+#: auto-disabling targets merely by upgrading. Mirrors ORCH_AUTOMATION_ENABLED's identical
+#: default-off reasoning (O-011, ADR-0011).
+DEFAULT_AUTO_ROLLBACK_ENABLED: bool = False
+
 
 # =========================================================================== #
 # Governed relay configuration (O-009, ADR-0009) — ADDITIVE, embedded in
@@ -365,8 +372,9 @@ class CoordinationSettings:
     coordinated push consumes unchanged (its `.targets` is overridden per-push from the
     registry). relay is the embedded O-009 governed-relay settings (ADR-0009); the relay reuses
     THIS struct's endpoint_allowlist / allow_http / staleness_seconds for its own registry-driven
-    SSRF + health gating, the same way the coordinated push reuses distribution. admin_token is
-    never logged.
+    SSRF + health gating, the same way the coordinated push reuses distribution.
+    auto_rollback_enabled is the O-014 (ADR-0014) circuit-breaker master switch (default False —
+    see DEFAULT_AUTO_ROLLBACK_ENABLED above). admin_token is never logged.
     """
 
     admin_token: str | None
@@ -378,6 +386,9 @@ class CoordinationSettings:
     unreachable_threshold: int
     distribution: DistributionSettings
     relay: RelaySettings
+    # O-014 (ADR-0014). Defaulted so every existing keyword-constructed CoordinationSettings
+    # (tests, fixtures) keeps building unchanged and stays opted OUT unless it says otherwise.
+    auto_rollback_enabled: bool = DEFAULT_AUTO_ROLLBACK_ENABLED
 
 
 def _endpoint_allowlist() -> frozenset[str]:
@@ -632,6 +643,7 @@ def get_coordination_settings() -> CoordinationSettings:
       ORCH_HEALTH_HTTP_TIMEOUT           per-probe HTTP timeout seconds (default 10.0).
       ORCH_HEALTH_STALENESS_SECONDS      staleness window seconds (default 300, >= 0).
       ORCH_HEALTH_UNREACHABLE_THRESHOLD  consecutive failures → unreachable (default 3, >= 1).
+      ORCH_AUTO_ROLLBACK_ENABLED         O-014 circuit-breaker master switch (default false).
 
     Tokens are never logged.
     """
@@ -656,6 +668,7 @@ def get_coordination_settings() -> CoordinationSettings:
         ),
         distribution=get_distribution_settings(),
         relay=get_relay_settings(),
+        auto_rollback_enabled=_env_bool("ORCH_AUTO_ROLLBACK_ENABLED"),
     )
 
 
