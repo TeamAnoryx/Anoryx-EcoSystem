@@ -716,7 +716,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-005 Budget engine (killer-feature half) ✅ (#45)
 - [x] D-006 Kill-switch for unauthorized AI agent txns ✅ (shipped PR #54)
 - [x] D-007 Budget allocation UI ✅ (shipped PR #57)
-- [ ] D-008 Live cost-to-value dashboards (param-driven) — Tricky (12-16h)
+- [x] D-008 Live cost-to-value dashboards (param-driven) ✅ (shipped PR #62)
 - [ ] D-009 Immutable financial-workflow audit trails — Tricky (8-12h) ➕
 - [ ] D-010 Deployment — Easy-Tricky (6-10h)
 - [ ] D-011 Predictive SaaS/cloud budget optimization — Tricky (12-16h) ➕
