@@ -142,15 +142,23 @@ def build_recommendations(
         )
 
     if top_spender is not None and projection.current_period_spend_cents > 0:
-        share_pct = top_spender.cost_cents * 100 / projection.current_period_spend_cents
+        # top_spender.cost_cents (dashboards.store.top_spenders) sums GROSS
+        # debit-direction rows; current_period_spend_cents (budget_engine.spend.
+        # scope_spend_cents) is the NET expense balance (debit-minus-credit,
+        # expense-type only). The two use different accounting bases, so when a
+        # reversal exists in the period this ratio is an approximation and can
+        # nominally exceed 100% — clamped for display and worded as approximate,
+        # never a claim of enforcement-grade precision (independent security review).
+        share_pct = min(100.0, top_spender.cost_cents * 100 / projection.current_period_spend_cents)
         if share_pct > _CONCENTRATION_SHARE_PCT:
             recs.append(
                 Recommendation(
                     code="SPEND_CONCENTRATION",
                     severity="info",
                     message=(
-                        f"{top_spender.group_key} accounts for {share_pct:.0f}% of this "
-                        "budget's spend — consider reviewing its usage."
+                        f"{top_spender.group_key} accounts for approximately "
+                        f"{share_pct:.0f}% of this budget's spend — consider "
+                        "reviewing its usage."
                     ),
                 )
             )
