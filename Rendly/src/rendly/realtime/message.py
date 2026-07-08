@@ -9,8 +9,11 @@ the R-002 id constraints only, NO persistence / runtime imports — so the persi
 A ``Message`` is the durable chat record AND the source for the wire ``chat.message`` frame /
 the REST ``MessageRecord`` (the framing lives in ``realtime/frames.py``). It carries the
 archival-ready fields R-001 reserves (FORK C, baked-now): the per-channel ``seq`` and
-``created_at`` populate ``ArchivalMeta``; the hash fields are NOT modeled here — they are
-RESERVED (always null) until R-009 builds the chain. The inspection result on a persisted
+``created_at`` populate ``ArchivalMeta``. ``prev_record_hash``/``content_hash`` (R-009) are the
+hash-chain link + digest ``persistence/chat_repo.insert_message`` computes at persist time —
+OPTIONAL (default ``None``) so a :class:`Message` rebuilt from a row inserted BEFORE R-009
+shipped (no chain to link into yet) still constructs cleanly, the same backward-compat posture
+``detectors`` already established for pre-R-008 rows. The inspection result on a persisted
 message is ALWAYS ``pass`` (a blocked / seam-unavailable send is fail-closed and never
 persisted), captured as ``inspection_status`` + ``inspection_evaluated_at`` + (R-008)
 ``detectors`` — the per-category findings the seam evaluated (always all-``pass`` on a
@@ -35,6 +38,10 @@ MessageId = UuidStr
 
 # The wire content bound (contracts/messages.schema.json text_content, maxLength 16384).
 MessageContent = Annotated[str, StringConstraints(max_length=16384)]
+
+# The R-009 hash-chain shape (contracts/messages.schema.json #/$defs/sha256_hex): lowercase
+# 64-char hex, or (pre-R-009 rows / a Message built before archiving) absent entirely.
+Sha256Hex = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
 
 def new_message_id() -> str:
@@ -63,6 +70,9 @@ class Message(BaseModel):
     # R-008: the per-category findings the seam evaluated. Defaults to empty for any Message
     # built before R-008 populated this (e.g. an older row with no stored detectors).
     detectors: tuple[DetectorFinding, ...] = ()
+    # R-009: the hash-chain link + digest. None for a Message rebuilt from a pre-R-009 row.
+    prev_record_hash: Sha256Hex | None = None
+    content_hash: Sha256Hex | None = None
 
     @field_validator("created_at", "inspection_evaluated_at")
     @classmethod

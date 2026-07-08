@@ -46,6 +46,11 @@ class ChannelRow(Base):
     archived = mapped_column(Boolean, nullable=False, default=False)
     # Per-channel monotonic ordering counter (the send path locks the row, reads, increments).
     next_seq = mapped_column(BigInteger, nullable=False, default=0)
+    # R-009: this channel's message hash-chain TIP — the ``content_hash`` of the last message
+    # inserted, or NULL before the channel's first message. Read/written under the SAME row
+    # lock (``SELECT ... FOR UPDATE``) that already serializes ``next_seq`` assignment, so the
+    # chain link and the seq assignment are always consistent with no extra lock.
+    last_row_hash = mapped_column(String(64), nullable=True)
 
 
 class MembershipRow(Base):
@@ -79,7 +84,10 @@ class MessageRow(Base):
     """A persisted chat message = the archival record (RLS table). PK (tenant_id, message_id).
 
     APPEND-ONLY (rendly_app has SELECT,INSERT only). ``prev_record_hash`` / ``content_hash``
-    are RESERVED archival columns — define-only, always NULL in R-005; the hash chain is R-009.
+    (R-009) form a hash chain scoped per (tenant_id, channel_id), linked over ``seq`` — see
+    ``persistence/hash_chain.py`` + ``chat_repo.insert_message``. NULL on any row inserted
+    before R-009 shipped (there was no chain yet to link into); every row inserted since
+    carries a real SHA-256 hex digest.
     """
 
     __tablename__ = "messages"
@@ -103,8 +111,8 @@ class MessageRow(Base):
     content_type = mapped_column(String(16), nullable=False)
     seq = mapped_column(BigInteger, nullable=False)
     created_at = mapped_column(DateTime(timezone=True), nullable=False)
-    prev_record_hash = mapped_column(String(64), nullable=True)  # RESERVED (R-009)
-    content_hash = mapped_column(String(64), nullable=True)  # RESERVED (R-009)
+    prev_record_hash = mapped_column(String(64), nullable=True)  # R-009 hash-chain link
+    content_hash = mapped_column(String(64), nullable=True)  # R-009 hash-chain digest
     inspection_status = mapped_column(String(16), nullable=False)
     inspection_evaluated_at = mapped_column(DateTime(timezone=True), nullable=False)
     # R-008: the per-category findings the seam evaluated for this message (metadata only —
@@ -143,3 +151,62 @@ class InspectionAuditLogRow(Base):
     detectors = mapped_column(JSONB, nullable=False, server_default="[]")
     evaluated_at = mapped_column(DateTime(timezone=True), nullable=False)
     created_at = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class HuddleRow(Base):
+    """R-009: the persisted session record for an ENDED 1-on-1 huddle (RLS table).
+
+    A huddle is ephemeral/in-memory for its LIVE lifetime (``realtime/huddle.py``, ADR-0007) —
+    this row is written exactly once, at the terminal ``ended`` transition
+    (``persistence/huddle_repo.archive_ended_huddle``). A ``declined`` ring never connects and
+    carries no session content, so it is never archived (matches the wire's own "archival is
+    present once the huddle reaches a durable (ended) state"). APPEND-ONLY (rendly_app has
+    SELECT,INSERT only). ``prev_record_hash``/``content_hash`` chain per TENANT (not per
+    channel — a huddle has no channel), linked over the per-tenant ``seq``.
+    """
+
+    __tablename__ = "huddles"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id"], [f"{RENDLY_SCHEMA}.tenants.tenant_id"]),
+        ForeignKeyConstraint(
+            ["tenant_id", "caller_id"],
+            [f"{RENDLY_SCHEMA}.users.tenant_id", f"{RENDLY_SCHEMA}.users.user_id"],
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "callee_id"],
+            [f"{RENDLY_SCHEMA}.users.tenant_id", f"{RENDLY_SCHEMA}.users.user_id"],
+        ),
+        {"schema": RENDLY_SCHEMA},
+    )
+
+    tenant_id = mapped_column(String(64), primary_key=True)
+    huddle_id = mapped_column(String(64), primary_key=True)
+    caller_id = mapped_column(String(64), nullable=False)
+    callee_id = mapped_column(String(64), nullable=False)
+    state = mapped_column(String(16), nullable=False)
+    seq = mapped_column(BigInteger, nullable=False)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at = mapped_column(DateTime(timezone=True), nullable=False)
+    prev_record_hash = mapped_column(String(64), nullable=False)
+    content_hash = mapped_column(String(64), nullable=False)
+
+
+class HuddleChainStateRow(Base):
+    """R-009: the per-tenant lock + tip holder for the huddle hash chain. One row per tenant.
+
+    The huddle analog of ``ChannelRow.next_seq``/``last_row_hash`` — ``huddle_repo`` locks
+    this row (``SELECT ... FOR UPDATE``, lazily upserted on a tenant's first archived huddle)
+    to serialize concurrent huddle-archive writes for the SAME tenant and read/advance the
+    chain tip under that lock, exactly mirroring the channel-row-lock pattern
+    ``chat_repo.insert_message`` uses for messages.
+    """
+
+    __tablename__ = "huddle_chain_state"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id"], [f"{RENDLY_SCHEMA}.tenants.tenant_id"]),
+        {"schema": RENDLY_SCHEMA},
+    )
+
+    tenant_id = mapped_column(String(64), primary_key=True)
+    next_seq = mapped_column(BigInteger, nullable=False, default=0)
+    last_row_hash = mapped_column(String(64), nullable=True)

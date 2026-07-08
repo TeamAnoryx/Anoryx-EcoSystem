@@ -12,6 +12,10 @@ cleanly (downgrade 0002 drops ONLY the chat tables; the identity tables + the 00
 R-008 added migration 0003 (Rendly's THIRD migration) — the ``inspection_audit_log`` table
 (``messages.detectors`` is a column addition on an existing table, not a new one, so it does not
 extend this table-set check). A further dedicated test proves the 0002<->0003 boundary.
+
+R-009 added migration 0004 (Rendly's FOURTH migration) — the ``huddles`` + ``huddle_chain_state``
+tables (``channels.last_row_hash`` is a column addition, same non-extending posture as
+``messages.detectors`` above). A further dedicated test proves the 0003<->0004 boundary.
 """
 
 from __future__ import annotations
@@ -61,7 +65,8 @@ _IDENTITY_TABLES = {
 }
 _CHAT_TABLES = {"channels", "memberships", "messages"}
 _INSPECTION_TABLES = {"inspection_audit_log"}
-_ALL_TABLES = _IDENTITY_TABLES | _CHAT_TABLES | _INSPECTION_TABLES
+_ARCHIVING_TABLES = {"huddles", "huddle_chain_state"}
+_ALL_TABLES = _IDENTITY_TABLES | _CHAT_TABLES | _INSPECTION_TABLES | _ARCHIVING_TABLES
 
 
 def test_migration_down_up_is_clean() -> None:
@@ -107,6 +112,24 @@ def test_inspection_migration_0003_reverses_to_0002() -> None:
     tables = _tables()
     assert tables & _INSPECTION_TABLES == set()  # inspection_audit_log gone
     assert _CHAT_TABLES <= tables  # chat tables (the 0002 head) intact
+
+    up = _alembic("upgrade", "head")
+    assert up.returncode == 0, f"{up.stdout}\n{up.stderr}"
+    assert _ALL_TABLES <= _tables()
+
+
+def test_archiving_migration_0004_reverses_to_0003() -> None:
+    """The 0003<->0004 boundary: downgrade 0004 drops ONLY huddles/huddle_chain_state (and the
+    ``channels.last_row_hash`` column); 0003 survives."""
+    # Start at head (0004).
+    assert _ARCHIVING_TABLES <= _tables()
+    assert _INSPECTION_TABLES <= _tables()
+
+    down = _alembic("downgrade", "0003")
+    assert down.returncode == 0, f"{down.stdout}\n{down.stderr}"
+    tables = _tables()
+    assert tables & _ARCHIVING_TABLES == set()  # huddles + huddle_chain_state gone
+    assert _INSPECTION_TABLES <= tables  # inspection_audit_log (the 0003 head) intact
 
     up = _alembic("upgrade", "head")
     assert up.returncode == 0, f"{up.stdout}\n{up.stderr}"

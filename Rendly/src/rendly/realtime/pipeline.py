@@ -17,14 +17,17 @@ THE SEND PIPELINE (FORK D — the seam is strictly BEFORE persist + fan-out):
      in ``inspection_audit_log`` (``_record_inspection_audit``), the administrative-oversight
      trail for a send that ``messages`` structurally cannot show (ADR-0008).
 
-THE HUDDLE/SIGNALING SURFACE (R-007, ADR-0007): ephemeral, single-instance, NOT persisted (see
-``realtime/huddle.py``). ``huddle:initiate`` gates STARTING a huddle (``huddle.invite``) and
-fetching ICE config; a caller who is not that huddle's participant is denied continuing it
-(``signal.send`` / ``huddle.hangup``) via ``HuddleManager.get(...).peer_of(...)`` — no separate
-scope check, because holding a valid ``huddle_id`` the manager recognizes for THIS user already
-proves participation (it was minted server-side and handed only to the two peers). huddle MEDIA
-never rides this pipeline — only signaling metadata (SDP/ICE) does, and it is never
-content-inspected (R-001 D4 honesty boundary).
+THE HUDDLE/SIGNALING SURFACE (R-007, ADR-0007): LIVE state is ephemeral, single-instance, NOT
+persisted (see ``realtime/huddle.py``). ``huddle:initiate`` gates STARTING a huddle
+(``huddle.invite``) and fetching ICE config; a caller who is not that huddle's participant is
+denied continuing it (``signal.send`` / ``huddle.hangup``) via
+``HuddleManager.get(...).peer_of(...)`` — no separate scope check, because holding a valid
+``huddle_id`` the manager recognizes for THIS user already proves participation (it was minted
+server-side and handed only to the two peers). huddle MEDIA never rides this pipeline — only
+signaling metadata (SDP/ICE) does, and it is never content-inspected (R-001 D4 honesty
+boundary). R-009: the terminal ``ended`` transition (``handle_huddle_hangup`` below, and the
+disconnect-triggered end in ``realtime/ws.py``) additionally persists a hash-chained session
+record via ``archive_ended_huddle_best_effort`` — best-effort, never blocking the broadcast.
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from ..auth.errors import new_request_id
-from ..persistence import chat_repo
+from ..persistence import chat_repo, huddle_repo
 from ..persistence.async_database import get_tenant_session
 from .frames import (
     MAX_CONTENT_LEN,
@@ -58,7 +61,7 @@ from .frames import (
     valid_uuid,
 )
 from .authz import AuthzPrincipal, ChannelAction, authorize
-from .huddle import Huddle, HuddleManager, HuddleState, new_huddle_id
+from .huddle import Huddle, HuddleArchive, HuddleManager, HuddleState, new_huddle_id
 from .ice import IceCredentialProvider
 from .inspector import InspectionOutcome, MessageInspector
 from .message import new_message_id
@@ -444,12 +447,50 @@ async def handle_huddle_hangup(conn: Connection, data: dict, ctx: RuntimeContext
         end_state = HuddleState.DECLINED
     else:
         end_state = HuddleState.ENDED
-    seq = ctx.huddles.next_seq(conn.tenant_id) if end_state is HuddleState.ENDED else None
+    archive = None
+    if end_state is HuddleState.ENDED:
+        archive = await archive_ended_huddle_best_effort(
+            huddle, ended_at=datetime.now(timezone.utc)
+        )
     ctx.huddles.transition(huddle, end_state)
-    await _broadcast_huddle_update(ctx, huddle, end_state, seq=seq)
+    await _broadcast_huddle_update(ctx, huddle, end_state, archive=archive)
 
 
 # --- huddle helpers ----------------------------------------------------------------------
+
+
+async def archive_ended_huddle_best_effort(
+    huddle: Huddle, *, ended_at: datetime
+) -> HuddleArchive | None:
+    """Persist the R-009 session record for an ENDED huddle. Best-effort: never raises.
+
+    Called from the ONE place a huddle transitions to ``ended`` on the live path
+    (``handle_huddle_hangup`` above) AND from ``ws.py``'s disconnect-triggered end — mirrors
+    ``_record_inspection_audit``'s posture: the huddle has ALREADY ended from the two peers'
+    perspective (signaling/media already stopped) by the time this runs, so a DB failure here
+    must not block or alter the ``ended`` broadcast. A failure degrades to no ``archival`` field
+    on that broadcast (``build_huddle_update``) rather than losing the ``ended`` notice itself.
+
+    NOT itself shielded from cancellation — the disconnect-triggered caller
+    (``realtime/ws.py``) wraps its ENTIRE ended-huddle notification (this call AND the
+    subsequent peer send) in ``anyio.CancelScope(shield=True)``; see that module for why. The
+    hangup-triggered caller runs in an uncancelled context and needs no shield either way.
+    """
+    try:
+        async with get_tenant_session(huddle.tenant_id) as session:
+            archive = await huddle_repo.archive_ended_huddle(
+                session,
+                tenant_id=huddle.tenant_id,
+                huddle_id=huddle.huddle_id,
+                caller_id=huddle.caller_id,
+                callee_id=huddle.callee_id,
+                created_at=huddle.created_at,
+                ended_at=ended_at,
+            )
+            await session.commit()
+            return archive
+    except Exception:  # noqa: BLE001 - best-effort archiving; never blocks the ended broadcast
+        return None
 
 
 def _authorized_huddle(
@@ -474,7 +515,7 @@ def _authorized_huddle(
 
 
 async def _broadcast_huddle_update(
-    ctx: RuntimeContext, huddle: Huddle, state: HuddleState, *, seq: int | None = None
+    ctx: RuntimeContext, huddle: Huddle, state: HuddleState, *, archive: HuddleArchive | None = None
 ) -> None:
     """Send huddle.update to EVERY live connection of BOTH participants.
 
@@ -491,8 +532,7 @@ async def _broadcast_huddle_update(
             tenant_id=huddle.tenant_id,
             peer_user_id=peer_id,
             state=state.value,
-            huddle=huddle if seq is not None else None,
-            seq=seq,
+            archive=archive,
         )
         for conn in ctx.registry.user_connections(huddle.tenant_id, user_id):
             await conn.send(frame)

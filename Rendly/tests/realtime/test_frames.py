@@ -1,9 +1,9 @@
 """R-005 wire framing — pure unit tests (no DB) for the locked frame shapes + error pairing.
 
 Asserts the error_code -> fixed-message pairing verbatim against the contract (the R-001 LOW-6
-discipline, mirrored from R-003's REST envelope test) and that the chat.message / chat.ack
-builders emit the locked shapes (archival hashes null, inspection narrowed to pass, the ack
-accepted/blocked invariants).
+discipline, mirrored from R-003's REST envelope test) and that the chat.message / chat.ack /
+huddle.update builders emit the locked shapes (archival hashes surfaced verbatim from whatever
+the caller passes in — R-009 — inspection narrowed to pass, the ack accepted/blocked invariants).
 """
 
 from __future__ import annotations
@@ -61,9 +61,24 @@ def test_chat_message_frame_shape() -> None:
     assert frame["archival"]["schema_version"] == "1"
     assert frame["archival"]["record_id"] == frame["message_id"]
     assert frame["archival"]["seq"] == 42
-    assert frame["archival"]["prev_record_hash"] is None  # RESERVED (R-009)
+    # _message() builds a Message with no hash fields (the pre-R-009 / no-chain-yet shape).
+    assert frame["archival"]["prev_record_hash"] is None
     assert frame["archival"]["content_hash"] is None
     assert frame["inspection"]["status"] == "pass"
+
+
+def test_chat_message_frame_surfaces_real_hash_chain_fields() -> None:
+    # R-009: a Message carrying real chain values (as chat_repo.insert_message now produces)
+    # surfaces them verbatim on the wire — no re-derivation in the frame builder.
+    msg = _message().model_copy(
+        update={
+            "prev_record_hash": "a" * 64,
+            "content_hash": "b" * 64,
+        }
+    )
+    frame = frames.build_chat_message(msg)
+    assert frame["archival"]["prev_record_hash"] == "a" * 64
+    assert frame["archival"]["content_hash"] == "b" * 64
 
 
 def test_timestamps_use_z_suffix() -> None:
@@ -104,3 +119,40 @@ def test_chat_ack_blocked_has_error_code_no_message_id() -> None:
     assert ack["error_code"] == "message_blocked"
     assert "message_id" not in ack
     assert ack["inspection"]["status"] == "blocked"
+
+
+def test_huddle_update_without_archive_has_no_archival_field() -> None:
+    # Matches the ringing/accepted/active/busy/declined posture (R-007): no archive -> no field.
+    frame = frames.build_huddle_update(
+        huddle_id="d1e2f3a4-0000-1111-2222-333344445555",
+        tenant_id="t",
+        peer_user_id="u2",
+        state="ringing",
+    )
+    assert "archival" not in frame
+
+
+def test_huddle_update_with_archive_surfaces_real_hash_chain_fields() -> None:
+    from rendly.realtime.huddle import HuddleArchive
+
+    ts = datetime(2026, 7, 7, 10, 0, 0, tzinfo=timezone.utc)
+    archive = HuddleArchive(
+        huddle_id="d1e2f3a4-0000-1111-2222-333344445555",
+        created_at=ts,
+        seq=3,
+        prev_record_hash="c" * 64,
+        content_hash="d" * 64,
+    )
+    frame = frames.build_huddle_update(
+        huddle_id=archive.huddle_id,
+        tenant_id="t",
+        peer_user_id="u2",
+        state="ended",
+        archive=archive,
+    )
+    assert frame["archival"]["schema_version"] == "1"
+    assert frame["archival"]["record_id"] == archive.huddle_id
+    assert frame["archival"]["seq"] == 3
+    assert frame["archival"]["prev_record_hash"] == "c" * 64
+    assert frame["archival"]["content_hash"] == "d" * 64
+    assert frame["archival"]["created_at"].endswith("Z")

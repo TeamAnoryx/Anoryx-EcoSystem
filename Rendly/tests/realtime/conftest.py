@@ -55,6 +55,8 @@ if not os.environ.get("DATABASE_URL"):
 
 _ALL_TABLES = (
     "inspection_audit_log",
+    "huddles",
+    "huddle_chain_state",
     "messages",
     "memberships",
     "channels",

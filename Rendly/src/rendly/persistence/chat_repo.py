@@ -9,12 +9,14 @@ narrow work, and leave the commit to the caller. Reconstruction rebuilds the FRO
 
 ORDERING (FORK C): :func:`insert_message` assigns the per-channel ``seq`` under a ``SELECT ...
 FOR UPDATE`` row lock on the channel (mirrors ``refresh_store``'s FOR UPDATE rotation lock), so
-concurrent sends in one channel are serialized and seq is strictly monotonic with no gaps.
+concurrent sends in one channel are serialized and seq is strictly monotonic with no gaps. R-009
+reuses the SAME lock to read/advance ``channels.last_row_hash`` (the per-channel message-chain
+tip), so the seq assignment and the hash-chain link are always computed consistently.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +27,7 @@ from ..membership import Membership
 from ..realtime.inspector import DetectorFinding
 from ..realtime.message import Message
 from ..user import User
+from . import hash_chain
 from .chat_models import ChannelRow, InspectionAuditLogRow, MembershipRow, MessageRow
 from .identity_repo import user_from_row  # reuse the one row->User mapper (DRY)
 from .models import UserRow
@@ -72,6 +75,8 @@ def message_from_row(row: MessageRow) -> Message:
         inspection_status=row.inspection_status,
         inspection_evaluated_at=row.inspection_evaluated_at,
         detectors=_detectors_from_json(row.detectors),
+        prev_record_hash=row.prev_record_hash,
+        content_hash=row.content_hash,
     )
 
 
@@ -264,9 +269,11 @@ async def insert_message(
     FORK C: locks the channel row (``SELECT ... FOR UPDATE``), reads ``next_seq``, writes the
     message with that seq, and increments the counter — strictly monotonic, gap-free, and
     serialized per channel. A persisted message has ALWAYS passed inspection
-    (``inspection_status='pass'``); the hash columns stay NULL (R-009). ``detectors`` (R-008) is
-    the per-category findings the seam evaluated for THIS message (metadata only). Returns the
-    frozen :class:`Message`. The caller commits.
+    (``inspection_status='pass'``). ``detectors`` (R-008) is the per-category findings the seam
+    evaluated for THIS message (metadata only). R-009: the SAME lock also reads/advances
+    ``channels.last_row_hash`` (the per-channel message-chain tip), so ``content_hash`` chains
+    from ``prev_record_hash`` = the tip (or ``MESSAGE_GENESIS_HASH`` for the channel's first
+    message) with no extra query. Returns the frozen :class:`Message`. The caller commits.
     """
     channel = (
         await session.execute(
@@ -282,6 +289,23 @@ async def insert_message(
         raise LookupError("channel not found for the tenant session (RLS-scoped)")
 
     seq = channel.next_seq
+    prev_hash = channel.last_row_hash or hash_chain.MESSAGE_GENESIS_HASH
+    detectors_json = _detectors_to_json(detectors)
+    hash_fields = {
+        "tenant_id": tenant_id,
+        "channel_id": channel_id,
+        "message_id": message_id,
+        "sender_user_id": sender_user_id,
+        "content": content,
+        "content_type": content_type,
+        "seq": seq,
+        "created_at": created_at.astimezone(timezone.utc).isoformat(),
+        "inspection_status": "pass",
+        "detectors": detectors_json,
+        "prev_record_hash": prev_hash,
+    }
+    content_hash = hash_chain.compute_row_hash(hash_fields, hash_chain.MESSAGE_CANONICAL_FIELDS)
+
     session.add(
         MessageRow(
             tenant_id=tenant_id,
@@ -292,14 +316,15 @@ async def insert_message(
             content_type=content_type,
             seq=seq,
             created_at=created_at,
-            prev_record_hash=None,  # RESERVED (R-009)
-            content_hash=None,  # RESERVED (R-009)
+            prev_record_hash=prev_hash,
+            content_hash=content_hash,
             inspection_status="pass",
             inspection_evaluated_at=inspection_evaluated_at,
-            detectors=_detectors_to_json(detectors),
+            detectors=detectors_json,
         )
     )
     channel.next_seq = seq + 1
+    channel.last_row_hash = content_hash
     await session.flush()  # surface FK/CHECK/unique violations before the caller commits
     return Message(
         message_id=message_id,
@@ -313,6 +338,8 @@ async def insert_message(
         inspection_status="pass",
         inspection_evaluated_at=inspection_evaluated_at,
         detectors=detectors,
+        prev_record_hash=prev_hash,
+        content_hash=content_hash,
     )
 
 

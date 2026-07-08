@@ -339,7 +339,8 @@ def test_rendly_app_cannot_update_or_delete_inspection_audit_log(seed_user, new_
 
 
 def test_rendly_app_cannot_update_or_delete_messages(seed_user, new_uuid):
-    """messages are APPEND-ONLY by grant — rendly_app has no UPDATE/DELETE (immutability is R-009)."""
+    """messages are APPEND-ONLY by grant (no UPDATE/DELETE) AND hash-chained (R-009) — tampering
+    with a row in place is both structurally blocked and, were it ever bypassed, detectable."""
     ta = new_uuid()
     ua, ca, ma = new_uuid(), new_uuid(), new_uuid()
     seed_user(tenant_id=ta, user_id=ua)
@@ -356,3 +357,88 @@ def test_rendly_app_cannot_update_or_delete_messages(seed_user, new_uuid):
         with pytest.raises(Exception):  # noqa: B017 - and on DELETE
             s.execute(text("DELETE FROM rendly.messages WHERE message_id=:m"), {"m": ma})
             s.commit()
+
+
+def test_message_hash_chain_links_across_sends_and_is_scoped_per_channel(seed_user, new_uuid):
+    """R-009 non-stubbed e2e: chat_repo.insert_message computes a REAL, verifiable, per-channel
+    SHA-256 hash chain — not a stub. The first message in a channel chains from the genesis
+    constant; the second chains from the first's ``content_hash``. A second channel (even in the
+    SAME tenant) starts its OWN chain from genesis again (the scope is per-channel, not global).
+    """
+    import asyncio
+
+    from rendly.persistence import chat_repo, hash_chain
+    from rendly.persistence.async_database import get_tenant_session as async_tenant_session
+
+    ta = new_uuid()
+    ua = new_uuid()
+    ca, cb = new_uuid(), new_uuid()
+    seed_user(tenant_id=ta, user_id=ua)
+    _add_channel(ta, ca, ua)
+    _add_channel(ta, cb, ua)
+
+    async def _send_three() -> tuple:
+        async with async_tenant_session(ta) as s:
+            m1 = await chat_repo.insert_message(
+                s,
+                message_id=new_uuid(),
+                tenant_id=ta,
+                channel_id=ca,
+                sender_user_id=ua,
+                content="first",
+                content_type="text",
+                created_at=_NOW,
+                inspection_evaluated_at=_NOW,
+            )
+            m2 = await chat_repo.insert_message(
+                s,
+                message_id=new_uuid(),
+                tenant_id=ta,
+                channel_id=ca,
+                sender_user_id=ua,
+                content="second",
+                content_type="text",
+                created_at=_NOW,
+                inspection_evaluated_at=_NOW,
+            )
+            # A different channel in the SAME tenant — its own chain, from its own genesis.
+            m3 = await chat_repo.insert_message(
+                s,
+                message_id=new_uuid(),
+                tenant_id=ta,
+                channel_id=cb,
+                sender_user_id=ua,
+                content="other channel",
+                content_type="text",
+                created_at=_NOW,
+                inspection_evaluated_at=_NOW,
+            )
+            await s.commit()
+        return m1, m2, m3
+
+    m1, m2, m3 = asyncio.run(_send_three())
+
+    assert m1.prev_record_hash == hash_chain.MESSAGE_GENESIS_HASH
+    assert m2.prev_record_hash == m1.content_hash
+    assert m1.content_hash != m2.content_hash
+    # A DIFFERENT channel's first message ALSO chains from genesis — independent chain scope.
+    assert m3.prev_record_hash == hash_chain.MESSAGE_GENESIS_HASH
+
+    # Every digest is independently recomputable (a real chain, not an opaque stored value).
+    for msg in (m1, m2, m3):
+        fields = {
+            "tenant_id": msg.tenant_id,
+            "channel_id": msg.channel_id,
+            "message_id": msg.message_id,
+            "sender_user_id": msg.sender_user_id,
+            "content": msg.content,
+            "content_type": msg.content_type,
+            "seq": msg.seq,
+            "created_at": msg.created_at.isoformat(),
+            "inspection_status": msg.inspection_status,
+            "detectors": [],
+            "prev_record_hash": msg.prev_record_hash,
+        }
+        assert hash_chain.verify_row_hash(
+            fields, hash_chain.MESSAGE_CANONICAL_FIELDS, msg.content_hash
+        )

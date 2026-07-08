@@ -28,6 +28,10 @@ dependencies = [
   # boundary; runs ALONGSIDE the sync stack, does not replace it):
   "asyncpg>=0.29,<0.31",          # the async Postgres driver (postgresql+asyncpg://) for chat.
   "greenlet>=3,<4",               # required by SQLAlchemy's async engine (explicit so CI is safe).
+  # R-009: a transitive starlette dep already, made explicit because pipeline.py now imports
+  # it directly (anyio.CancelScope(shield=True) — the disconnect-triggered huddle archive
+  # must survive Starlette's own cancellation of an already-disconnecting WebSocket's scope).
+  "anyio>=4,<5",
 ]
 
 # The contract suite (R-001), domain suite (R-002), and auth suite (R-003) share one dev extra.
