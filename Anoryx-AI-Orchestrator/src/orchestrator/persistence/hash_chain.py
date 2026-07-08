@@ -205,3 +205,61 @@ def compute_registry_row_hash(data: dict[str, Any]) -> str:
 def verify_registry_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
     """Recompute and compare the registry row_hash for a single row. True iff it matches."""
     return compute_registry_row_hash(row_data) == stored_hash
+
+
+# =========================================================================== #
+# Relay-dispatch audit chain (O-009, ADR-0009) — ADDITIVE, parallel to the ingest,
+# distribution, and registry chains above. Same canonicalization discipline over a distinct
+# field set and a domain-separated genesis so none of the four chains can ever be confused.
+# The chains above are untouched (byte-identical).
+# =========================================================================== #
+
+# Domain-separated genesis constant, distinct from every other chain's genesis.
+RELAY_GENESIS_HASH = hashlib.sha256(b"anoryx-orchestrator:relay-audit:genesis:v1").hexdigest()
+
+# Fields folded into the canonical hash content, in a fixed documented order.
+# prev_hash MUST be last to surface ordering issues clearly.
+RELAY_CANONICAL_FIELDS = [
+    "tenant_id",
+    "source_product",
+    "sentinel_id",
+    "target_path",
+    "disposition",
+    # Chain field — last.
+    "prev_hash",
+]
+
+# Folded in ONLY when non-None (opt-in-when-present). Never add these to
+# RELAY_CANONICAL_FIELDS — that would inject "<field>":null into every link and break
+# verification over historical data.
+_RELAY_OPTIONAL_FIELDS = ("status_code", "content_hash", "error_reason")
+
+
+def canonical_relay_json(data: dict[str, Any]) -> bytes:
+    """Serialize relay-dispatch row data to canonical JSON: sorted keys, no whitespace, UTF-8.
+
+    Only RELAY_CANONICAL_FIELDS are included (missing → None, to prevent omission attacks).
+    Each _RELAY_OPTIONAL_FIELDS member is appended ONLY when not None.
+    """
+    filtered: dict[str, Any] = {k: data.get(k) for k in RELAY_CANONICAL_FIELDS}
+    for field in _RELAY_OPTIONAL_FIELDS:
+        if data.get(field) is not None:
+            filtered[field] = data[field]
+    return json.dumps(filtered, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+
+
+def compute_relay_row_hash(data: dict[str, Any]) -> str:
+    """Return the 64-char lowercase SHA-256 hex digest of the canonical JSON of *data*.
+
+    *data* MUST include 'prev_hash'.
+    """
+    if "prev_hash" not in data:
+        raise ValueError("row data must include 'prev_hash' to compute row_hash")
+    return hashlib.sha256(canonical_relay_json(data)).hexdigest()
+
+
+def verify_relay_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
+    """Recompute and compare the relay row_hash for a single row. True iff it matches."""
+    return compute_relay_row_hash(row_data) == stored_hash

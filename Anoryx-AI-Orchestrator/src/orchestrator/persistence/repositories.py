@@ -649,6 +649,115 @@ async def validate_registry_chain(session: AsyncSession) -> bool:
     return True
 
 
+# --------------------------------------------------------------------------- #
+# Relay-dispatch audit chain (O-009, ADR-0009) — privileged session, no RLS.
+# --------------------------------------------------------------------------- #
+
+# Distinct transaction-scoped advisory-lock key for the relay-chain append (a stable
+# bigint from a domain label, distinct from the ingest/distribution/registry keys).
+_RELAY_CHAIN_LOCK_KEY = int.from_bytes(
+    hashlib.sha256(b"anoryx-orchestrator:relay-audit-chain").digest()[:8],
+    "big",
+    signed=True,
+)
+
+
+async def relay_chain_tip_hash(session: AsyncSession) -> str:
+    """Return the most-recent relay_audit_log row_hash, or RELAY_GENESIS_HASH."""
+    result = await session.execute(
+        text("SELECT row_hash FROM relay_audit_log ORDER BY sequence_number DESC LIMIT 1")
+    )
+    tip = result.scalar_one_or_none()
+    return tip if tip is not None else hash_chain.RELAY_GENESIS_HASH
+
+
+async def append_relay_audit_link(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    source_product: str,
+    sentinel_id: str,
+    target_path: str,
+    disposition: str,
+    status_code: int | None = None,
+    content_hash: str | None = None,
+    error_reason: str | None = None,
+) -> str:
+    """Append one hash-chained relay_audit_log link (privileged session).
+
+    Caller opens the privileged transaction (`async with session.begin()`). A
+    transaction-scoped advisory lock (own key) serialises concurrent appends so prev_hash
+    always references the true tip. Returns the new row_hash. status_code/content_hash/
+    error_reason follow the opt-in-when-present hash rule (hashed iff not None).
+    """
+    from orchestrator.persistence.models.relay_audit_log import RelayAuditLog
+
+    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _RELAY_CHAIN_LOCK_KEY})
+    prev_hash = await relay_chain_tip_hash(session)
+    row = {
+        "tenant_id": tenant_id,
+        "source_product": source_product,
+        "sentinel_id": sentinel_id,
+        "target_path": target_path,
+        "disposition": disposition,
+        "status_code": status_code,
+        "content_hash": content_hash,
+        "error_reason": error_reason,
+        "prev_hash": prev_hash,
+    }
+    row["row_hash"] = hash_chain.compute_relay_row_hash(row)
+    await session.execute(insert(RelayAuditLog).values(**row))
+    return row["row_hash"]
+
+
+async def validate_relay_chain(session: AsyncSession) -> bool:
+    """Re-validate the full relay-dispatch chain in order: each row_hash recomputes + links.
+
+    Returns True iff every link verifies. O(n) — privileged session (the chain is global).
+
+    FAIL-LOUD (mirrors validate_registry_chain, audit L-2): relay_audit_log carries no RLS,
+    but a non-BYPASSRLS role lacks even SELECT here, so assert the role bypasses RLS first
+    (a privileged session) rather than risk a vacuous pass over an empty/denied read.
+    """
+    from orchestrator.persistence.models.relay_audit_log import RelayAuditLog
+
+    bypass = (
+        await session.execute(
+            text(
+                "SELECT bool_or(rolbypassrls OR rolsuper) FROM pg_roles "
+                "WHERE rolname = current_user"
+            )
+        )
+    ).scalar()
+    if not bypass:
+        raise RuntimeError(
+            "validate_relay_chain requires a BYPASSRLS/superuser privileged session; a "
+            "non-bypass role sees a denied/empty read and would falsely report integrity."
+        )
+    result = await session.execute(
+        select(RelayAuditLog).order_by(RelayAuditLog.sequence_number.asc())
+    )
+    expected_prev = hash_chain.RELAY_GENESIS_HASH
+    for row in result.scalars():
+        if row.prev_hash != expected_prev:
+            return False
+        row_data = {
+            "tenant_id": row.tenant_id,
+            "source_product": row.source_product,
+            "sentinel_id": row.sentinel_id,
+            "target_path": row.target_path,
+            "disposition": row.disposition,
+            "status_code": row.status_code,
+            "content_hash": row.content_hash,
+            "error_reason": row.error_reason,
+            "prev_hash": row.prev_hash,
+        }
+        if not hash_chain.verify_relay_row_hash(row_data, row.row_hash):
+            return False
+        expected_prev = row.row_hash
+    return True
+
+
 # =========================================================================== #
 # Per-tenant query principal + tenant-scoped metadata read seams (O-006, ADR-0006) —
 # ADDITIVE, parallel to the blocks above. The principal resolver runs on the PRIVILEGED
