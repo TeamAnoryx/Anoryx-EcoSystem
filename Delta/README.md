@@ -168,6 +168,35 @@ exists anywhere in this ecosystem to build one against. See
   invariant, unchanged). No forecast-accuracy tracking is built (nothing persists a prediction to
   later compare against reality) — real, valuable future work this task does not claim to deliver.
 
+## D-012 — Chargeback / Showback + Anomaly Detection
+
+D-012 attributes cost to a department (team/project/agent) over a window — a chargeback/showback
+report, informational only, never an authoritative bill — and flags groups whose current spend
+looks unusual relative to their own trailing baseline average. Anomaly detection is a fixed-multiple
+ratio comparison (`current window spend / trailing N-period average`), deliberately **not** a
+z-score/stddev or trained/validated statistical/ML model — same "no ecosystem precedent to build one
+against" reasoning D-011's ADR already established. See
+[`docs/adr/0012-delta-chargeback-anomaly-detection.md`](docs/adr/0012-delta-chargeback-anomaly-detection.md).
+
+- **Backend:** `src/delta/chargeback/` — `anomaly.py` (pure trailing-average-ratio detection, no
+  I/O), `schemas.py` (`ChargebackQuery`/`AnomalyQuery`, bounded window + bounded total baseline
+  span), `service.py` (orchestration — reuses D-008's `dashboards.store.top_spenders` unchanged;
+  exactly 2 DB queries total for an anomaly report, never one per group).
+- **New endpoints:** `GET /v1/admin/chargeback/report` (spend + `share_pct` per group) and
+  `GET /v1/admin/chargeback/anomalies` (`SPEND_SPIKE`/`NEW_SPENDER` flags, `method:
+  "trailing_average_ratio_v1"`) on the same D-007 admin app.
+- **Frontend:** `/chargeback` page — filter form (tenant, window, baseline periods, optional
+  team/project/agent scope), stat tiles (total spend, departments, anomalies flagged), a chargeback
+  report table, and an anomalies table with a severity-colored signal badge.
+- **Zero new migration** — every report is computed live from `ledger_entries` (D-003) via
+  `top_spenders`; nothing is persisted or historized.
+- **Honesty boundary:** `method: "trailing_average_ratio_v1"` is always returned — a literal,
+  versioned tag naming the technique honestly, mirroring D-011's `method` field. Chargeback figures
+  are the same client-side cost estimates the rest of Delta already is — informational
+  cost-attribution, never a real invoice (Delta has no billing/AR system). Only groups with cost
+  OVERRUNS are flagged (no underspend/`SPEND_DROP` signal) and no anomaly-acknowledgment workflow
+  exists — both named as real, deferred future work, not silently omitted.
+
 ## Layout
 
 ```
@@ -176,6 +205,7 @@ src/delta/persistence/audit_log.py  D-009 hash-chained audit log (append_history
 src/delta/allocation_admin/  D-007 budget-allocation admin API (propose/approve/reject, history)
 src/delta/dashboards/        D-008 read-only spend aggregates (summary, time series, top spenders)
 src/delta/forecasting/       D-011 current-rate budget-forecast projection + advisory recommendations
+src/delta/chargeback/        D-012 departmental chargeback/showback + trailing-average anomaly detection
 frontend/         D-007/D-008 Next.js admin console (BFF-only, see frontend/README.md)
 contracts/        Delta-owned JSON Schemas (Draft 2020-12, additionalProperties:false)
 tests/            non-stubbed proofs of every invariant + the Budget round-trip

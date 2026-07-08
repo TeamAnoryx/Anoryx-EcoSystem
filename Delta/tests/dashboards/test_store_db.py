@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from delta.dashboards.store import ScopeFilter, spend_summary, spend_time_series, top_spenders
+from delta.dashboards.store import (
+    ScopeFilter,
+    spend_for_groups,
+    spend_summary,
+    spend_time_series,
+    top_spenders,
+)
 from delta.persistence.database import get_tenant_session
 
 from .conftest import db_required
@@ -121,6 +127,54 @@ async def test_top_spenders_ranks_by_cost_desc(tenant_id, seed_usage) -> None:
 
 
 @db_required
+async def test_spend_for_groups_returns_only_requested_keys(tenant_id, seed_usage) -> None:
+    agent_a, agent_b, agent_c = "agent-a", "agent-b", "agent-c"
+    await seed_usage(tenant_id=tenant_id, agent_id=agent_a, cost_cents=1_000)
+    await seed_usage(tenant_id=tenant_id, agent_id=agent_b, cost_cents=2_000)
+    await seed_usage(tenant_id=tenant_id, agent_id=agent_c, cost_cents=3_000)
+
+    async with get_tenant_session(tenant_id) as session:
+        rows = await spend_for_groups(
+            session, start=_START, end=_END, group_by="agent_id", group_keys=[agent_a, agent_c]
+        )
+
+    by_key = {r.group_key: r.cost_cents for r in rows}
+    assert by_key == {agent_a: 1_000, agent_c: 3_000}  # agent_b never requested, never returned
+
+
+@db_required
+async def test_spend_for_groups_does_not_rank_or_limit(tenant_id, seed_usage) -> None:
+    # Unlike top_spenders, every requested group is returned regardless of rank —
+    # this is the whole point (D-012 security audit finding #1: a group present in a
+    # DIFFERENT window's top-N must not be silently dropped just because it wouldn't
+    # independently rank in THIS window's own top-N).
+    agent_low, agent_high = "low-spender", "high-spender"
+    await seed_usage(tenant_id=tenant_id, agent_id=agent_low, cost_cents=1)
+    await seed_usage(tenant_id=tenant_id, agent_id=agent_high, cost_cents=99_999)
+
+    async with get_tenant_session(tenant_id) as session:
+        rows = await spend_for_groups(
+            session,
+            start=_START,
+            end=_END,
+            group_by="agent_id",
+            group_keys=[agent_low, agent_high],
+        )
+
+    assert {r.group_key for r in rows} == {agent_low, agent_high}
+
+
+@db_required
+async def test_spend_for_groups_empty_keys_returns_empty_without_querying(tenant_id) -> None:
+    async with get_tenant_session(tenant_id) as session:
+        rows = await spend_for_groups(
+            session, start=_START, end=_END, group_by="agent_id", group_keys=[]
+        )
+
+    assert rows == []
+
+
+@db_required
 async def test_cross_tenant_spend_is_isolated(tenant_id, other_tenant_id, seed_usage) -> None:
     await seed_usage(tenant_id=tenant_id, cost_cents=5_000)
     await seed_usage(tenant_id=other_tenant_id, cost_cents=7_000)
@@ -129,3 +183,20 @@ async def test_cross_tenant_spend_is_isolated(tenant_id, other_tenant_id, seed_u
         row = await spend_summary(session, start=_START, end=_END)
 
     assert row.total_cost_cents == 5_000  # tenant B's spend never leaks in (RLS)
+
+
+@db_required
+async def test_spend_for_groups_cross_tenant_isolation(
+    tenant_id, other_tenant_id, seed_usage
+) -> None:
+    shared_agent = "shared-agent-id"
+    await seed_usage(tenant_id=tenant_id, agent_id=shared_agent, cost_cents=1_000)
+    await seed_usage(tenant_id=other_tenant_id, agent_id=shared_agent, cost_cents=9_000)
+
+    async with get_tenant_session(tenant_id) as session:
+        rows = await spend_for_groups(
+            session, start=_START, end=_END, group_by="agent_id", group_keys=[shared_agent]
+        )
+
+    assert len(rows) == 1
+    assert rows[0].cost_cents == 1_000  # tenant B's spend on the same group_key never leaks in

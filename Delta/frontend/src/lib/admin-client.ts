@@ -6,8 +6,10 @@ import type {
   AllocationCreateRequest,
   AllocationStatus,
   AllocationView,
+  AnomalyReportView,
   ApprovalDecisionRequest,
   ChangeHistoryEntryView,
+  ChargebackReportView,
   DashboardBucket,
   DashboardGroupDimension,
   DashboardScope,
@@ -151,6 +153,49 @@ export const adminApi = {
         end,
         group_by: groupBy,
         limit,
+        team_id: scope.team_id,
+        project_id: scope.project_id,
+        agent_id: scope.agent_id,
+      },
+    }),
+
+  // D-012 chargeback/showback + anomaly detection — same RFC3339 start/end (UTC) +
+  // scope shape as the D-008 dashboards, group_by is required (not optional-with-
+  // default like getTopSpenders — a chargeback report always needs a department axis).
+  getChargebackReport: (
+    tenantId: string,
+    start: string,
+    end: string,
+    groupBy: DashboardGroupDimension,
+    scope: DashboardScope = {},
+  ) =>
+    adminFetch<ChargebackReportView>("/chargeback/report", {
+      query: {
+        tenant_id: tenantId,
+        start,
+        end,
+        group_by: groupBy,
+        team_id: scope.team_id,
+        project_id: scope.project_id,
+        agent_id: scope.agent_id,
+      },
+    }),
+
+  getAnomalies: (
+    tenantId: string,
+    start: string,
+    end: string,
+    groupBy: DashboardGroupDimension,
+    baselinePeriods = 7,
+    scope: DashboardScope = {},
+  ) =>
+    adminFetch<AnomalyReportView>("/chargeback/anomalies", {
+      query: {
+        tenant_id: tenantId,
+        start,
+        end,
+        group_by: groupBy,
+        baseline_periods: baselinePeriods,
         team_id: scope.team_id,
         project_id: scope.project_id,
         agent_id: scope.agent_id,

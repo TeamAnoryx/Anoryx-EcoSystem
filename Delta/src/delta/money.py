@@ -66,7 +66,13 @@ def bounded_count(value: object, field_name: str, maximum: int) -> int:
 
 
 def require_aware_utc(value: datetime, field_name: str) -> datetime:
-    """Require a timezone-aware datetime (the wire is RFC 3339 UTC)."""
+    """Require a timezone-AWARE datetime (the wire convention is RFC 3339 UTC).
+
+    Only rejects an ambiguous NAIVE value (no offset at all, which could silently be
+    misread as local time); any aware offset is accepted as-is and is an unambiguous
+    instant regardless of which offset it carries — this does not additionally require
+    the offset itself to be zero/UTC.
+    """
     if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
         raise ValueError(f"{field_name} must be timezone-aware (UTC)")
     return value

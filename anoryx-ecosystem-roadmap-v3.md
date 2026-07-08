@@ -720,7 +720,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-009 Immutable financial-workflow audit trails ✅ (shipped PR #68)
 - [x] D-010 Deployment ✅ (shipped PR #71)
 - [x] D-011 Predictive SaaS/cloud budget optimization ✅ (shipped PR #77)
-- [ ] D-012 Chargeback/showback + anomaly detection — Tricky (12-16h) ➕
+- [x] D-012 Chargeback/showback + anomaly detection ✅ (shipped PR TBD)
 - [ ] D-013 Unified CRM — Heavy 🏦
 - [ ] D-014 Comprehensive ERP engine — Heavy 🏦
 - [ ] D-015 AI-driven project management — Complex 🏦
