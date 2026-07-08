@@ -1,0 +1,17 @@
+apiVersion: v2
+name: rendly
+description: Rendly — secure enterprise communication (auth, profiles, real-time chat, 1-on-1 huddles, Sentinel-safety inspection, immutable archiving) (R-010, ADR-0010)
+type: application
+# Chart version is independent of the app version (SemVer for the chart itself).
+version: 0.1.0
+# appVersion tracks the Rendly release (single source of truth: pyproject.toml).
+appVersion: "1.0.0"
+keywords:
+  - secure-comms
+  - real-time-chat
+  - webrtc-huddles
+home: https://github.com/TeamAnoryx/anoryx-ecosystem
+sources:
+  - https://github.com/TeamAnoryx/anoryx-ecosystem
+maintainers:
+  - name: Anoryx

@@ -1,0 +1,125 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rendly.fullname" . }}
+  labels:
+    {{- include "rendly.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "rendly.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: rendly
+  template:
+    metadata:
+      labels:
+        {{- include "rendly.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: rendly
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "rendly.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # Gate serving on the schema being at head. wait-for-migrate polls `alembic current` so
+      # no replica serves an un-migrated DB and none races the migrate Job.
+      initContainers:
+        {{- include "rendly.waitForPostgres" . | nindent 8 }}
+        {{- include "rendly.waitForMigrate" . | nindent 8 }}
+      containers:
+        - name: rendly
+          image: {{ include "rendly.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: RENDLY_WORKERS
+              value: {{ .Values.workers | quote }}
+            - name: RENDLY_PORT
+              value: {{ .Values.service.port | quote }}
+            # Bundled Postgres: connection PARTS + password via secretKeyRef (kept OUT of the
+            # pod spec). The entrypoint shim assembles DATABASE_URL / APP_DATABASE_URL.
+            # External mode (bundled=false) supplies full URLs via envSecret instead.
+            {{- include "rendly.pgEnv" . | nindent 12 }}
+            {{- if .Values.stunUrls }}
+            - name: RENDLY_STUN_URLS
+              value: {{ .Values.stunUrls | quote }}
+            {{- end }}
+            {{- if .Values.turnUrls }}
+            - name: RENDLY_TURN_URLS
+              value: {{ .Values.turnUrls | quote }}
+            {{- end }}
+            {{- range .Values.env }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if or .Values.envSecret .Values.createEnvSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ include "rendly.envSecretName" . }}
+          {{- end }}
+          # readOnlyRootFilesystem=true → provide writable scratch dirs.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: run
+              mountPath: /run
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            # Rendly exposes a single /health endpoint today (no DB-gated /readyz split
+            # yet — a documented deferral, ADR-0010 §Honest deferrals, mirroring the
+            # Orchestrator's own ADR-0008 Fork G).
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            # Grace for cold start / migration-gated readiness (up to ~120s).
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 24
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

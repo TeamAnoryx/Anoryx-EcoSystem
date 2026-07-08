@@ -1,29 +1,30 @@
-# docker-compose.yml — Rendly identity-persistence local-dev / fresh-compose-up stack (R-004).
+# docker-compose.yml — Rendly local-dev / fresh-compose-up stack (R-010, ADR-0010).
 #
-# Topology (Fork A — OWNED schema): Rendly runs its OWN Postgres for local/CI here. Production
-# can point Rendly at a shared instance's `rendly` schema with no code change. The host port is
-# 5546 (Sentinel uses 5432/5433, Delta uses 5544) so the bundled stacks never collide.
+# Topology (Fork A — OWNED schema, unchanged from R-004): Rendly runs its OWN Postgres for
+# local/CI here. Production can point Rendly at a shared instance's `rendly` schema with no
+# code change. The host port is 5546 (Sentinel uses 5432/5433, Delta uses 5544, Orchestrator
+# uses 5434) so the bundled stacks never collide.
 #
-# Local-dev passwords use ${VAR:-default} substitution. NEVER commit real creds; production
-# injects them from Vault/KMS. The bundled stack shares the password across both roles — RLS is
-# enforced by the role privilege (rendly_app is NOBYPASSRLS), not by the password.
+# Secrets: file-based Docker secrets (mirrors Anoryx-Sentinel F-010 / Orchestrator O-008),
+# not environment variables. The rendly-app entrypoint reads these at /run/secrets/* and
+# assembles the connection URLs / signing key at startup — no secret ever appears in this
+# file, the container `environment:`, or `docker inspect` output.
 #
 # QUICK START:
-#   docker compose up -d --build      # postgres + one-shot migrate/provision
-#   # rendly-migrate exits 0 once the schema + rendly_app password are in place.
-# Teardown + clean volume:  docker compose down -v
+#   1. bash deploy/secrets/gen-dev-secrets.sh
+#   2. docker compose up -d --build
+#   3. Wait for rendly-app healthy
+#   4. curl http://localhost:8082/health
 #
-# Matching connection strings for a local test run (or export them and run pytest directly):
-#   DATABASE_URL=postgresql://rendly:rendly@localhost:5546/rendly_dev          (privileged owner)
-#   APP_DATABASE_URL=postgresql://rendly_app:rendly@localhost:5546/rendly_dev  (rendly_app)
-#   RENDLY_PROVISION_APP_ROLE=1
+# Teardown:                   docker compose down
+# Teardown + remove volumes:  docker compose down -v
 
 services:
   postgres:
     image: postgres:16-alpine
     container_name: rendly-postgres
     ports:
-      - "5546:5432"            # host 5546 avoids clashes with Sentinel (5432/5433) + Delta (5544)
+      - "5546:5432"            # host 5546 avoids clashes with Sentinel/Delta/Orchestrator
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-rendly}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rendly}
@@ -40,27 +41,53 @@ services:
     networks:
       - rendly-net
 
-  # One-shot: runs `alembic upgrade head` then provisions the rendly_app SCRAM password
-  # (RUN_MIGRATIONS=1, RENDLY_PROVISION_APP_ROLE=1 baked into the image). Exits 0 when the
-  # fresh DB is migrated AND a rendly_app login is possible.
-  rendly-migrate:
+  # ----------------------------------------------------------------------- #
+  # R-010 — Rendly app. Builds from the repo Dockerfile. Runs `alembic       #
+  # upgrade head` + provisions the rendly_app SCRAM password on startup     #
+  # (compose convenience; Kubernetes uses a dedicated migrate Job instead), #
+  # then serves the full chat app (auth + persistence + realtime) over      #
+  # uvicorn. Reads file-based Docker secrets at /run/secrets/* — passwords/ #
+  # keys are NEVER set as environment variables here.                       #
+  # ----------------------------------------------------------------------- #
+  rendly-app:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        VERSION: "1.0.0"
     image: anoryx-rendly:1.0.0
-    container_name: rendly-migrate
+    container_name: rendly-app
     depends_on:
       postgres:
         condition: service_healthy
     environment:
+      # Non-secret config only.
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
       POSTGRES_USER: ${POSTGRES_USER:-rendly}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rendly}
       POSTGRES_DB: ${POSTGRES_DB:-rendly_dev}
+      RENDLY_WORKERS: ${RENDLY_WORKERS:-1}
+      # Compose convenience: run alembic upgrade head + provision the app role on startup
+      # (Kubernetes uses a dedicated migration Job instead).
       RUN_MIGRATIONS: "1"
       RENDLY_PROVISION_APP_ROLE: "1"
-    restart: "no"
+      # Self-hosted STUN/TURN bootstrap (R-007) — non-secret URLs; unset means STUN-only
+      # ICE (no TURN relay offered). RENDLY_TURN_SHARED_SECRET (sensitive, optional) is
+      # deliberately NOT wired into this dev compose — see deploy/secrets/README.md.
+      RENDLY_STUN_URLS: ${RENDLY_STUN_URLS:-}
+      RENDLY_TURN_URLS: ${RENDLY_TURN_URLS:-}
+    secrets:
+      - postgres_password
+      - rendly_jwt_private_key_pem
+    ports:
+      - "8082:8082"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://localhost:8082/health', timeout=3).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
     networks:
       - rendly-net
 
@@ -70,3 +97,12 @@ networks:
 
 volumes:
   rendly-postgres-data:
+
+# File-based Docker secrets. The rendly-app entrypoint reads these at /run/secrets/* and
+# assembles the connection URLs / signing key. Generate the files first:
+#   bash deploy/secrets/gen-dev-secrets.sh
+secrets:
+  postgres_password:
+    file: ./deploy/secrets/postgres_password
+  rendly_jwt_private_key_pem:
+    file: ./deploy/secrets/rendly_jwt_private_key_pem
