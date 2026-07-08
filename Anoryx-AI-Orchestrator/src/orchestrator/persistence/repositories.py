@@ -1332,12 +1332,47 @@ async def insert_automation_rule(session: AsyncSession, row: dict[str, Any]) -> 
     return {c.name: getattr(inserted, c.name) for c in AutomationRule.__table__.columns}
 
 
+# Distinct transaction-scoped advisory-lock NAMESPACE for the per-tenant rule-cap lock
+# (TOCTOU fix, code-reviewer + security-auditor O-011 follow-up). This uses the pg
+# pg_advisory_xact_lock(int, int) TWO-ARG overload — a fixed namespace plus a per-tenant
+# hashtext(...) key — which is a DIFFERENT PostgreSQL function overload from the
+# single-bigint pg_advisory_xact_lock(:k) form every chain-append lock above uses
+# (_CHAIN_LOCK_KEY / _DISTRIBUTION_CHAIN_LOCK_KEY / _REGISTRY_CHAIN_LOCK_KEY /
+# _RELAY_CHAIN_LOCK_KEY / _IDENTITY_CHAIN_LOCK_KEY / _AUTOMATION_CHAIN_LOCK_KEY), so this
+# lock can never collide with any of those fixed-key chain-append locks.
+_AUTOMATION_RULE_CAP_LOCK_NAMESPACE = int.from_bytes(
+    hashlib.sha256(b"anoryx-orchestrator:automation-rule-cap").digest()[:4],
+    "big",
+    signed=True,
+)
+
+
+async def lock_automation_rule_cap(session: AsyncSession, tenant_id: str) -> None:
+    """Take a transaction-scoped, PER-TENANT advisory lock before the rule-cap COUNT.
+
+    Closes a TOCTOU race: concurrent `POST /v1/automation/rules` requests for the SAME
+    tenant, with DISTINCT rule names (so UNIQUE(tenant_id, name) does not serialise them),
+    could otherwise both COUNT before either INSERTs, racing past
+    ORCH_AUTOMATION_MAX_RULES_PER_TENANT. Locking PER TENANT (via `hashtext(tenant_id)`,
+    not a single fixed key) means concurrent creates for DIFFERENT tenants never contend
+    with each other. The caller MUST call this INSIDE the same transaction as the
+    subsequent COUNT + INSERT (the lock auto-releases at COMMIT/ROLLBACK) — never wrapped
+    in its own `session.begin()` (the tenant session already autobegins).
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:ns, hashtext(:tenant_id))"),
+        {"ns": _AUTOMATION_RULE_CAP_LOCK_NAMESPACE, "tenant_id": tenant_id},
+    )
+
+
 async def count_automation_rules(session: AsyncSession) -> int:
     """Count this tenant's automation_rules rows (tenant session, RLS-scoped).
 
     Used at rule-creation time to enforce the per-tenant cap
     (ORCH_AUTOMATION_MAX_RULES_PER_TENANT) BEFORE the insert — exceeding it is a 422
-    `rule_limit_exceeded`, never a 5xx.
+    `rule_limit_exceeded`, never a 5xx. The caller takes `lock_automation_rule_cap` in the
+    SAME transaction immediately before calling this, so a concurrent creator for the same
+    tenant can never COUNT a stale value and race past the cap (TOCTOU fix).
     """
     result = await session.execute(text("SELECT count(*) FROM automation_rules"))
     return int(result.scalar_one())

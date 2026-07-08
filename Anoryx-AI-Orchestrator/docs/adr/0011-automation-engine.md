@@ -115,6 +115,15 @@ ONE `automation_executions` link via `get_privileged_session()` + `session.begin
 - **Dispatched only via this run's explicit authorization to build post-investment
   tasks** (mirrors ADR-0009/ADR-0010's identical disclosure) — the roadmap's own 🏦 label
   means this was not scheduled as next-buildable MVP work.
+- **Enabling automation extends the ingest peer secret's practical authority from
+  record-only to trigger-a-distribution-redrive for every opted-in tenant; this is a real
+  trust-boundary shift an operator should weigh before setting
+  `ORCH_AUTOMATION_ENABLED=true`, not merely a hypothetical** (security-auditor follow-up
+  — see the Threat model and Residual risk sections for the full statement). This is not a
+  re-architecture: there is no interactive tenant credential available at ingest time to
+  require instead without defeating the entire point of an event-triggered automation
+  engine, so the default-off master switch (Fork E) is the primary, and currently only,
+  mitigation.
 
 ## Threat model
 
@@ -127,6 +136,7 @@ ONE `automation_executions` link via `get_privileged_session()` + `session.begin
 | Default-off blast radius | Fork E: `ORCH_AUTOMATION_ENABLED` defaults to `false` — an unconfigured or freshly upgraded deployment never auto-triggers anything; an operator must explicitly opt in. |
 | Chaining/cascade turning one event into an unbounded cascade of triggered actions | Fork D: no code path from `drive_distribution` (or anywhere in this module) back into `ingest.router` or `automation.engine` — structurally, not conventionally, acyclic. |
 | Tamper on the automation-execution audit chain | Append-only via BEFORE UPDATE/DELETE deny triggers + SHA-256 hash chain (mirrors every other Orchestrator chain); `validate_automation_chain` re-verifies the full chain. |
+| **Ingest peer secret gains cross-tenant, on-demand trigger authority for opted-in tenants' distribution re-drives** (security-auditor follow-up, named here honestly, not re-architected) | `evaluate_and_execute` acts on the ingest envelope's own asserted `payload.tenant_id` — not a tenant's own service-token credential — to look up and act on that tenant's automation rules. A holder of the shared ingest peer HMAC secret (previously usable only to durably RECORD an event) can therefore now, for ANY opted-in tenant, TRIGGER that tenant's own already-authorized `redistribute_policy` action on demand, without ever holding that tenant's own credential. Mitigated PRIMARILY by Fork E's default-off `ORCH_AUTOMATION_ENABLED=false`: an operator who flips it to `true` is knowingly, explicitly extending trust in the shared ingest peer secret from "can record events" to "can trigger this opted-in tenant's own already-authorized distribution re-drives on demand." This is BOUNDED — Fork F still closes any CROSS-tenant confused-deputy (a rule can only ever re-drive ITS OWN tenant's own pre-existing, already-signed distribution) — but Fork F does NOT change WHO can pull the trigger for a tenant that has opted in; that is a genuinely new authority the ingest secret gains, not a hypothetical one. There is no interactive tenant credential available at ingest time to require instead without defeating the entire point of an event-triggered automation engine, so this is named as a residual, weighed trade-off, not redesigned in this PR. |
 
 ## Residual risk (known, deferred)
 
@@ -150,6 +160,16 @@ ONE `automation_executions` link via `get_privileged_session()` + `session.begin
 - **This is not the roadmap's full O-011 vision** — it is the smallest honest, buildable
   slice: a rule-based re-trigger of ONE existing action, named as such, not something
   broader.
+- **Enabling automation extends the ingest peer secret's practical authority from
+  record-only to trigger-a-distribution-redrive for every opted-in tenant** (security-auditor
+  follow-up). Before O-011, a holder of the shared ingest peer HMAC secret could durably
+  RECORD an event on a tenant's behalf, nothing more. After O-011, with
+  `ORCH_AUTOMATION_ENABLED=true`, the SAME secret can cause that tenant's own opted-in
+  automation rules to FIRE — an on-demand trigger of an already-authorized action, for any
+  tenant that has created a matching rule, without holding that tenant's own credential.
+  Fork F bounds this to the tenant's OWN pre-existing, already-signed distribution (no
+  cross-tenant confused deputy), but it does not change who can pull the trigger. This is a
+  real trust-boundary shift, not a hypothetical one.
 
 ## Configuration
 

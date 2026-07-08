@@ -15,6 +15,12 @@ persistence (ADR-0011). Two tables:
                           trigger exactly one closed `action_type` ('redistribute_policy'
                           in v1). App-role INSERT/SELECT/UPDATE/DELETE (RLS-scoped);
                           UNIQUE(tenant_id, name) makes rule names unique per tenant.
+                          `trigger_conditions`'s scalar-only shape (ADR-0011 Fork B) is
+                          backed by a DB-level CHECK (`ck_ar_trigger_conditions_scalar_only`,
+                          a verified-working `jsonb_path_exists` STRICT-mode SQL/JSON path
+                          filter — NOT the `jsonb_each`/`EXISTS` idiom, which Postgres
+                          categorically rejects inside a CHECK constraint), not merely an
+                          app-layer promise.
   automation_executions  — GLOBAL tamper-evident hash chain (mirrors
                           distribution_audit_log/0002: privileged writes, RLS scopes
                           SELECT to the row's own tenant_id — UNLIKE relay_audit_log/
@@ -55,6 +61,23 @@ _SOURCE_PRODUCTS = "'sentinel','delta','rendly'"
 _DISPOSITIONS = "'executed','failed'"
 _NULLIF_PREDICATE = "tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')"
 
+# DB-level structural CHECK for trigger_conditions (code-reviewer follow-up, item 6): the
+# ADR claims the condition language is closed "structurally," so this backs the app-layer
+# scalar-only validation with a real constraint, not merely an app-layer promise.
+#
+# `jsonb_each`/`EXISTS (SELECT ...)` — the obvious first idiom — is NOT usable here:
+# PostgreSQL categorically rejects a subquery inside a CHECK constraint ("cannot use
+# subquery in check constraint"), confirmed empirically against a live Postgres before
+# writing this. `jsonb_path_exists` with a STRICT SQL/JSON path filter is the verified
+# working alternative — verified round-tripping on a live Postgres (INSERT of a
+# scalar-only dict succeeds; INSERT of a dict containing a nested object/array value
+# raises exactly this constraint violation). LAX mode (the default) silently unwraps an
+# array value's own elements before `.type()` sees it, so `@.type() == 'array'` never
+# matches a nested array under lax mode — `strict` is required for correctness here.
+_TRIGGER_CONDITIONS_SCALAR_ONLY_PATH = (
+    """strict $.* ? (@.type() == "object" || @.type() == "array")"""
+)
+
 
 def upgrade() -> None:
     conn = op.get_bind()
@@ -94,6 +117,11 @@ def upgrade() -> None:
         sa.CheckConstraint(
             f"trigger_source_product IS NULL OR trigger_source_product IN ({_SOURCE_PRODUCTS})",
             name="ck_ar_trigger_source_product",
+        ),
+        sa.CheckConstraint(
+            f"NOT jsonb_path_exists(trigger_conditions, "
+            f"'{_TRIGGER_CONDITIONS_SCALAR_ONLY_PATH}')",
+            name="ck_ar_trigger_conditions_scalar_only",
         ),
         sa.UniqueConstraint("tenant_id", "name", name="uq_ar_tenant_name"),
     )

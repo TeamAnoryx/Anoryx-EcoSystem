@@ -137,3 +137,22 @@ def test_non_dict_payload_never_matches_nonempty_conditions_and_never_raises():
     assert not rule_matches(
         rule, event_type="policy_decision_deny", source_product="sentinel", payload="not-a-dict"
     )
+
+
+def test_int_one_condition_does_not_match_bool_true_payload_value():
+    # bool is a subclass of int in Python (1 == True), but a rule author expects strict
+    # JSON-type equality: a condition of 1 must never match a payload value of true.
+    rule = _rule(trigger_conditions={"flag": 1})
+    payload = {"flag": True}
+    assert not rule_matches(
+        rule, event_type="policy_decision_deny", source_product="sentinel", payload=payload
+    )
+
+
+def test_bool_true_condition_does_not_match_int_one_payload_value():
+    # The reverse direction of the same conflation (0 == False also holds in Python).
+    rule = _rule(trigger_conditions={"flag": True})
+    payload = {"flag": 1}
+    assert not rule_matches(
+        rule, event_type="policy_decision_deny", source_product="sentinel", payload=payload
+    )

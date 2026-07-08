@@ -29,12 +29,14 @@ def rule_matches(rule: dict, *, event_type: str, source_product: str, payload: d
       1. event_type == rule["trigger_event_type"].
       2. rule["trigger_source_product"] is None, OR it equals source_product.
       3. every key in rule["trigger_conditions"] exists in payload with an EXACTLY EQUAL
-         scalar value (`==` on JSON-decoded values). A condition value or the
-         corresponding payload value that is a dict/list NEVER matches (treated as
-         non-matching, never raises) — this is a hard security invariant, not merely a
-         convenience: it prevents a condition language from ever comparing structured
-         data, which is the only shape an injection/operator-smuggling attempt could take
-         here.
+         scalar value (`==` on JSON-decoded values, with STRICT JSON-type equality between
+         bool and int/float — `1` never matches `true`, and `0` never matches `false`,
+         even though Python's `1 == True`/`0 == False` are both `True`, because `bool` is
+         a subclass of `int`). A condition value or the corresponding payload value that
+         is a dict/list NEVER matches (treated as non-matching, never raises) — this is a
+         hard security invariant, not merely a convenience: it prevents a condition
+         language from ever comparing structured data, which is the only shape an
+         injection/operator-smuggling attempt could take here.
 
     Empty trigger_conditions (the default, `{}`) always matches within the same
     event_type/source_product — there is nothing to check.
@@ -56,6 +58,12 @@ def rule_matches(rule: dict, *, event_type: str, source_product: str, payload: d
             return False
         actual = payload[key]
         if not _is_scalar(actual):
+            return False
+        # bool is a subclass of int in Python (1 == True, 0 == False both evaluate True),
+        # so without this guard a trigger_conditions value of 1 would match a payload
+        # value of true (and vice versa) — a same-tenant semantic-correctness surprise,
+        # not a trust-boundary issue, but a rule author expects strict JSON-type equality.
+        if isinstance(actual, bool) != isinstance(expected, bool):
             return False
         if actual != expected:
             return False

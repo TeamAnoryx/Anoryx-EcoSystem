@@ -11,13 +11,22 @@ duplicate name — never a 5xx for an ordinary validation failure):
      (schema_validation.known_event_types(), reused — not a hand-invented allow-list) ->
      unknown_event_type
   3. trigger_source_product, if present, must be a known source product -> unknown_source_product
-  4. trigger_conditions values must all be JSON scalars (str/int/float/bool) -> schema_invalid
+  4. trigger_conditions values must all be JSON scalars (str/int/float/bool) -> schema_invalid,
+     bounded by a defense-in-depth cap (at most _MAX_TRIGGER_CONDITIONS_KEYS keys and
+     _MAX_TRIGGER_CONDITIONS_BYTES serialized bytes) -> trigger_conditions_too_large.
+     A deeply-nested JSON body can raise RecursionError from json.loads() or the
+     contains_nul() recursive walk before this validation is even reached — both call
+     sites catch RecursionError narrowly and return 422 schema_invalid (never an uncaught
+     500 from the app's fail-safe handler).
   5. action_type must be exactly "redistribute_policy" (v1's one supported action) ->
      unknown_action_type
   6. action_config must be {"distribution_id": <non-empty string>} and that distribution
      must belong to THIS tenant (get_distribution under get_tenant_session(principal)) ->
      distribution_not_found
   7. the per-tenant rule cap (ORCH_AUTOMATION_MAX_RULES_PER_TENANT) -> rule_limit_exceeded
+     (a per-tenant `pg_advisory_xact_lock` is taken FIRST, inside the same transaction as
+     the COUNT + INSERT below, so concurrent creates for the SAME tenant can never race
+     past the cap — see `lock_automation_rule_cap` in persistence/repositories.py)
   8. UNIQUE(tenant_id, name) -> 409 duplicate_name (caught narrowly around the INSERT)
 """
 
@@ -45,6 +54,7 @@ from orchestrator.persistence.repositories import (
     insert_automation_rule,
     list_automation_executions,
     list_automation_rules,
+    lock_automation_rule_cap,
     update_automation_rule_enabled,
 )
 from orchestrator.schema_validation import known_event_types
@@ -70,6 +80,12 @@ _SCALAR_TYPES = (str, int, float, bool)
 
 _MAX_NAME_LEN = 128
 _MAX_EVENT_TYPE_LEN = 64
+
+# Defense-in-depth bound on trigger_conditions (security-auditor follow-up) — not a
+# functional requirement (the scalar-only shape is already the real security invariant,
+# Fork B), just a cheap ceiling on the same order of magnitude as the rule-cap default.
+_MAX_TRIGGER_CONDITIONS_KEYS = 20
+_MAX_TRIGGER_CONDITIONS_BYTES = 4096
 
 _DEFAULT_LIMIT = 50
 _MIN_LIMIT = 1
@@ -195,12 +211,29 @@ def _validate_create_body(body: dict[str, Any]) -> tuple[str, str] | None:
     trigger_conditions = body.get("trigger_conditions", {})
     if not isinstance(trigger_conditions, dict):
         return ("schema_invalid", "trigger_conditions must be an object")
+    if len(trigger_conditions) > _MAX_TRIGGER_CONDITIONS_KEYS:
+        return (
+            "trigger_conditions_too_large",
+            f"trigger_conditions may have at most {_MAX_TRIGGER_CONDITIONS_KEYS} keys",
+        )
     for key, value in trigger_conditions.items():
         if not isinstance(key, str) or not isinstance(value, _SCALAR_TYPES):
             return (
                 "schema_invalid",
                 "trigger_conditions values must be scalar (string, number, or boolean)",
             )
+    # A flat dict of scalars always serializes without RecursionError; the try/except is
+    # cheap defense-in-depth, not a functional requirement.
+    try:
+        serialized_size = len(json.dumps(trigger_conditions).encode("utf-8"))
+    except (TypeError, ValueError, RecursionError):
+        return ("schema_invalid", "trigger_conditions is not serializable")
+    if serialized_size > _MAX_TRIGGER_CONDITIONS_BYTES:
+        return (
+            "trigger_conditions_too_large",
+            f"trigger_conditions may be at most {_MAX_TRIGGER_CONDITIONS_BYTES} "
+            "bytes serialized",
+        )
 
     action_type = body.get("action_type")
     if action_type not in _SUPPORTED_ACTION_TYPES:
@@ -231,11 +264,19 @@ async def create_automation_rule(
     raw_body = await request.body()
     try:
         body = json.loads(raw_body)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+        # RecursionError: a deeply-nested body (e.g. ~2000-deep nested arrays) can blow the
+        # parser's stack — treated the SAME as malformed JSON (422), never an uncaught 500.
         return _error(422, "schema_invalid", "request body is not valid JSON", request_id)
     if not isinstance(body, dict):
         return _error(422, "schema_invalid", "request body must be a JSON object", request_id)
-    if contains_nul(body):
+    try:
+        has_forbidden_nul = contains_nul(body)
+    except RecursionError:
+        # The recursive NUL-walk can ALSO blow the stack on a deeply-nested body that
+        # parsed successfully — same 422 outcome as a malformed body, never a 500.
+        return _error(422, "schema_invalid", "request body is not valid JSON", request_id)
+    if has_forbidden_nul:
         return _error(
             422, "schema_invalid", "request contains a forbidden NUL character", request_id
         )
@@ -259,7 +300,12 @@ async def create_automation_rule(
                 request_id,
             )
 
-        # 2. Per-tenant rule cap (bounds worst-case per-event evaluation cost).
+        # 2. Per-tenant rule cap (bounds worst-case per-event evaluation cost). The
+        #    advisory lock is taken FIRST, in this SAME transaction as the COUNT and the
+        #    INSERT below, so two concurrent creates for THIS tenant (distinct names, so
+        #    UNIQUE(tenant_id, name) does not serialise them) can never both COUNT before
+        #    either INSERTs and race past the cap (TOCTOU fix).
+        await lock_automation_rule_cap(session, principal)
         settings: AutomationSettings = request.app.state.automation_settings
         existing_count = await count_automation_rules(session)
         if existing_count >= settings.max_rules_per_tenant:
@@ -346,7 +392,9 @@ async def patch_rule(
     raw_body = await request.body()
     try:
         body = json.loads(raw_body)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+        # RecursionError: a deeply-nested body can blow the parser's stack — treated the
+        # SAME as malformed JSON (422), never an uncaught 500.
         return _error(422, "schema_invalid", "request body is not valid JSON", request_id)
     if not isinstance(body, dict):
         return _error(422, "schema_invalid", "request body must be a JSON object", request_id)

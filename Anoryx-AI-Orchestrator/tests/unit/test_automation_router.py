@@ -85,6 +85,18 @@ def _patch_rule_count(monkeypatch, *, count: int = 0):
     monkeypatch.setattr(automation_router, "count_automation_rules", _count_automation_rules)
 
 
+def _patch_rule_cap_lock(monkeypatch):
+    """No-op stand-in for the per-tenant advisory lock (TOCTOU fix) — a real Postgres
+    connection is unavailable in this no-DB unit-test module, so the lock acquisition
+    itself is monkeypatched at the module boundary like every other repo-layer call here.
+    """
+
+    async def _lock_automation_rule_cap(_session, _tenant_id):
+        return None
+
+    monkeypatch.setattr(automation_router, "lock_automation_rule_cap", _lock_automation_rule_cap)
+
+
 def _patch_insert(monkeypatch, *, raise_integrity: bool = False):
     async def _insert_automation_rule(_session, row):
         if raise_integrity:
@@ -184,6 +196,7 @@ async def test_unknown_source_product_is_422(test_app):
 async def test_known_source_product_passes_that_check(test_app, monkeypatch):
     _patch_tenant_session(monkeypatch)
     _patch_distribution_found(monkeypatch, found=True)
+    _patch_rule_cap_lock(monkeypatch)
     _patch_rule_count(monkeypatch, count=0)
     _patch_insert(monkeypatch)
     resp = await _post(
@@ -234,6 +247,85 @@ async def test_nul_byte_is_422(test_app):
     assert resp.json()["error"]["code"] == "schema_invalid"
 
 
+async def test_too_many_trigger_conditions_keys_is_422(test_app):
+    resp = await _post(
+        test_app,
+        "/v1/automation/rules",
+        json_body=_valid_body(trigger_conditions={f"k{i}": i for i in range(21)}),
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "trigger_conditions_too_large"
+
+
+async def test_trigger_conditions_over_byte_cap_is_422(test_app):
+    # 50 keys of ~100-char string values comfortably exceeds the 4096-byte cap while
+    # staying under the 20-key cap, so this proves the BYTE cap specifically.
+    big_value = "x" * 100
+    resp = await _post(
+        test_app,
+        "/v1/automation/rules",
+        json_body=_valid_body(trigger_conditions={"only_key": big_value * 50}),
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "trigger_conditions_too_large"
+
+
+# --------------------------------------------------------------------------- #
+# Deeply-nested body -> RecursionError caught as 422, never an uncaught 500.
+# --------------------------------------------------------------------------- #
+
+
+async def _post_raw(app, path: str, *, content: bytes) -> httpx.Response:
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://orch") as client:
+        return await client.post(
+            path, content=content, headers={"Content-Type": "application/json"}
+        )
+
+
+def _deeply_nested_json_array(depth: int) -> bytes:
+    # Built by string multiplication (NOT recursive construction/serialization) so
+    # constructing the fixture itself never hits Python's own recursion limit.
+    return (b"[" * depth) + (b"]" * depth)
+
+
+async def test_deeply_nested_create_body_is_422_not_500(test_app):
+    resp = await _post_raw(
+        test_app, "/v1/automation/rules", content=_deeply_nested_json_array(4000)
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "schema_invalid"
+
+
+def _deeply_nested_json_object(depth: int) -> bytes:
+    # A single-key-nested OBJECT (not array): json.loads' C decoder tolerates a deeper
+    # object/array nesting than pure-Python contains_nul's own recursive walk does, so a
+    # depth in this range parses SUCCESSFULLY (json.loads never raises) but blows
+    # contains_nul's own call stack — proving THAT specific RecursionError catch site
+    # (not merely the json.loads one exercised above).
+    return (b'{"n":' * depth) + b"{}" + (b"}" * depth)
+
+
+async def test_deeply_nested_object_body_is_422_via_contains_nul_guard(test_app):
+    resp = await _post_raw(
+        test_app, "/v1/automation/rules", content=_deeply_nested_json_object(650)
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "schema_invalid"
+
+
+async def test_deeply_nested_patch_body_is_422_not_500(test_app):
+    transport = httpx.ASGITransport(app=test_app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://orch") as client:
+        resp = await client.patch(
+            "/v1/automation/rules/rule-abc",
+            content=_deeply_nested_json_array(4000),
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "schema_invalid"
+
+
 # --------------------------------------------------------------------------- #
 # POST — distribution ownership + rule-cap + duplicate-name (repo layer mocked).
 # --------------------------------------------------------------------------- #
@@ -250,6 +342,7 @@ async def test_distribution_not_found_is_422(test_app, monkeypatch):
 async def test_rule_limit_exceeded_is_422(test_app, monkeypatch):
     _patch_tenant_session(monkeypatch)
     _patch_distribution_found(monkeypatch, found=True)
+    _patch_rule_cap_lock(monkeypatch)
     _patch_rule_count(monkeypatch, count=20)  # == default ORCH_AUTOMATION_MAX_RULES_PER_TENANT
     resp = await _post(test_app, "/v1/automation/rules", json_body=_valid_body())
     assert resp.status_code == 422
@@ -259,6 +352,7 @@ async def test_rule_limit_exceeded_is_422(test_app, monkeypatch):
 async def test_duplicate_name_is_409(test_app, monkeypatch):
     _patch_tenant_session(monkeypatch)
     _patch_distribution_found(monkeypatch, found=True)
+    _patch_rule_cap_lock(monkeypatch)
     _patch_rule_count(monkeypatch, count=0)
     _patch_insert(monkeypatch, raise_integrity=True)
     resp = await _post(test_app, "/v1/automation/rules", json_body=_valid_body())
@@ -269,6 +363,7 @@ async def test_duplicate_name_is_409(test_app, monkeypatch):
 async def test_create_success_is_201(test_app, monkeypatch):
     _patch_tenant_session(monkeypatch)
     _patch_distribution_found(monkeypatch, found=True)
+    _patch_rule_cap_lock(monkeypatch)
     _patch_rule_count(monkeypatch, count=0)
     _patch_insert(monkeypatch)
     resp = await _post(test_app, "/v1/automation/rules", json_body=_valid_body())
@@ -278,6 +373,31 @@ async def test_create_success_is_201(test_app, monkeypatch):
     assert body["action_type"] == "redistribute_policy"
     assert body["enabled"] is True
     assert "trigger_source_product" not in body  # opt-in-when-present, absent here
+
+
+async def test_rule_cap_lock_is_taken_before_the_count(test_app, monkeypatch):
+    """Proves the router calls `lock_automation_rule_cap` before `count_automation_rules`
+    (TOCTOU fix ordering) — a real concurrent race is proven at the DB layer by the
+    integration suite; this unit test proves the call ORDER the router itself performs."""
+    _patch_tenant_session(monkeypatch)
+    _patch_distribution_found(monkeypatch, found=True)
+    _patch_insert(monkeypatch)
+
+    call_order: list[str] = []
+
+    async def _lock_automation_rule_cap(_session, _tenant_id):
+        call_order.append("lock")
+
+    async def _count_automation_rules(_session):
+        call_order.append("count")
+        return 0
+
+    monkeypatch.setattr(automation_router, "lock_automation_rule_cap", _lock_automation_rule_cap)
+    monkeypatch.setattr(automation_router, "count_automation_rules", _count_automation_rules)
+
+    resp = await _post(test_app, "/v1/automation/rules", json_body=_valid_body())
+    assert resp.status_code == 201
+    assert call_order == ["lock", "count"]
 
 
 # --------------------------------------------------------------------------- #
