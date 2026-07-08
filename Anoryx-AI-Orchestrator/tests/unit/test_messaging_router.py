@@ -229,9 +229,35 @@ async def test_deeply_nested_body_is_422_not_500(test_app):
 # --------------------------------------------------------------------------- #
 
 
+def _patch_message_cap_not_hit(monkeypatch, *, existing_idempotency_row=None):
+    """Patch the dedup pre-check + cap lock/count so a fresh send proceeds normally.
+
+    `existing_idempotency_row` lets a caller simulate the pre-check finding (or not
+    finding) an existing row for the idempotency_key; defaults to "nothing exists yet".
+    """
+
+    async def _get_agent_message_by_idempotency_key(_session, _idempotency_key):
+        return existing_idempotency_row
+
+    async def _lock_messaging_message_cap(_session, _tenant_id):
+        return None
+
+    async def _count_agent_messages(_session):
+        return 0
+
+    monkeypatch.setattr(
+        messaging_router,
+        "get_agent_message_by_idempotency_key",
+        _get_agent_message_by_idempotency_key,
+    )
+    monkeypatch.setattr(messaging_router, "lock_messaging_message_cap", _lock_messaging_message_cap)
+    monkeypatch.setattr(messaging_router, "count_agent_messages", _count_agent_messages)
+
+
 async def test_fresh_send_is_sent_disposition(test_app, monkeypatch):
     _patch_tenant_session(monkeypatch)
     _patch_privileged_session(monkeypatch)
+    _patch_message_cap_not_hit(monkeypatch)
     appended = _patch_messaging_audit_append(monkeypatch)
 
     async def _insert_agent_message(_session, row):
@@ -248,28 +274,45 @@ async def test_fresh_send_is_sent_disposition(test_app, monkeypatch):
 
 
 async def test_duplicate_send_is_deduped_disposition_same_sequence(test_app, monkeypatch):
+    """The dedup pre-check races a concurrent sender: it finds NOTHING (the concurrent
+    send hasn't committed yet), the cap check passes, and the INSERT itself hits the
+    UNIQUE(tenant_id, idempotency_key) conflict — the genuine IntegrityError race path.
+    (The pre-check-finds-it-immediately path is covered by
+    test_dedup_resend_via_precheck_skips_cap_check_entirely below.)"""
     _patch_tenant_session(monkeypatch)
     _patch_privileged_session(monkeypatch)
     appended = _patch_messaging_audit_append(monkeypatch)
+
+    existing_row = {
+        "sequence_number": 7,
+        "tenant_id": _PRINCIPAL,
+        "sender_team_id": "team-a",
+        "sender_project_id": "proj-a",
+        "sender_agent_id": "agent-a",
+        "recipient_team_id": "team-a",
+        "recipient_project_id": "proj-a",
+        "recipient_agent_id": "agent-b",
+        "message_type": "ping",
+        "body": {"hello": "world"},
+        "idempotency_key": "msg-1",
+        "created_at": "2026-07-08T12:00:00+00:00",
+    }
+    precheck_calls = {"n": 0}
 
     async def _insert_agent_message(_session, row):
         raise IntegrityError("insert", {}, Exception("duplicate"))
 
     async def _get_agent_message_by_idempotency_key(_session, idempotency_key):
-        return {
-            "sequence_number": 7,
-            "tenant_id": _PRINCIPAL,
-            "sender_team_id": "team-a",
-            "sender_project_id": "proj-a",
-            "sender_agent_id": "agent-a",
-            "recipient_team_id": "team-a",
-            "recipient_project_id": "proj-a",
-            "recipient_agent_id": "agent-b",
-            "message_type": "ping",
-            "body": {"hello": "world"},
-            "idempotency_key": idempotency_key,
-            "created_at": "2026-07-08T12:00:00+00:00",
-        }
+        precheck_calls["n"] += 1
+        if precheck_calls["n"] == 1:
+            return None  # pre-check: nothing exists yet, so the cap IS checked
+        return existing_row  # post-conflict re-fetch: the concurrent sender's row
+
+    async def _lock_messaging_message_cap(_session, _tenant_id):
+        return None
+
+    async def _count_agent_messages(_session):
+        return 0
 
     monkeypatch.setattr(messaging_router, "insert_agent_message", _insert_agent_message)
     monkeypatch.setattr(
@@ -277,6 +320,8 @@ async def test_duplicate_send_is_deduped_disposition_same_sequence(test_app, mon
         "get_agent_message_by_idempotency_key",
         _get_agent_message_by_idempotency_key,
     )
+    monkeypatch.setattr(messaging_router, "lock_messaging_message_cap", _lock_messaging_message_cap)
+    monkeypatch.setattr(messaging_router, "count_agent_messages", _count_agent_messages)
 
     resp = await _post(test_app, "/v1/messaging/messages", json_body=_valid_send_body())
     assert resp.status_code == 202
@@ -285,6 +330,91 @@ async def test_duplicate_send_is_deduped_disposition_same_sequence(test_app, mon
     assert body["sequence_number"] == 7
     assert body["created_at"] == "2026-07-08T12:00:00+00:00"
     assert appended[0]["disposition"] == "deduped"
+
+
+# --------------------------------------------------------------------------- #
+# POST /v1/messaging/messages — per-tenant message cap (security-auditor follow-up).
+# --------------------------------------------------------------------------- #
+
+
+async def test_dedup_resend_via_precheck_skips_cap_check_entirely(test_app, monkeypatch):
+    """A resend whose idempotency_key ALREADY exists is found by the pre-check and must
+    never touch the cap lock/count/insert at all — not just "never be blocked" by them."""
+    _patch_tenant_session(monkeypatch)
+    _patch_privileged_session(monkeypatch)
+    appended = _patch_messaging_audit_append(monkeypatch)
+
+    existing_row = {
+        "sequence_number": 3,
+        "tenant_id": _PRINCIPAL,
+        "sender_team_id": "team-a",
+        "sender_project_id": "proj-a",
+        "sender_agent_id": "agent-a",
+        "recipient_team_id": "team-a",
+        "recipient_project_id": "proj-a",
+        "recipient_agent_id": "agent-b",
+        "message_type": "ping",
+        "body": {"hello": "world"},
+        "idempotency_key": "msg-1",
+        "created_at": "2026-07-08T12:00:00+00:00",
+    }
+
+    async def _get_agent_message_by_idempotency_key(_session, _idempotency_key):
+        return existing_row
+
+    async def _never_called(*_args, **_kwargs):
+        raise AssertionError("must not be called for a pre-checked dedup resend")
+
+    monkeypatch.setattr(
+        messaging_router,
+        "get_agent_message_by_idempotency_key",
+        _get_agent_message_by_idempotency_key,
+    )
+    monkeypatch.setattr(messaging_router, "lock_messaging_message_cap", _never_called)
+    monkeypatch.setattr(messaging_router, "count_agent_messages", _never_called)
+    monkeypatch.setattr(messaging_router, "insert_agent_message", _never_called)
+
+    resp = await _post(test_app, "/v1/messaging/messages", json_body=_valid_send_body())
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["disposition"] == "deduped"
+    assert body["sequence_number"] == 3
+    assert appended[0]["disposition"] == "deduped"
+
+
+async def test_message_cap_at_limit_returns_422_and_does_not_insert(test_app, monkeypatch):
+    _patch_tenant_session(monkeypatch)
+
+    async def _get_agent_message_by_idempotency_key(_session, _idempotency_key):
+        return None
+
+    async def _lock_messaging_message_cap(_session, _tenant_id):
+        return None
+
+    async def _count_agent_messages(_session):
+        return 3  # at the configured cap below
+
+    async def _insert_should_not_be_called(_session, _row):
+        raise AssertionError("insert_agent_message must not be called over the cap")
+
+    monkeypatch.setattr(
+        messaging_router,
+        "get_agent_message_by_idempotency_key",
+        _get_agent_message_by_idempotency_key,
+    )
+    monkeypatch.setattr(messaging_router, "lock_messaging_message_cap", _lock_messaging_message_cap)
+    monkeypatch.setattr(messaging_router, "count_agent_messages", _count_agent_messages)
+    monkeypatch.setattr(messaging_router, "insert_agent_message", _insert_should_not_be_called)
+
+    monkeypatch.setenv("ORCH_MESSAGING_MAX_MESSAGES_PER_TENANT", "3")
+    from orchestrator.app import create_app
+
+    capped_app = create_app()
+    capped_app.dependency_overrides[require_tenant_principal] = lambda: _PRINCIPAL
+
+    resp = await _post(capped_app, "/v1/messaging/messages", json_body=_valid_send_body())
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "message_limit_exceeded"
 
 
 # --------------------------------------------------------------------------- #

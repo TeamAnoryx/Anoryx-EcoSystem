@@ -45,11 +45,15 @@ from orchestrator.persistence.database import get_privileged_session, get_tenant
 from orchestrator.persistence.repositories import (
     append_messaging_audit_link,
     append_state_audit_link,
+    count_agent_messages,
+    count_agent_state_keys,
     create_agent_state_if_absent,
     get_agent_message_by_idempotency_key,
     get_agent_state,
     insert_agent_message,
     list_inbox_messages,
+    lock_messaging_message_cap,
+    lock_messaging_state_key_cap,
     update_agent_state_cas,
 )
 from orchestrator.security import require_tenant_principal
@@ -242,17 +246,46 @@ async def send_message(
 
     result_row: dict[str, Any] | None
     async with get_tenant_session(principal) as session:
-        try:
-            result_row = await insert_agent_message(session, row)
-            await session.commit()
-            disposition = "sent"
-        except IntegrityError:
-            # Concurrent/duplicate send with the SAME (tenant_id, idempotency_key). Roll
-            # back the failed autobegun transaction; re-fetch on a FRESH tenant session
-            # below (this one's transaction-local tenant GUC is gone after rollback).
-            await session.rollback()
-            result_row = None
+        # Pre-insert dedup check (security-auditor follow-up): a resend of an EXISTING
+        # idempotency_key never grows agent_messages, so it must never be subject to the
+        # per-tenant message cap below — checking existence FIRST, before taking the cap
+        # lock, is what makes that guarantee possible (the cap lock+count is skipped
+        # entirely on this path, not merely bypassed after the fact).
+        existing = await get_agent_message_by_idempotency_key(session, row["idempotency_key"])
+        if existing is not None:
+            result_row = existing
             disposition = "deduped"
+        else:
+            # Per-tenant message cap (security-auditor follow-up: bounds unbounded
+            # per-tenant table growth, a cross-tenant AVAILABILITY concern on the shared
+            # Postgres instance, not merely a tenant-local storage question). The advisory
+            # lock is taken FIRST, in this SAME transaction as the COUNT and the INSERT
+            # below, so two concurrent sends for THIS tenant with DISTINCT idempotency_keys
+            # (so UNIQUE(tenant_id, idempotency_key) does not serialise them) can never
+            # both COUNT before either INSERTs and race past the cap (TOCTOU fix, mirrors
+            # lock_automation_rule_cap).
+            await lock_messaging_message_cap(session, principal)
+            existing_count = await count_agent_messages(session)
+            if existing_count >= settings.max_messages_per_tenant:
+                return _error(
+                    422,
+                    "message_limit_exceeded",
+                    f"this tenant has reached its message limit of "
+                    f"{settings.max_messages_per_tenant}",
+                    request_id,
+                )
+            try:
+                result_row = await insert_agent_message(session, row)
+                await session.commit()
+                disposition = "sent"
+            except IntegrityError:
+                # A concurrent sender raced this one between the pre-check above and this
+                # INSERT, with the SAME (tenant_id, idempotency_key). Roll back the failed
+                # autobegun transaction; re-fetch on a FRESH tenant session below (this
+                # one's transaction-local tenant GUC is gone after rollback).
+                await session.rollback()
+                result_row = None
+                disposition = "deduped"
 
     if result_row is None:
         async with get_tenant_session(principal) as session:
@@ -428,6 +461,32 @@ async def write_state(
 
     if expected_version is None:
         async with get_tenant_session(principal) as session:
+            # Pre-insert existence check (security-auditor follow-up): if the key already
+            # exists, this create attempt cannot add a new key (create_agent_state_if_absent
+            # below will no-op via ON CONFLICT DO NOTHING and the router 409s below) — so it
+            # must never be subject to the per-tenant state-key cap. Checking existence
+            # FIRST, before taking the cap lock, is what makes that guarantee possible.
+            existing_for_cap = await get_agent_state(session, state_key)
+            if existing_for_cap is None:
+                # Per-tenant state-key cap (security-auditor follow-up: bounds unbounded
+                # per-tenant table growth, a cross-tenant AVAILABILITY concern on the
+                # shared Postgres instance). The advisory lock is taken FIRST, in this
+                # SAME transaction as the COUNT and the INSERT below, so two concurrent
+                # creates for THIS tenant with DISTINCT brand-new keys can never both
+                # COUNT before either INSERTs and race past the cap (TOCTOU fix, mirrors
+                # lock_automation_rule_cap / lock_messaging_message_cap). A version-matched
+                # UPDATE of an existing key (the `else` branch below) never reaches here —
+                # it does not add a new key.
+                await lock_messaging_state_key_cap(session, principal)
+                existing_key_count = await count_agent_state_keys(session)
+                if existing_key_count >= settings.max_state_keys_per_tenant:
+                    return _error(
+                        422,
+                        "state_key_limit_exceeded",
+                        f"this tenant has reached its state-key limit of "
+                        f"{settings.max_state_keys_per_tenant}",
+                        request_id,
+                    )
             created = await create_agent_state_if_absent(
                 session,
                 tenant_id=principal,
@@ -512,6 +571,8 @@ async def read_state(
     state_key: str, principal: str = Depends(require_tenant_principal)
 ) -> JSONResponse:
     request_id = _request_id()
+    if len(state_key) > 256:
+        return _error(422, "schema_invalid", "state_key is too long", request_id)
     async with get_tenant_session(principal) as session:
         row = await get_agent_state(session, state_key)
     if row is None:

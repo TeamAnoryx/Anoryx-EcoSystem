@@ -12,6 +12,8 @@ import pytest
 from orchestrator.config import (
     DEFAULT_MESSAGING_MAX_BODY_BYTES,
     DEFAULT_MESSAGING_MAX_INBOX_PAGE_SIZE,
+    DEFAULT_MESSAGING_MAX_MESSAGES_PER_TENANT,
+    DEFAULT_MESSAGING_MAX_STATE_KEYS_PER_TENANT,
     DEFAULT_MESSAGING_MAX_STATE_VALUE_BYTES,
     ConfigError,
     get_messaging_settings,
@@ -21,6 +23,8 @@ _MESSAGING_ENV_VARS = (
     "ORCH_MESSAGING_MAX_BODY_BYTES",
     "ORCH_MESSAGING_MAX_STATE_VALUE_BYTES",
     "ORCH_MESSAGING_MAX_INBOX_PAGE_SIZE",
+    "ORCH_MESSAGING_MAX_MESSAGES_PER_TENANT",
+    "ORCH_MESSAGING_MAX_STATE_KEYS_PER_TENANT",
 )
 
 
@@ -36,6 +40,8 @@ def test_defaults_when_unset(clean_messaging_env):
     assert settings.max_message_body_bytes == DEFAULT_MESSAGING_MAX_BODY_BYTES
     assert settings.max_state_value_bytes == DEFAULT_MESSAGING_MAX_STATE_VALUE_BYTES
     assert settings.max_inbox_page_size == DEFAULT_MESSAGING_MAX_INBOX_PAGE_SIZE
+    assert settings.max_messages_per_tenant == DEFAULT_MESSAGING_MAX_MESSAGES_PER_TENANT
+    assert settings.max_state_keys_per_tenant == DEFAULT_MESSAGING_MAX_STATE_KEYS_PER_TENANT
 
 
 def test_max_body_bytes_override(clean_messaging_env):
@@ -73,6 +79,40 @@ def test_max_inbox_page_size_override(clean_messaging_env):
 
 def test_max_inbox_page_size_below_minimum_raises(clean_messaging_env):
     clean_messaging_env.setenv("ORCH_MESSAGING_MAX_INBOX_PAGE_SIZE", "0")
+    with pytest.raises(ConfigError):
+        get_messaging_settings()
+
+
+def test_max_messages_per_tenant_override(clean_messaging_env):
+    clean_messaging_env.setenv("ORCH_MESSAGING_MAX_MESSAGES_PER_TENANT", "500")
+    assert get_messaging_settings().max_messages_per_tenant == 500
+
+
+def test_max_messages_per_tenant_below_minimum_raises(clean_messaging_env):
+    clean_messaging_env.setenv("ORCH_MESSAGING_MAX_MESSAGES_PER_TENANT", "0")
+    with pytest.raises(ConfigError):
+        get_messaging_settings()
+
+
+def test_max_messages_per_tenant_non_integer_raises(clean_messaging_env):
+    clean_messaging_env.setenv("ORCH_MESSAGING_MAX_MESSAGES_PER_TENANT", "not-a-number")
+    with pytest.raises(ConfigError):
+        get_messaging_settings()
+
+
+def test_max_state_keys_per_tenant_override(clean_messaging_env):
+    clean_messaging_env.setenv("ORCH_MESSAGING_MAX_STATE_KEYS_PER_TENANT", "250")
+    assert get_messaging_settings().max_state_keys_per_tenant == 250
+
+
+def test_max_state_keys_per_tenant_below_minimum_raises(clean_messaging_env):
+    clean_messaging_env.setenv("ORCH_MESSAGING_MAX_STATE_KEYS_PER_TENANT", "0")
+    with pytest.raises(ConfigError):
+        get_messaging_settings()
+
+
+def test_max_state_keys_per_tenant_non_integer_raises(clean_messaging_env):
+    clean_messaging_env.setenv("ORCH_MESSAGING_MAX_STATE_KEYS_PER_TENANT", "not-a-number")
     with pytest.raises(ConfigError):
         get_messaging_settings()
 

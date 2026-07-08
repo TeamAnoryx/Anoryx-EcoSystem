@@ -1616,7 +1616,10 @@ async def get_agent_message_by_idempotency_key(
 
     Used to re-fetch the ORIGINAL message after a dedup IntegrityError on insert — the
     UNIQUE(tenant_id, idempotency_key) constraint means a conflict can only ever be with a
-    row of the caller's OWN tenant, so this RLS-scoped lookup always finds it.
+    row of the caller's OWN tenant, so this RLS-scoped lookup always finds it. ALSO used as
+    the router's pre-insert dedup pre-check (security-auditor follow-up) so a resend of an
+    existing idempotency_key can be identified and routed around the per-tenant message cap
+    below — a resend never grows the table, so it must never be blocked by that cap.
     """
     from orchestrator.persistence.models.agent_message import AgentMessage
 
@@ -1627,6 +1630,49 @@ async def get_agent_message_by_idempotency_key(
     if row is None:
         return None
     return {c.name: getattr(row, c.name) for c in AgentMessage.__table__.columns}
+
+
+# Distinct transaction-scoped advisory-lock NAMESPACE for the per-tenant agent_messages
+# row-count cap (security-auditor follow-up, mirrors _AUTOMATION_RULE_CAP_LOCK_NAMESPACE
+# exactly — the SAME pg_advisory_xact_lock(int, int) two-arg overload, a fixed namespace
+# plus a per-tenant hashtext(...) key, distinct from every other lock namespace/key in this
+# module so it can never collide with any of them).
+_MESSAGING_MESSAGE_CAP_LOCK_NAMESPACE = int.from_bytes(
+    hashlib.sha256(b"anoryx-orchestrator:messaging-message-cap").digest()[:4],
+    "big",
+    signed=True,
+)
+
+
+async def lock_messaging_message_cap(session: AsyncSession, tenant_id: str) -> None:
+    """Take a transaction-scoped, PER-TENANT advisory lock before the message-cap COUNT.
+
+    Closes the same TOCTOU race lock_automation_rule_cap closes: concurrent
+    `POST /v1/messaging/messages` requests for the SAME tenant, with DISTINCT
+    idempotency_keys (so UNIQUE(tenant_id, idempotency_key) does not serialise them), could
+    otherwise both COUNT before either INSERTs, racing past
+    ORCH_MESSAGING_MAX_MESSAGES_PER_TENANT. The caller MUST call this INSIDE the same
+    transaction as the subsequent COUNT + INSERT (the lock auto-releases at
+    COMMIT/ROLLBACK), and MUST skip it entirely for a pre-checked dedup resend (which never
+    grows the table and must never be subject to this cap).
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:ns, hashtext(:tenant_id))"),
+        {"ns": _MESSAGING_MESSAGE_CAP_LOCK_NAMESPACE, "tenant_id": tenant_id},
+    )
+
+
+async def count_agent_messages(session: AsyncSession) -> int:
+    """Count this tenant's agent_messages rows (tenant session, RLS-scoped).
+
+    Used at message-send time to enforce the per-tenant cap
+    (ORCH_MESSAGING_MAX_MESSAGES_PER_TENANT) BEFORE the insert — exceeding it is a 422
+    `message_limit_exceeded`, never a 5xx. The caller takes `lock_messaging_message_cap` in
+    the SAME transaction immediately before calling this, so a concurrent sender for the
+    same tenant can never COUNT a stale value and race past the cap (TOCTOU fix).
+    """
+    result = await session.execute(text("SELECT count(*) FROM agent_messages"))
+    return int(result.scalar_one())
 
 
 async def list_inbox_messages(
@@ -1832,6 +1878,51 @@ async def create_agent_state_if_absent(
     if row is None:
         return None
     return {c.name: getattr(row, c.name) for c in AgentState.__table__.columns}
+
+
+# Distinct transaction-scoped advisory-lock NAMESPACE for the per-tenant agent_state
+# distinct-key-count cap (security-auditor follow-up, mirrors
+# _AUTOMATION_RULE_CAP_LOCK_NAMESPACE / _MESSAGING_MESSAGE_CAP_LOCK_NAMESPACE exactly — the
+# SAME pg_advisory_xact_lock(int, int) two-arg overload, a fixed namespace plus a
+# per-tenant hashtext(...) key, distinct from every other lock namespace/key in this module
+# so it can never collide with any of them).
+_MESSAGING_STATE_KEY_CAP_LOCK_NAMESPACE = int.from_bytes(
+    hashlib.sha256(b"anoryx-orchestrator:messaging-state-key-cap").digest()[:4],
+    "big",
+    signed=True,
+)
+
+
+async def lock_messaging_state_key_cap(session: AsyncSession, tenant_id: str) -> None:
+    """Take a transaction-scoped, PER-TENANT advisory lock before the state-key-cap COUNT.
+
+    Closes the same TOCTOU race lock_automation_rule_cap / lock_messaging_message_cap
+    close: concurrent `PUT /v1/state/{state_key}` CREATE (expected_version: null) requests
+    for the SAME tenant, with DISTINCT brand-new state_keys, could otherwise both COUNT
+    before either INSERTs, racing past ORCH_MESSAGING_MAX_STATE_KEYS_PER_TENANT. The caller
+    MUST call this INSIDE the same transaction as the subsequent COUNT + INSERT (the lock
+    auto-releases at COMMIT/ROLLBACK), and MUST skip it entirely when the key already
+    exists (an existing-key create attempt, which 409s, and any version-matched UPDATE of
+    an existing key never add a new key and must never be subject to this cap).
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:ns, hashtext(:tenant_id))"),
+        {"ns": _MESSAGING_STATE_KEY_CAP_LOCK_NAMESPACE, "tenant_id": tenant_id},
+    )
+
+
+async def count_agent_state_keys(session: AsyncSession) -> int:
+    """Count this tenant's agent_state rows (tenant session, RLS-scoped).
+
+    Used at state-key CREATE time (expected_version: null) to enforce the per-tenant cap
+    (ORCH_MESSAGING_MAX_STATE_KEYS_PER_TENANT) BEFORE the insert — exceeding it is a 422
+    `state_key_limit_exceeded`, never a 5xx. The caller takes `lock_messaging_state_key_cap`
+    in the SAME transaction immediately before calling this, so a concurrent creator for the
+    same tenant can never COUNT a stale value and race past the cap (TOCTOU fix). Never
+    called on a version-matched UPDATE of an existing key (that path never adds a new key).
+    """
+    result = await session.execute(text("SELECT count(*) FROM agent_state"))
+    return int(result.scalar_one())
 
 
 async def update_agent_state_cas(

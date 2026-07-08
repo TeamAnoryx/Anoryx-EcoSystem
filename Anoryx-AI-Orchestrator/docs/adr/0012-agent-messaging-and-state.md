@@ -63,6 +63,7 @@ honest, explicit deferral, never implied as done.
 | **H** — mailbox payload inspection | **H1**: `body` is OPAQUE JSONB, relayed byte-for-byte — the Orchestrator NEVER inspects, parses, or acts on its contents. This is a deliberate CONTRAST with O-011's automation matcher, which deliberately DOES inspect (flat scalar-equality match against) event payloads. The two modules have opposite payload-inspection postures for opposite reasons: O-011's matcher exists specifically to react to payload content; O-012's relay exists specifically to move opaque application data between two agents without becoming a second, divergent place that interprets it. |
 | **I** — master enable/disable switch | **I1**: NONE. Unlike O-011's `ORCH_AUTOMATION_ENABLED` (default `false`, because a matched rule triggers a real side effect — an O-004 distribution re-drive — with NO interactive caller in the loop for that specific trigger), a message send and a state write here are ORDINARY CALLER-INITIATED CRUD: an authenticated tenant principal makes one HTTP call, gets one HTTP response, and nothing autonomous happens afterward. This is the SAME trust model as `POST /v1/policies/distributions` or `POST /v1/automation/rules` (also no master switch) — adding one here would mirror O-011's FORM without its underlying reason (new autonomous behavior with no interactive caller), which the ADR-0011 precedent this task builds on explicitly warns against doing reflexively. |
 | **J** — auth model | **J1**: both seams reuse the EXISTING `require_tenant_principal` dependency (`query_service_tokens`) verbatim — the SAME credential already gating `GET /v1/events`, `/v1/identity/events`, and `/v1/automation/rules`. No new principal type, no new trust root. |
+| **J2** — intra-tenant agent identity (security-auditor follow-up, named here honestly, not re-architected) | The tenant-wide `require_tenant_principal` credential (Fork J1) is the **ENTIRE** authentication boundary for every one of these seams. `sender_team_id`/`sender_project_id`/`sender_agent_id` and `recipient_team_id`/`recipient_project_id`/`recipient_agent_id` (on message send), the `team_id`/`project_id`/`agent_id` path params (on inbox read), and `updated_by_agent_id` (on state write) are all CALLER-SUPPLIED request fields — never validated against the caller's own credential, because there is no per-agent credential anywhere in this codebase to validate them against. They are caller-asserted LABELS, not authenticated principals. Building a real per-agent credential system is genuine, separate, out-of-scope future work (mirrors ADR-0011 Fork E's identical "no interactive tenant credential available to require instead" reasoning) — this PR names the gap rather than papering over it with a redesign it cannot honestly complete in one pass. |
 | **K** — table scope (RLS vs. global) | **K1**: `agent_messages` and `agent_state` are TENANT-SCOPED (RLS, mirrors `ingest_events`/`automation_rules`). Both audit chains (`agent_messaging_audit_log`, `agent_state_audit_log`) are GLOBAL hash chains that ALSO carry RLS on SELECT (mirrors `automation_executions`, NOT `relay_audit_log`/`identity_audit_log`, which carry no RLS at all) — because both chains are genuinely tenant-relevant audit data a tenant could read back, unlike the relay/identity chains' cross-tenant fleet metadata. |
 | **L** — since_sequence pagination shape | **L1**: `since_sequence` is a PLAIN INTEGER exclusive lower bound, not a base64-opaque cursor (unlike `GET /v1/events`/`GET /v1/identity/events`/`GET /v1/automation/rules`, which all use an opaque cursor). `sequence_number` is already a bare monotonic position with no sensitive structure to hide — encoding it would add a decode/validation step for no confidentiality or integrity benefit. This is a deliberate, small simplification from the otherwise-uniform cursor convention, named here rather than silently diverging. |
 | **M** — the ambiguous "non-null expected_version against a never-created key" case | **M1**: treated as `409 version_conflict` with `current_version: null` (not a separate 404 branch). The roadmap/design text only specifies two outcomes (null expected_version on an existing key → `already_exists`; non-null mismatch → `version_conflict`) and does not name this third combination explicitly. Folding it into `version_conflict` keeps the write endpoint's error surface to exactly one conflict shape (echoing `current_version`, which is simply `null` when there is no row to have a version at all) rather than introducing a second, differently-shaped error path for a single edge case. |
@@ -120,6 +121,13 @@ additional lock statement (Fork B).
 - **This is NOT the roadmap's literal "backbone" framing.** It ships two narrow, intra-
   tenant primitives, not an ecosystem-wide messaging fabric. The gap between this slice
   and the roadmap's fuller vision is named here explicitly, not implied away.
+- **This does NOT provide agent-level authentication or intra-tenant message/state
+  isolation — only tenant-level isolation** (Fork J2, security-auditor follow-up).
+  `sender_agent_id`, `recipient_agent_id`, and `updated_by_agent_id` are self-asserted
+  labels the caller provides, not verified identities — ANY tenant-authenticated caller can
+  claim to send as any agent_id, read any agent's inbox, or attribute a state write to any
+  agent_id, all within its OWN tenant. A real per-agent credential system is out of scope
+  for this PR.
 - **Dispatched only via this run's explicit authorization to build post-investment tasks**
   (mirrors ADR-0009/ADR-0010/ADR-0011's identical disclosure) — the roadmap's own 🏦 label
   means this was not scheduled as next-buildable MVP work.
@@ -137,10 +145,31 @@ additional lock statement (Fork B).
 | A NUL byte or a deeply-nested body crashing the persist / DLQ-style insert | Reuses `boundary.contains_nul` verbatim + a narrow `RecursionError` catch around `json.loads`/`contains_nul` (mirrors `automation/router.py`'s exact handling), rejecting as 422 rather than 503-ing on an uncaught exception. |
 | A malformed (non-object) `body`/`value` bypassing the DB's structural guarantee | Enforced at BOTH the app boundary (422 `schema_invalid` if not a dict) AND the DB layer (`jsonb_typeof(...) = 'object'` CHECK constraints on `agent_messages.body` and `agent_state.state_value` — defense in depth, not merely an app-layer promise). |
 | Tamper on either audit chain | Append-only via BEFORE UPDATE/DELETE deny triggers + SHA-256 hash chain (mirrors every other Orchestrator chain); `validate_messaging_chain`/`validate_state_chain` re-verify the full chain. |
+| **A tenant-authenticated caller can claim to send as any agent_id, or read any agent's inbox, within its own tenant** (Fork J2, security-auditor follow-up, named here honestly, not re-architected) | Bounded to the SAME tenant only — RLS still holds structurally, so there is no CROSS-tenant leak of any kind. But there is NO intra-tenant agent-level isolation or authenticity in v1: `require_tenant_principal` resolves a tenant-wide credential, not a per-agent one, so any caller holding that tenant's credential can populate `sender_agent_id`/`recipient_agent_id`/`updated_by_agent_id` with any value it likes, or poll `GET /v1/messaging/inbox/{team_id}/{project_id}/{agent_id}` for ANY agent_id within its own tenant. A consumer of this data MUST NOT treat `sender_agent_id`/`updated_by_agent_id` as cryptographic proof of origin. There is no per-agent credential anywhere in this codebase to require instead without inventing a wholly new identity/credential concept out of scope for this PR — see Fork J2 and Residual risk. |
+| Unbounded per-tenant `agent_messages`/`agent_state` row growth degrading the shared Postgres instance for every OTHER tenant (security-auditor follow-up: a cross-tenant AVAILABILITY concern, not merely tenant-local storage) | `ORCH_MESSAGING_MAX_MESSAGES_PER_TENANT` / `ORCH_MESSAGING_MAX_STATE_KEYS_PER_TENANT` enforced at insert time via a tenant-keyed `pg_advisory_xact_lock` + `COUNT(*)` before the write (mirrors `lock_automation_rule_cap`/`ORCH_AUTOMATION_MAX_RULES_PER_TENANT` exactly, TOCTOU-safe) — exceeding either is a 422 (`message_limit_exceeded`/`state_key_limit_exceeded`), never a 5xx. A dedup resend or a version-matched CAS update of an existing key is exempt (neither adds a row/key). This bounds total row/key COUNT only — it does NOT bound the send/write RATE (see Residual risk). |
 
 ## Residual risk (known, deferred)
 
-- **No TTL or retention policy on `agent_messages`.** A mailbox grows unboundedly; there is
+- **No agent-level authentication or intra-tenant isolation (Fork J2, security-auditor
+  follow-up).** `require_tenant_principal` is a tenant-wide credential; there is no
+  per-agent credential in this system. Any tenant-authenticated caller can claim to send
+  as any agent_id, read any agent's inbox, or attribute a state write to any agent_id — all
+  bounded to its OWN tenant (no cross-tenant leak), but with no authenticity guarantee at
+  the agent level. A consumer must not treat `sender_agent_id`/`recipient_agent_id`/
+  `updated_by_agent_id` as verified identity. A real per-agent credential/identity system
+  is genuine, separate, out-of-scope future work.
+- **Per-tenant row/key COUNT is now bounded; per-tenant send/write RATE is still NOT
+  bounded (security-auditor follow-up).** `ORCH_MESSAGING_MAX_MESSAGES_PER_TENANT` /
+  `ORCH_MESSAGING_MAX_STATE_KEYS_PER_TENANT` cap the TOTAL number of `agent_messages` rows
+  / distinct `agent_state` keys a tenant can accumulate — closing the unbounded-growth gap
+  this ADR previously left open. They do NOT throttle how FAST a tenant can send messages
+  or create state keys: a tenant can still reach its cap in a single burst, and once below
+  the cap can still write at whatever rate the HTTP/Postgres path allows. Rate limiting is
+  real, separate, out-of-scope future work (mirrors this same ADR's existing "no TTL/
+  retention" and "no presence" deferrals in spirit: a genuine gap, named, not designed
+  around in this pass).
+- **No TTL or retention policy on `agent_messages`.** A mailbox grows unboundedly (up to
+  its new per-tenant cap); there is
   no automatic expiry, archival, or compaction. An operator wanting bounded storage must
   build this as explicit follow-up work.
 - **No DELETE endpoint on `agent_state` in v1** (named explicitly in Out of scope below) —
@@ -168,6 +197,19 @@ enable/disable switch exists here, see Fork I):
 - `ORCH_MESSAGING_MAX_INBOX_PAGE_SIZE` — hard ceiling on `GET /v1/messaging/inbox/...`'s
   `limit` query param (default 200, minimum 1); the request's own `limit` is clamped to
   this.
+- `ORCH_MESSAGING_MAX_MESSAGES_PER_TENANT` — per-tenant cap on total `agent_messages` row
+  count (default 100000, minimum 1), enforced at send time BEFORE the insert via a
+  tenant-keyed `pg_advisory_xact_lock` + `COUNT(*)` (mirrors
+  `ORCH_AUTOMATION_MAX_RULES_PER_TENANT`); exceeding it is a 422 `message_limit_exceeded`.
+  A dedup resend of an existing `idempotency_key` is exempt (security-auditor follow-up —
+  bounds unbounded per-tenant growth, a cross-tenant availability concern on the shared
+  Postgres instance).
+- `ORCH_MESSAGING_MAX_STATE_KEYS_PER_TENANT` — per-tenant cap on distinct `agent_state` key
+  count (default 10000, minimum 1), enforced only on the CREATE path
+  (`expected_version: null` against an absent key) via the same tenant-keyed-advisory-
+  lock-then-COUNT pattern; exceeding it is a 422 `state_key_limit_exceeded`. A
+  version-matched CAS update of an existing key is exempt, since it never adds a new key
+  (security-auditor follow-up, same reasoning as above).
 
 ## Testing
 
@@ -181,8 +223,12 @@ enable/disable switch exists here, see Fork I):
   proving `disposition: "deduped"` and an unchanged `sequence_number`); inbox pagination
   (since_sequence forwarded as the exclusive lower bound, limit clamped to the configured
   ceiling); create-only-if-absent / version-match / version-mismatch semantics (mocked
-  repo layer); and a tenant-scoping contract test proving the router always opens
-  `get_tenant_session` with the caller's OWN resolved principal.
+  repo layer); a tenant-scoping contract test proving the router always opens
+  `get_tenant_session` with the caller's OWN resolved principal; the per-tenant message
+  cap and state-key cap (mocked count at-or-over the configured limit -> 422, cap check
+  NOT invoked at all for a dedup resend or an existing-key CAS update); and the
+  `GET /v1/state/{state_key}` oversized-key-length boundary (422, mirroring `PUT`'s
+  existing check).
 - **Integration** (`tests/integration/test_messaging_e2e.py`, `pytest.mark.integration`,
   gated by `ORCH_REQUIRE_MESSAGING_E2E=1` exactly like the relay/identity/automation e2e
   gates — fails loud if set but unable to run, never silently skips on CI): a NON-STUBBED

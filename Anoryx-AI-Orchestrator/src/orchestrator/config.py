@@ -546,6 +546,15 @@ DEFAULT_MESSAGING_MAX_STATE_VALUE_BYTES: int = 16384
 #: clamped to this, mirroring every other cursor-paginated read's _MAX_LIMIT).
 DEFAULT_MESSAGING_MAX_INBOX_PAGE_SIZE: int = 200
 
+#: Default per-tenant cap on total agent_messages row count (security-auditor follow-up:
+#: bounds unbounded per-tenant table growth, a cross-tenant AVAILABILITY concern on the
+#: single shared Postgres instance — mirrors ORCH_AUTOMATION_MAX_RULES_PER_TENANT).
+DEFAULT_MESSAGING_MAX_MESSAGES_PER_TENANT: int = 100000
+
+#: Default per-tenant cap on distinct agent_state key count (same reasoning as above,
+#: applied to the shared-state-store table instead of the mailbox table).
+DEFAULT_MESSAGING_MAX_STATE_KEYS_PER_TENANT: int = 10000
+
 
 @dataclass(frozen=True, slots=True)
 class MessagingSettings:
@@ -555,12 +564,18 @@ class MessagingSettings:
     contrast with AutomationSettings.enabled). max_message_body_bytes and
     max_state_value_bytes bound the two opaque JSON payloads this seam ever persists;
     max_inbox_page_size is the hard ceiling GET /v1/messaging/inbox/... clamps its own
-    `limit` query param to.
+    `limit` query param to. max_messages_per_tenant and max_state_keys_per_tenant are
+    per-tenant TOTAL ROW/KEY COUNT caps (security-auditor follow-up, mirrors
+    AutomationSettings.max_rules_per_tenant) — they bound unbounded per-tenant table
+    growth, a cross-tenant availability concern on the single shared Postgres instance;
+    they do NOT bound the send/write RATE (see ADR-0012 Residual risk).
     """
 
     max_message_body_bytes: int
     max_state_value_bytes: int
     max_inbox_page_size: int
+    max_messages_per_tenant: int
+    max_state_keys_per_tenant: int
 
 
 def get_messaging_settings() -> MessagingSettings:
@@ -573,6 +588,10 @@ def get_messaging_settings() -> MessagingSettings:
                                            (default 16384, >= 1).
       ORCH_MESSAGING_MAX_INBOX_PAGE_SIZE    hard ceiling on the inbox read's `limit`
                                            query param (default 200, >= 1).
+      ORCH_MESSAGING_MAX_MESSAGES_PER_TENANT   per-tenant agent_messages row-count cap
+                                           (default 100000, >= 1).
+      ORCH_MESSAGING_MAX_STATE_KEYS_PER_TENANT  per-tenant agent_state distinct-key-count
+                                           cap (default 10000, >= 1).
     """
     return MessagingSettings(
         max_message_body_bytes=_env_int(
@@ -586,6 +605,16 @@ def get_messaging_settings() -> MessagingSettings:
         max_inbox_page_size=_env_int(
             "ORCH_MESSAGING_MAX_INBOX_PAGE_SIZE",
             DEFAULT_MESSAGING_MAX_INBOX_PAGE_SIZE,
+            minimum=1,
+        ),
+        max_messages_per_tenant=_env_int(
+            "ORCH_MESSAGING_MAX_MESSAGES_PER_TENANT",
+            DEFAULT_MESSAGING_MAX_MESSAGES_PER_TENANT,
+            minimum=1,
+        ),
+        max_state_keys_per_tenant=_env_int(
+            "ORCH_MESSAGING_MAX_STATE_KEYS_PER_TENANT",
+            DEFAULT_MESSAGING_MAX_STATE_KEYS_PER_TENANT,
             minimum=1,
         ),
     )

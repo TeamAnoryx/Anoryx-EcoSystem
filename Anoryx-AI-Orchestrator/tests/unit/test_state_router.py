@@ -229,9 +229,33 @@ async def test_deeply_nested_body_is_422_not_500(test_app):
 # --------------------------------------------------------------------------- #
 
 
+def _patch_state_cap_not_hit(monkeypatch, *, existing_state_row=None):
+    """Patch the existence pre-check + cap lock/count so a state CREATE proceeds normally.
+
+    `existing_state_row` lets a caller simulate the pre-check finding (or not finding) an
+    existing row for the state_key; defaults to "the key does not exist yet".
+    """
+
+    async def _get_agent_state(_session, _state_key):
+        return existing_state_row
+
+    async def _lock_messaging_state_key_cap(_session, _tenant_id):
+        return None
+
+    async def _count_agent_state_keys(_session):
+        return 0
+
+    monkeypatch.setattr(messaging_router, "get_agent_state", _get_agent_state)
+    monkeypatch.setattr(
+        messaging_router, "lock_messaging_state_key_cap", _lock_messaging_state_key_cap
+    )
+    monkeypatch.setattr(messaging_router, "count_agent_state_keys", _count_agent_state_keys)
+
+
 async def test_create_on_absent_key_is_200_created(test_app, monkeypatch):
     _patch_tenant_session(monkeypatch)
     _patch_privileged_session(monkeypatch)
+    _patch_state_cap_not_hit(monkeypatch)
     appended = _patch_state_audit_append(monkeypatch)
 
     async def _create_agent_state_if_absent(_session, **kwargs):
@@ -285,6 +309,119 @@ async def test_create_on_existing_key_is_409_already_exists_with_current_version
     body = resp.json()
     assert body["error"]["code"] == "already_exists"
     assert body["current_version"] == 3
+
+
+# --------------------------------------------------------------------------- #
+# PUT /v1/state/{state_key} — per-tenant state-key cap (security-auditor follow-up).
+# --------------------------------------------------------------------------- #
+
+
+async def test_create_on_existing_key_skips_cap_check_entirely(test_app, monkeypatch):
+    """An existing-key create attempt (-> 409 already_exists) never adds a new key, so it
+    must never touch the cap lock/count at all — not just "never be blocked" by them."""
+    _patch_tenant_session(monkeypatch)
+
+    existing_row = {
+        "state_key": "my-key",
+        "state_value": {"x": 99},
+        "version": 3,
+        "updated_at": "2026-07-08T12:00:00+00:00",
+        "updated_by_agent_id": None,
+    }
+
+    async def _get_agent_state(_session, _state_key):
+        return existing_row
+
+    async def _never_called(*_args, **_kwargs):
+        raise AssertionError("must not be called when the state_key already exists")
+
+    async def _create_agent_state_if_absent(_session, **_kwargs):
+        return None  # ON CONFLICT DO NOTHING -> the row already existed
+
+    monkeypatch.setattr(messaging_router, "get_agent_state", _get_agent_state)
+    monkeypatch.setattr(messaging_router, "lock_messaging_state_key_cap", _never_called)
+    monkeypatch.setattr(messaging_router, "count_agent_state_keys", _never_called)
+    monkeypatch.setattr(
+        messaging_router, "create_agent_state_if_absent", _create_agent_state_if_absent
+    )
+
+    resp = await _put(
+        test_app, "/v1/state/my-key", json_body={"expected_version": None, "value": {"x": 1}}
+    )
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "already_exists"
+
+
+async def test_state_key_cap_at_limit_returns_422_and_does_not_insert(test_app, monkeypatch):
+    _patch_tenant_session(monkeypatch)
+
+    async def _get_agent_state(_session, _state_key):
+        return None  # brand-new key
+
+    async def _lock_messaging_state_key_cap(_session, _tenant_id):
+        return None
+
+    async def _count_agent_state_keys(_session):
+        return 2  # at the configured cap below
+
+    async def _create_should_not_be_called(_session, **_kwargs):
+        raise AssertionError("create_agent_state_if_absent must not be called over the cap")
+
+    monkeypatch.setattr(messaging_router, "get_agent_state", _get_agent_state)
+    monkeypatch.setattr(
+        messaging_router, "lock_messaging_state_key_cap", _lock_messaging_state_key_cap
+    )
+    monkeypatch.setattr(messaging_router, "count_agent_state_keys", _count_agent_state_keys)
+    monkeypatch.setattr(
+        messaging_router, "create_agent_state_if_absent", _create_should_not_be_called
+    )
+
+    monkeypatch.setenv("ORCH_MESSAGING_MAX_STATE_KEYS_PER_TENANT", "2")
+    from orchestrator.app import create_app
+
+    capped_app = create_app()
+    capped_app.dependency_overrides[require_tenant_principal] = lambda: _PRINCIPAL
+
+    resp = await _put(
+        capped_app,
+        "/v1/state/brand-new-key",
+        json_body={"expected_version": None, "value": {"x": 1}},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "state_key_limit_exceeded"
+
+
+async def test_version_matched_update_never_checks_state_key_cap(test_app, monkeypatch):
+    """A version-matched UPDATE of an EXISTING key never adds a new key, so the cap check
+    must never even be invoked on this path — regardless of how close to the cap the
+    tenant is."""
+    _patch_tenant_session(monkeypatch)
+    _patch_privileged_session(monkeypatch)
+    appended = _patch_state_audit_append(monkeypatch)
+
+    async def _never_called(*_args, **_kwargs):
+        raise AssertionError("must not be called on a version-matched UPDATE")
+
+    async def _update_agent_state_cas(_session, **kwargs):
+        return {
+            "state_key": "my-key",
+            "state_value": kwargs["state_value"],
+            "version": 3,
+            "updated_at": "2026-07-08T12:00:01+00:00",
+            "updated_by_agent_id": kwargs["updated_by_agent_id"],
+        }
+
+    monkeypatch.setattr(messaging_router, "lock_messaging_state_key_cap", _never_called)
+    monkeypatch.setattr(messaging_router, "count_agent_state_keys", _never_called)
+    monkeypatch.setattr(messaging_router, "update_agent_state_cas", _update_agent_state_cas)
+
+    resp = await _put(
+        test_app,
+        "/v1/state/my-key",
+        json_body={"expected_version": 2, "value": {"x": 2}},
+    )
+    assert resp.status_code == 200
+    assert appended[0]["disposition"] == "updated"
 
 
 # --------------------------------------------------------------------------- #
@@ -386,6 +523,14 @@ async def test_get_unknown_key_is_404(test_app, monkeypatch):
     resp = await _get(test_app, "/v1/state/missing-key")
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "not_found"
+
+
+async def test_get_oversized_state_key_is_422_not_a_silent_no_match(test_app):
+    """GET must reject an oversized state_key the same way PUT already does (code-reviewer
+    follow-up) — never fall through to a DB lookup that silently returns a 404 no-match."""
+    resp = await _get(test_app, "/v1/state/" + ("k" * 257))
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "schema_invalid"
 
 
 async def test_get_known_key_is_200(test_app, monkeypatch):
