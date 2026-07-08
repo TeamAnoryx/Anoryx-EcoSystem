@@ -1,10 +1,15 @@
 """Allocation-admin persistence (D-007, ADR-0007 §5).
 
-Tenant-scoped reads/writes against the ``allocations`` / ``allocation_targets`` /
-``change_history`` tables (migration 0005). Every function takes an already-open
-:class:`AsyncSession` (from ``delta.persistence.database.get_tenant_session``) and does
-NOT commit — the caller owns the transaction, exactly like
-``budget_engine.definitions`` and ``kill_switch.state``.
+Tenant-scoped reads/writes against the ``allocations`` / ``allocation_targets`` tables
+(migration 0005). Every function takes an already-open :class:`AsyncSession` (from
+``delta.persistence.database.get_tenant_session``) and does NOT commit — the caller
+owns the transaction, exactly like ``budget_engine.definitions`` and
+``kill_switch.state``.
+
+The change-history log itself (``append_history``/``list_history``/``HistoryRecord``)
+moved to ``delta.persistence.audit_log`` in D-009, which hash-chains it — a persistence-
+layer concern shared by every automated financial workflow (allocations, budget-engine
+and kill-switch enforcement), not something specific to allocation-admin.
 """
 
 from __future__ import annotations
@@ -17,7 +22,7 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..budget import BudgetPeriod, BudgetScope
-from ..persistence.models import allocation_targets, allocations, change_history
+from ..persistence.models import allocation_targets, allocations
 
 # List-response bounds (finding #1, docs/audit/d-007-security-audit.md): an
 # unbounded SELECT over a long-lived, append-only tenant grows without limit.
@@ -55,18 +60,6 @@ class AllocationRecord:
     decided_by: str | None
     decided_at: datetime | None
     targets: tuple[AllocationTargetRecord, ...]
-
-
-@dataclass(frozen=True)
-class HistoryRecord:
-    history_id: str
-    tenant_id: str
-    entity_type: str
-    entity_id: str
-    action: str
-    actor: str
-    note: str | None
-    created_at: datetime
 
 
 def _target_from_row(row) -> AllocationTargetRecord:
@@ -261,74 +254,3 @@ async def set_target_budget_id(session: AsyncSession, *, target_id: str, budget_
         .where(allocation_targets.c.target_id == target_id)
         .values(budget_id=budget_id)
     )
-
-
-async def record_history(
-    session: AsyncSession,
-    *,
-    tenant_id: str,
-    entity_type: str,
-    entity_id: str,
-    action: str,
-    actor: str,
-    now: datetime,
-    note: str | None = None,
-    history_id: str | None = None,
-) -> HistoryRecord:
-    """Append one change-history row. Does NOT commit. INSERT-only at the grant layer."""
-    hid = history_id or str(uuid.uuid4())
-    await session.execute(
-        insert(change_history).values(
-            history_id=hid,
-            tenant_id=tenant_id,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            action=action,
-            actor=actor,
-            note=note,
-            created_at=now,
-        )
-    )
-    return HistoryRecord(
-        history_id=hid,
-        tenant_id=tenant_id,
-        entity_type=entity_type,
-        entity_id=entity_id,
-        action=action,
-        actor=actor,
-        note=note,
-        created_at=now,
-    )
-
-
-async def list_history(
-    session: AsyncSession,
-    *,
-    entity_type: str | None = None,
-    entity_id: str | None = None,
-    limit: int = DEFAULT_LIST_LIMIT,
-) -> list[HistoryRecord]:
-    """List change-history rows for the caller's tenant (RLS-confined), newest first.
-
-    ``limit`` is clamped to ``[1, MAX_LIST_LIMIT]`` (see :func:`list_allocations`).
-    """
-    stmt = select(change_history)
-    if entity_type is not None:
-        stmt = stmt.where(change_history.c.entity_type == entity_type)
-    if entity_id is not None:
-        stmt = stmt.where(change_history.c.entity_id == entity_id)
-    stmt = stmt.order_by(change_history.c.created_at.desc()).limit(_clamp_limit(limit))
-    rows = (await session.execute(stmt)).all()
-    return [
-        HistoryRecord(
-            history_id=r.history_id,
-            tenant_id=r.tenant_id,
-            entity_type=r.entity_type,
-            entity_id=r.entity_id,
-            action=r.action,
-            actor=r.actor,
-            note=r.note,
-            created_at=r.created_at,
-        )
-        for r in rows
-    ]

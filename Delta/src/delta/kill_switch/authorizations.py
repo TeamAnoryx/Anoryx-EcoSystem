@@ -30,6 +30,7 @@ from sqlalchemy import and_, delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..persistence.audit_log import append_history
 from ..persistence.database import get_tenant_session
 from ..persistence.models import agent_authorizations as _aa
 from .config import KillSwitchSettings
@@ -38,6 +39,13 @@ from .emit import build_clear_payload
 from .outbox import enqueue_decision
 from .state import KillSwitchState, find_state, killed_scopes_for_agent, try_transition_to_clear
 from .triggers import UNAUTHORIZED_AGENT
+
+# Reserved system-actor slug for audit rows this module writes itself (D-009) — mirrors
+# kill_switch.evaluator._ACTOR. No operator-identity capture exists yet on this
+# function-level recovery path (no HTTP wrapper — "full admin UI is deferred," ADR-0006
+# §3.6); attributing to the system that executed the transition is the honest choice
+# until an operator-facing endpoint threads a real actor through.
+_ACTOR = "kill-switch"
 
 
 async def is_tenant_gated(session: AsyncSession, tenant_id: str) -> bool:
@@ -84,6 +92,20 @@ async def _clear_scope(session: AsyncSession, state: KillSwitchState, now: datet
         transition="clear",
         policy_payload=payload,
         now=now,
+    )
+    # D-009: hash-chain audited in the SAME transaction as the outbox enqueue.
+    await append_history(
+        session,
+        tenant_id=state.tenant_id,
+        entity_type="kill_switch_enforcement",
+        entity_id=state.kill_id,
+        action="clear",
+        actor=_ACTOR,
+        now=now,
+        note=(
+            f"policy_id={state.policy_id} version={version} "
+            f"team={state.team_id} project={state.project_id} agent={state.agent_id}"
+        ),
     )
     return True
 

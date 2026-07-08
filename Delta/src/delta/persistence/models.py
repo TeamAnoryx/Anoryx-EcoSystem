@@ -229,4 +229,13 @@ change_history = sa.Table(
     sa.Column("actor", sa.String(128), nullable=False),
     sa.Column("note", sa.String(1024), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    # --- D-009 hash chain (migration 0006) ---------------------------------
+    # sequence_number is the per-table monotonic chain-order key (a global
+    # BIGSERIAL; a tenant's own rows read via RLS are still exactly ordered
+    # relative to each other even though the sequence has gaps from other
+    # tenants' rows). prev_hash/row_hash are never NULL once migration 0006
+    # completes; see delta.persistence.audit_log for the hash algorithm.
+    sa.Column("sequence_number", sa.BigInteger, nullable=False),
+    sa.Column("prev_hash", sa.String(64), nullable=False),
+    sa.Column("row_hash", sa.String(64), nullable=False),
 )

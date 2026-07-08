@@ -1,5 +1,6 @@
 """Allocation-admin HTTP surface: ``POST/GET /v1/admin/allocations``,
-``POST /v1/admin/allocations/{id}/decision``, ``GET /v1/admin/history`` (D-007).
+``POST /v1/admin/allocations/{id}/decision``, ``GET /v1/admin/history``,
+``GET /v1/admin/audit/verify`` (D-007, D-009).
 
 Every route resolves a tenant-scoped session via ``get_tenant_session(tenant_id)`` for
 the ``tenant_id`` the caller supplies (query param on GET, body field on POST) — the
@@ -12,6 +13,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..identifiers import TenantId
+from ..persistence.audit_log import list_history, verify_chain
 from ..persistence.database import get_tenant_session
 from .auth import require_admin
 from .schemas import (
@@ -19,6 +21,7 @@ from .schemas import (
     AllocationStatus,
     AllocationView,
     ApprovalDecisionRequest,
+    ChainVerificationView,
     ChangeHistoryEntryView,
 )
 from .service import (
@@ -30,7 +33,6 @@ from .service import (
     get_allocation_view,
     list_allocation_views,
 )
-from .store import list_history
 
 router = APIRouter(prefix="/v1/admin", dependencies=[Depends(require_admin)])
 
@@ -100,3 +102,19 @@ async def get_history(
         )
         for r in rows
     ]
+
+
+@router.get("/audit/verify", response_model=ChainVerificationView)
+async def get_audit_verify(tenant_id: TenantId) -> ChainVerificationView:
+    """Walk this tenant's change-history hash chain and report the first tamper, if any
+    (D-009). Runs on the tenant-scoped session — RLS confines the walk to exactly this
+    tenant's rows, which is also exactly the chain's own scope (per-tenant, see
+    ``delta.persistence.audit_log``'s module docstring)."""
+    async with get_tenant_session(tenant_id) as session:
+        result = await verify_chain(session, tenant_id=tenant_id)
+    return ChainVerificationView(
+        is_valid=result.is_valid,
+        rows_checked=result.rows_checked,
+        first_mismatch_sequence=result.first_mismatch_sequence,
+        error_detail=result.error_detail,
+    )

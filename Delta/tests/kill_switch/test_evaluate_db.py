@@ -99,6 +99,7 @@ async def test_unauthorized_agent_killed_exactly_once(
     stub_publish,
     read_outbox,
     read_state,
+    read_history,
 ):
     # Gate the tenant (authorize a DIFFERENT agent) so "rogue-agent" is unauthorized.
     await _authorize(tenant_session, tenant_id, "gateway-core")
@@ -126,6 +127,10 @@ async def test_unauthorized_agent_killed_exactly_once(
     assert outbox[0]["transition"] == "kill"
     states = await read_state(tenant_id)
     assert states[0]["state"] == "killed" and states[0]["reason"] == "unauthorized_agent"
+    # D-009: the kill decision is hash-chain audited in the same transaction.
+    history = await read_history(tenant_id)
+    assert [h["action"] for h in history] == ["kill"]
+    assert history[0]["actor"] == "kill-switch"
 
     # A second offending event for the SAME scope must not re-publish (idempotent).
     r2 = await post_debit(
@@ -134,6 +139,7 @@ async def test_unauthorized_agent_killed_exactly_once(
     )
     await evaluate_kill_switch(r2, kill_switch_settings)
     assert len(stub_publish.calls) == 1  # no flapping / re-publish
+    assert [h["action"] for h in await read_history(tenant_id)] == ["kill"]  # no duplicate row
 
 
 # ------------------------------------------------------------- anomalous single-tx trigger
@@ -213,6 +219,7 @@ async def test_authorize_clears_all_scopes_for_agent(
     stub_publish,
     read_outbox,
     read_state,
+    read_history,
 ):
     """vector 10: a rogue agent_id offending under TWO different team/project scopes is
     cleared everywhere by a single authorize_agent call, not just the last-seen scope."""
@@ -236,6 +243,7 @@ async def test_authorize_clears_all_scopes_for_agent(
     assert all(
         s["state"] == "killed" and s["reason"] == "unauthorized_agent" for s in killed_before
     )
+    assert [h["action"] for h in await read_history(tenant_id)] == ["kill", "kill"]
 
     await _authorize(tenant_session, tenant_id, "rogue")
     await drainer.drain_tenant(tenant_id, kill_switch_settings, datetime.now(timezone.utc))
@@ -248,6 +256,11 @@ async def test_authorize_clears_all_scopes_for_agent(
     clears = [o for o in outbox if o["transition"] == "clear"]
     assert len(clears) == 2  # one clear decision per scope
     assert all(o["state"] == "distributed" for o in clears)
+    # D-009: two kills then two clears, all hash-chain audited, all attributed to the
+    # system actor (no human operator behind either transition here).
+    history = await read_history(tenant_id)
+    assert [h["action"] for h in history] == ["kill", "kill", "clear", "clear"]
+    assert all(h["actor"] == "kill-switch" for h in history)
 
 
 async def test_clear_kill_switch_operator_override(

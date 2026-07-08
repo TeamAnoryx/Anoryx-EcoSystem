@@ -33,6 +33,14 @@ async def ensure_accounts(
 
     ON CONFLICT DO NOTHING — idempotent and safe to call repeatedly. Runs in the
     caller's transaction so the FK is satisfied atomically when the posting commits.
+
+    No conflict_target is specified (bare ``ON CONFLICT DO NOTHING``): the table has
+    two overlapping unique constraints on ``account_id`` (the primary key) and on
+    ``(tenant_id, account_id)`` (``uq_accounts_tenant_account``); naming only one as
+    the arbiter leaves the other to raise a real UniqueViolationError under concurrent
+    callers racing to seed the SAME deterministic account_id (D-009's concurrent-append
+    test does exactly this) — a target-less clause suppresses conflicts on ANY unique
+    or exclusion constraint, which is what "idempotent and safe" actually requires here.
     """
     for account_id in account_ids:
         await session.execute(
@@ -44,5 +52,5 @@ async def ensure_accounts(
                 currency=currency,
                 name="test account",
             )
-            .on_conflict_do_nothing(index_elements=["account_id"])
+            .on_conflict_do_nothing()
         )
