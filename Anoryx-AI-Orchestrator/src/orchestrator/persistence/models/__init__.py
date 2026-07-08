@@ -12,6 +12,8 @@ from orchestrator.persistence.models.base import Base
 from orchestrator.persistence.models.dead_letter import DeadLetterEntry
 from orchestrator.persistence.models.distribution_audit_log import DistributionAuditLog
 from orchestrator.persistence.models.forward_outbox import ForwardOutbox
+from orchestrator.persistence.models.identity_audit_log import IdentityAuditLog
+from orchestrator.persistence.models.identity_event import IdentityEvent
 from orchestrator.persistence.models.ingest_audit_log import IngestAuditLog
 from orchestrator.persistence.models.ingest_event import IngestEvent
 from orchestrator.persistence.models.policy_distribution import PolicyDistribution
@@ -38,4 +40,7 @@ __all__ = [
     "QueryServiceToken",
     # O-009 governed relay (ADR-0009).
     "RelayAuditLog",
+    # O-010 cross-product identity correlation (ADR-0010).
+    "IdentityEvent",
+    "IdentityAuditLog",
 ]

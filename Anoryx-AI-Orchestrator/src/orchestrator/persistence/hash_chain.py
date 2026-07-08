@@ -263,3 +263,63 @@ def compute_relay_row_hash(data: dict[str, Any]) -> str:
 def verify_relay_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
     """Recompute and compare the relay row_hash for a single row. True iff it matches."""
     return compute_relay_row_hash(row_data) == stored_hash
+
+
+# =========================================================================== #
+# Identity-event audit chain (O-010, ADR-0010) — ADDITIVE, parallel to the ingest,
+# distribution, registry, and relay chains above. Same canonicalization discipline over a
+# distinct field set and a domain-separated genesis so none of the five chains can ever be
+# confused. The chains above are untouched (byte-identical).
+# =========================================================================== #
+
+# Domain-separated genesis constant, distinct from every other chain's genesis.
+IDENTITY_GENESIS_HASH = hashlib.sha256(b"anoryx-orchestrator:identity-audit:genesis:v1").hexdigest()
+
+# Fields folded into the canonical hash content, in a fixed documented order.
+# prev_hash MUST be last to surface ordering issues clearly.
+IDENTITY_CANONICAL_FIELDS = [
+    "tenant_id",
+    "source_product",
+    "principal_type",
+    "principal_id",
+    "action",
+    "idempotency_key",
+    "disposition",
+    # Chain field — last.
+    "prev_hash",
+]
+
+# Folded in ONLY when non-None (opt-in-when-present). Never add these to
+# IDENTITY_CANONICAL_FIELDS — that would inject "<field>":null into every link and break
+# verification over historical data.
+_IDENTITY_OPTIONAL_FIELDS = ("target",)
+
+
+def canonical_identity_json(data: dict[str, Any]) -> bytes:
+    """Serialize identity-event row data to canonical JSON: sorted keys, no whitespace, UTF-8.
+
+    Only IDENTITY_CANONICAL_FIELDS are included (missing → None, to prevent omission
+    attacks). Each _IDENTITY_OPTIONAL_FIELDS member is appended ONLY when not None.
+    """
+    filtered: dict[str, Any] = {k: data.get(k) for k in IDENTITY_CANONICAL_FIELDS}
+    for field in _IDENTITY_OPTIONAL_FIELDS:
+        if data.get(field) is not None:
+            filtered[field] = data[field]
+    return json.dumps(filtered, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+
+
+def compute_identity_row_hash(data: dict[str, Any]) -> str:
+    """Return the 64-char lowercase SHA-256 hex digest of the canonical JSON of *data*.
+
+    *data* MUST include 'prev_hash'.
+    """
+    if "prev_hash" not in data:
+        raise ValueError("row data must include 'prev_hash' to compute row_hash")
+    return hashlib.sha256(canonical_identity_json(data)).hexdigest()
+
+
+def verify_identity_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
+    """Recompute and compare the identity row_hash for a single row. True iff it matches."""
+    return compute_identity_row_hash(row_data) == stored_hash

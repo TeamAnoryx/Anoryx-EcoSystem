@@ -1,5 +1,6 @@
-"""GET /v1/admin/events/recent + /v1/admin/distributions/recent — the O-007 admin API
-(ADR-0007), plus GET /admin serving the minimal static operator UI.
+"""GET /v1/admin/events/recent + /v1/admin/distributions/recent + /v1/admin/identity/events/recent
+— the O-007 admin API (ADR-0007) plus the O-010 identity-correlation admin read (ADR-0010),
+plus GET /admin serving the minimal static operator UI.
 
 Gated by the SAME operator bearer (`ORCH_ADMIN_TOKEN`, `CoordinationSettings.admin_token`)
 that already fronts the O-005 registry seams — the admin API is the same operator
@@ -34,6 +35,7 @@ from orchestrator.persistence.database import get_privileged_session
 from orchestrator.persistence.repositories import (
     list_recent_distributions_admin,
     list_recent_events_admin,
+    list_recent_identity_events_admin,
 )
 
 router = APIRouter()
@@ -158,6 +160,46 @@ async def recent_distributions(
     async with get_privileged_session() as session:
         rows = await list_recent_distributions_admin(session, limit=limit_value)
     body = {"data": [_distribution_summary_body(row) for row in rows]}
+    return JSONResponse(status_code=200, content=body, headers={"X-Request-Id": request_id})
+
+
+def _identity_event_summary_body(row: dict[str, Any]) -> dict[str, Any]:
+    """Project one identity_events row for the admin fleet-triage read (O-010, ADR-0010)."""
+    body: dict[str, Any] = {
+        "tenant_id": row["tenant_id"],
+        "source_product": row["source_product"],
+        "principal_type": row["principal_type"],
+        "principal_id": row["principal_id"],
+        "action": row["action"],
+        "idempotency_key": row["idempotency_key"],
+        "occurred_at": _isoformat(row["occurred_at"]),
+        "received_at": _isoformat(row["received_at"]),
+    }
+    if row.get("target") is not None:
+        body["target"] = row["target"]
+    return body
+
+
+@router.get("/v1/admin/identity/events/recent")
+async def recent_identity_events(
+    request: Request,
+    limit: int | None = Query(default=None),
+) -> JSONResponse:
+    """The `limit` most-recent cross-product identity events across ALL tenants (O-010).
+
+    Operator-scoped, cross-tenant fleet triage — the same shape as the two O-007 admin
+    reads above. Same operator bearer (`ORCH_ADMIN_TOKEN`); a tenant's own scoped view is
+    the existing `GET /v1/identity/events` seam (query_service_tokens principal).
+    """
+    settings: CoordinationSettings = request.app.state.coordination_settings
+    request_id = _request_id()
+    auth_error = _require_admin(request, settings, request_id)
+    if auth_error is not None:
+        return auth_error
+    limit_value = _clamp_limit(limit)
+    async with get_privileged_session() as session:
+        rows = await list_recent_identity_events_admin(session, limit=limit_value)
+    body = {"data": [_identity_event_summary_body(row) for row in rows]}
     return JSONResponse(status_code=200, content=body, headers={"X-Request-Id": request_id})
 
 

@@ -186,6 +186,17 @@ tags:
       monitors/redacts/routes the payload once it arrives — this seam performs
       centralized, governed DISPATCH, not a re-implementation of Sentinel's detectors
       (ADR-0009 honesty boundary). SINGLE ATTEMPT, NO RETRY, NO STREAMING in v1.
+  - name: identity
+    description: |
+      O-010 cross-product identity-event correlation: lets Sentinel, Delta, and Rendly each
+      push a normalized "who accessed what, where" record after their OWN existing auth
+      boundary fires (Sentinel's F-014 SSO login, Delta's admin-token use, Rendly's JWT
+      verification) into one durably audited, tenant-queryable log. This is a CORRELATION
+      seam, NOT identity federation, SSO, or cross-product RBAC — each product keeps its own
+      credential type and verification logic; the Orchestrator never issues, verifies, or
+      translates any of them (ADR-0010 honesty boundary). Idempotent by construction
+      (source_product + idempotency_key); every ingest attempt — fresh accept or duplicate —
+      is hash-chain audited.
 
 paths:
   /v1/ingest/events:
@@ -1168,6 +1179,151 @@ paths:
         '503':
           $ref: '#/components/responses/RelayTargetUnavailable'
 
+  /v1/identity/events:
+    post:
+      operationId: ingestIdentityEvent
+      tags: [identity]
+      summary: Ingest one normalized cross-product identity/access event
+      description: |
+        Sentinel, Delta, or Rendly each push ONE normalized "who accessed what, where"
+        record after their OWN existing auth boundary fires — Sentinel's F-014 SSO login,
+        Delta's admin-token use, Rendly's JWT verification. `source_product` is
+        SERVER-RESOLVED from the matched identity-source bearer — never accepted from the
+        body.
+
+        IDEMPOTENT: a retried push with the same (source_product, idempotency_key) is
+        recorded as `disposition: duplicate` (no second row, never an error). Every ingest
+        ATTEMPT — fresh accept or duplicate — is hash-chain audited.
+
+        HONESTY BOUNDARY (ADR-0010): this seam does NOT verify, translate, or federate any
+        product's credential — it only durably records that a (product-verified) access
+        happened. `principal_id` is an OPAQUE identifier in the source product's OWN
+        namespace (an admin_user_id, an idp_subject, a static admin slug); no cross-product
+        principal-identity mapping is implied or performed.
+
+        Auth: mTLS (peer = the source product) AND an identity-source bearer.
+      security:
+        - mutualTLS: []
+          identitySourceBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IdentityEventIngestRequest'
+            examples:
+              ssoLogin:
+                summary: Sentinel records an operator SSO login
+                value:
+                  tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+                  principal_type: operator
+                  principal_id: "idp-subject-a1b2c3"
+                  action: sso_login
+                  target: "admin-console"
+                  idempotency_key: "sentinel-sso-a1b2c3-1781784000"
+                  occurred_at: "2026-07-08T12:00:00Z"
+      responses:
+        '202':
+          description: The event was durably recorded (fresh accept or idempotent duplicate).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdentityEventIngestAccepted'
+              examples:
+                accepted:
+                  value:
+                    status: accepted
+                    disposition: accepted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          description: Request body exceeds the maximum allowed size.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    get:
+      operationId: queryIdentityEvents
+      tags: [identity]
+      summary: Query this tenant's cross-product identity events (read-only metadata)
+      description: |
+        Cursor-paginated read of the caller's OWN tenant's identity/access events across
+        Sentinel, Delta, and Rendly. Reuses the EXISTING O-006 per-tenant principal
+        (`query_service_tokens`) — the SAME credential that already gates `GET /v1/events` —
+        rather than a new tenant-read trust root. Results are RLS-scoped to the principal's
+        tenant; there is no cross-tenant `tenant_id` filter (unlike `/v1/events`) because
+        the principal already fixes the tenant.
+
+        Auth: mTLS (peer = Delta) AND a per-tenant service token (bearer).
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      parameters:
+        - name: source_product
+          in: query
+          required: false
+          description: Filter to one source product.
+          schema:
+            type: string
+            enum: [sentinel, delta, rendly]
+        - name: principal_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [operator, tenant_user, service_account, peer_credential]
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: A cursor-paginated page of this tenant's identity events (ascending sequence order).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdentityEventPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /v1/admin/identity/events/recent:
+    get:
+      operationId: listRecentIdentityEventsAdmin
+      tags: [admin, identity]
+      summary: List recent cross-product identity events across ALL tenants (operator-scoped)
+      description: |
+        Cross-tenant operator fleet-triage view of recent identity/access events — the same
+        shape and the SAME operator bearer (`ORCH_ADMIN_TOKEN`) as the O-007 admin reads. A
+        tenant's own scoped view is `GET /v1/identity/events`.
+
+        Auth: mTLS (operator host) AND an operator bearer token.
+      security:
+        - mutualTLS: []
+          operatorBearer: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A single bounded page of recent identity events across all tenants (newest-first).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminIdentityEventPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
 components:
 
   securitySchemes:
@@ -1249,6 +1405,17 @@ components:
         own `Authorization` (which authenticates the Delta/Rendly source, not the
         tenant). Forwarded to Sentinel UNCHANGED as its `Authorization: Bearer <value>` —
         the Orchestrator never stores, mints, or inspects it (secret hygiene).
+
+    identitySourceBearer:
+      type: http
+      scheme: bearer
+      description: |
+        O-010 IDENTITY SOURCE bearer token (env ORCH_IDENTITY_SOURCE_TOKENS, keyed by
+        source_product: sentinel | delta | rendly) authorizing a caller to push identity/
+        access events into the cross-product correlation log. source_product is
+        SERVER-RESOLVED from the matched token — never accepted from the request body.
+        DISTINCT from every other Orchestrator credential (operatorBearer, serviceToken,
+        hmacIngest, relaySourceBearer).
 
   parameters:
     IngestTimestamp:
@@ -2245,6 +2412,123 @@ components:
           description: |
             Forwarded as the JSON body of the outbound call. `stream: true` is rejected
             (422) — streaming relay is not supported in v1.
+
+    IdentityEventIngestRequest:
+      type: object
+      description: |
+        One normalized "who accessed what, where" record (O-010, ADR-0010). `principal_id`
+        is opaque in the SOURCE PRODUCT's own namespace — no cross-product identity mapping
+        is implied. `occurred_at` MUST carry an explicit UTC offset.
+      additionalProperties: false
+      required: [tenant_id, principal_type, principal_id, action, idempotency_key, occurred_at]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+          maxLength: 64
+        principal_type:
+          type: string
+          enum: [operator, tenant_user, service_account, peer_credential]
+        principal_id:
+          type: string
+          maxLength: 256
+          example: "idp-subject-a1b2c3"
+        action:
+          type: string
+          maxLength: 64
+          example: "sso_login"
+        target:
+          type: string
+          maxLength: 256
+          nullable: true
+          description: What was accessed, if applicable (opt-in — absent when not meaningful).
+        idempotency_key:
+          type: string
+          maxLength: 128
+          description: Source-supplied dedup key, unique per source_product.
+        occurred_at:
+          type: string
+          format: date-time
+          description: When the SOURCE product recorded this (ISO-8601, explicit UTC offset required).
+
+    IdentityEventIngestAccepted:
+      type: object
+      required: [status, disposition]
+      properties:
+        status:
+          type: string
+          const: accepted
+        disposition:
+          type: string
+          enum: [accepted, duplicate]
+          description: "`duplicate` means an idempotent replay of an already-recorded (source_product, idempotency_key) — not an error."
+
+    IdentityEvent:
+      type: object
+      description: One correlated identity/access record, as returned by the read seams.
+      required:
+        [
+          tenant_id,
+          source_product,
+          principal_type,
+          principal_id,
+          action,
+          idempotency_key,
+          occurred_at,
+          received_at,
+        ]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        source_product:
+          type: string
+          enum: [sentinel, delta, rendly]
+        principal_type:
+          type: string
+          enum: [operator, tenant_user, service_account, peer_credential]
+        principal_id:
+          type: string
+        action:
+          type: string
+        target:
+          type: string
+          nullable: true
+        idempotency_key:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        received_at:
+          type: string
+          format: date-time
+          description: When the Orchestrator durably recorded this event.
+
+    IdentityEventPage:
+      type: object
+      description: A cursor-paginated page of a tenant's own identity events (ascending sequence order).
+      required: [data]
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/IdentityEvent'
+        next_cursor:
+          type: string
+          nullable: true
+          maxLength: 512
+
+    AdminIdentityEventPage:
+      type: object
+      description: A single bounded "recent N" page of identity events across ALL tenants (newest-first, no cursor).
+      required: [data]
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/IdentityEvent'
 
   responses:
     Unauthorized:

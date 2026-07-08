@@ -758,6 +758,219 @@ async def validate_relay_chain(session: AsyncSession) -> bool:
     return True
 
 
+# --------------------------------------------------------------------------- #
+# Identity-event correlation (O-010, ADR-0010) — data access (tenant session, RLS-scoped)
+# and its audit chain (privileged session, no RLS).
+# --------------------------------------------------------------------------- #
+
+# The projection columns for both the tenant read and the admin cross-tenant read (identical
+# shape — never any additional internal column beyond sequence_number, which is selected only
+# to compute the tenant read's opaque cursor).
+_IDENTITY_EVENT_COLUMNS = (
+    "tenant_id",
+    "source_product",
+    "principal_type",
+    "principal_id",
+    "action",
+    "target",
+    "idempotency_key",
+    "occurred_at",
+    "received_at",
+)
+
+
+async def insert_identity_event(session: AsyncSession, row: dict[str, Any]) -> bool:
+    """INSERT one identity_events row (tenant session, RLS-scoped). Caller commits.
+
+    Idempotent: ON CONFLICT (source_product, idempotency_key) DO NOTHING. Returns True iff a
+    NEW row was inserted, False iff the (source_product, idempotency_key) pair already
+    existed (an idempotent replay — never a second row, never an error).
+    """
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from orchestrator.persistence.models.identity_event import IdentityEvent
+
+    stmt = (
+        pg_insert(IdentityEvent)
+        .values(**row)
+        .on_conflict_do_nothing(constraint="uq_ide_source_idempotency")
+        .returning(IdentityEvent.sequence_number)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none() is not None
+
+
+async def list_identity_events(
+    session: AsyncSession,
+    *,
+    filters: dict[str, Any],
+    limit: int,
+    cursor: int | None,
+) -> tuple[list[dict[str, Any]], int | None]:
+    """Cursor-paginated read of identity_events (tenant session, RLS-scoped).
+
+    Runs on get_tenant_session so RLS scopes rows to the principal's tenant — no explicit
+    tenant predicate. Mirrors O-006's list_events cursor discipline exactly: `cursor` is the
+    exclusive lower bound on sequence_number; one extra row (limit+1) is fetched to compute
+    the next cursor without a second query. `filters` may carry source_product/principal_type/
+    action. Returns (rows, next_cursor).
+    """
+    conditions: list[str] = []
+    params: dict[str, Any] = {}
+    if cursor is not None:
+        conditions.append("sequence_number > :cursor")
+        params["cursor"] = cursor
+    for column in ("source_product", "principal_type", "action"):
+        value = filters.get(column)
+        if value is not None:
+            conditions.append(f"{column} = :{column}")
+            params[column] = value
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    columns = ", ".join(_IDENTITY_EVENT_COLUMNS)
+    params["lim"] = limit + 1
+    # avoid-sqlalchemy-text false positive: `columns`/`where` are built from the constant
+    # _IDENTITY_EVENT_COLUMNS tuple + literal predicate fragments; every VALUE is bound.
+    # nosemgrep: avoid-sqlalchemy-text
+    statement = text(
+        f"SELECT {columns}, sequence_number FROM identity_events{where} "  # noqa: S608
+        "ORDER BY sequence_number ASC LIMIT :lim"
+    )
+    result = await session.execute(statement, params)
+    rows = result.mappings().all()
+    next_cursor: int | None = None
+    if len(rows) > limit:
+        next_cursor = rows[limit - 1]["sequence_number"]
+        rows = rows[:limit]
+    projected = [{column: row[column] for column in _IDENTITY_EVENT_COLUMNS} for row in rows]
+    return projected, next_cursor
+
+
+async def list_recent_identity_events_admin(
+    session: AsyncSession, *, limit: int
+) -> list[dict[str, Any]]:
+    """Return the `limit` most-recent identity_events rows, newest first (PRIVILEGED session).
+
+    Cross-tenant by design (operator fleet triage, mirrors ADR-0007's admin reads) — no
+    tenant GUC, no RLS scoping. Same projection as the tenant-scoped read.
+    """
+    columns = ", ".join(_IDENTITY_EVENT_COLUMNS)
+    # avoid-sqlalchemy-text false positive: `columns` is joined from the constant
+    # _IDENTITY_EVENT_COLUMNS tuple; `limit` is a bound parameter, not interpolated.
+    # nosemgrep: avoid-sqlalchemy-text
+    statement = text(
+        f"SELECT {columns} FROM identity_events "  # noqa: S608
+        "ORDER BY sequence_number DESC LIMIT :lim"
+    )
+    result = await session.execute(statement, {"lim": limit})
+    rows = result.mappings().all()
+    return [{column: row[column] for column in _IDENTITY_EVENT_COLUMNS} for row in rows]
+
+
+# Distinct transaction-scoped advisory-lock key for the identity-chain append (a stable
+# bigint from a domain label, distinct from every other chain's key).
+_IDENTITY_CHAIN_LOCK_KEY = int.from_bytes(
+    hashlib.sha256(b"anoryx-orchestrator:identity-audit-chain").digest()[:8],
+    "big",
+    signed=True,
+)
+
+
+async def identity_chain_tip_hash(session: AsyncSession) -> str:
+    """Return the most-recent identity_audit_log row_hash, or IDENTITY_GENESIS_HASH."""
+    result = await session.execute(
+        text("SELECT row_hash FROM identity_audit_log ORDER BY sequence_number DESC LIMIT 1")
+    )
+    tip = result.scalar_one_or_none()
+    return tip if tip is not None else hash_chain.IDENTITY_GENESIS_HASH
+
+
+async def append_identity_audit_link(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    source_product: str,
+    principal_type: str,
+    principal_id: str,
+    action: str,
+    idempotency_key: str,
+    disposition: str,
+    target: str | None = None,
+) -> str:
+    """Append one hash-chained identity_audit_log link (privileged session).
+
+    Caller opens the privileged transaction (`async with session.begin()`). A
+    transaction-scoped advisory lock (own key) serialises concurrent appends so prev_hash
+    always references the true tip. Returns the new row_hash. `target` follows the
+    opt-in-when-present hash rule (hashed iff not None).
+    """
+    from orchestrator.persistence.models.identity_audit_log import IdentityAuditLog
+
+    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _IDENTITY_CHAIN_LOCK_KEY})
+    prev_hash = await identity_chain_tip_hash(session)
+    row = {
+        "tenant_id": tenant_id,
+        "source_product": source_product,
+        "principal_type": principal_type,
+        "principal_id": principal_id,
+        "action": action,
+        "idempotency_key": idempotency_key,
+        "disposition": disposition,
+        "target": target,
+        "prev_hash": prev_hash,
+    }
+    row["row_hash"] = hash_chain.compute_identity_row_hash(row)
+    await session.execute(insert(IdentityAuditLog).values(**row))
+    return row["row_hash"]
+
+
+async def validate_identity_chain(session: AsyncSession) -> bool:
+    """Re-validate the full identity-event chain in order: each row_hash recomputes + links.
+
+    Returns True iff every link verifies. O(n) — privileged session (the chain is global).
+
+    FAIL-LOUD (mirrors validate_relay_chain, audit L-2): identity_audit_log carries no RLS,
+    but a non-BYPASSRLS role lacks even SELECT here, so assert the role bypasses RLS first
+    (a privileged session) rather than risk a vacuous pass over an empty/denied read.
+    """
+    from orchestrator.persistence.models.identity_audit_log import IdentityAuditLog
+
+    bypass = (
+        await session.execute(
+            text(
+                "SELECT bool_or(rolbypassrls OR rolsuper) FROM pg_roles "
+                "WHERE rolname = current_user"
+            )
+        )
+    ).scalar()
+    if not bypass:
+        raise RuntimeError(
+            "validate_identity_chain requires a BYPASSRLS/superuser privileged session; a "
+            "non-bypass role sees a denied/empty read and would falsely report integrity."
+        )
+    result = await session.execute(
+        select(IdentityAuditLog).order_by(IdentityAuditLog.sequence_number.asc())
+    )
+    expected_prev = hash_chain.IDENTITY_GENESIS_HASH
+    for row in result.scalars():
+        if row.prev_hash != expected_prev:
+            return False
+        row_data = {
+            "tenant_id": row.tenant_id,
+            "source_product": row.source_product,
+            "principal_type": row.principal_type,
+            "principal_id": row.principal_id,
+            "action": row.action,
+            "idempotency_key": row.idempotency_key,
+            "disposition": row.disposition,
+            "target": row.target,
+            "prev_hash": row.prev_hash,
+        }
+        if not hash_chain.verify_identity_row_hash(row_data, row.row_hash):
+            return False
+        expected_prev = row.row_hash
+    return True
+
+
 # =========================================================================== #
 # Per-tenant query principal + tenant-scoped metadata read seams (O-006, ADR-0006) —
 # ADDITIVE, parallel to the blocks above. The principal resolver runs on the PRIVILEGED
