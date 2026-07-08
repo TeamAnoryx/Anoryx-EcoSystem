@@ -1,12 +1,12 @@
 """Migration reversibility on a real Postgres (0001 -> 0002 -> D-004 -> 0004 -> 0005 -> 0006 ->
-0007 -> 0008 -> 0009 -> 0010).
+0007 -> 0008 -> 0009 -> 0010 -> 0011).
 
 The Orchestrator's migrations must apply clean to head AND reverse cleanly. Proves a
-non-stubbed round-trip across ALL migrations (head = 0010_external_gateway): upgrade
+non-stubbed round-trip across ALL migrations (head = 0011_command_center): upgrade
 head -> tables present -> downgrade base -> tables gone -> upgrade head -> tables present again.
 Re-provisions the orchestrator_app password after the final upgrade (downgrade base drops the
-passwordless role) so later tests still connect. The O-005/O-009/O-010/O-011/O-012/O-013
-migrations touched no EXISTING audit-chain table (each adds its own new one), so all nine hash
+passwordless role) so later tests still connect. The O-005/O-009/O-010/O-011/O-012/O-013/O-014
+migrations touched no EXISTING audit-chain table (each adds its own new one), so all ten hash
 chains stay verifiable across the round-trip by construction.
 """
 
@@ -22,7 +22,7 @@ pytestmark = pytest.mark.integration
 # identity_events + identity_audit_log) + 0008 (O-011 automation_rules + automation_executions) +
 # 0009 (O-012 agent_messages + agent_messaging_audit_log + agent_state + agent_state_audit_log) +
 # 0010 (O-013 third_party_api_keys + external_gateway_audit_log +
-# external_gateway_rate_limit_counters) tables.
+# external_gateway_rate_limit_counters) + 0011 (O-014 distribution_rollbacks) tables.
 _TABLES = (
     "ingest_events",
     "ingest_audit_log",
@@ -46,6 +46,7 @@ _TABLES = (
     "third_party_api_keys",
     "external_gateway_audit_log",
     "external_gateway_rate_limit_counters",
+    "distribution_rollbacks",
 )
 
 
@@ -54,10 +55,10 @@ async def _table_exists(conn, name: str) -> bool:
 
 
 async def test_migration_round_trip(db_conn, run_alembic, reprovision_app_role):
-    # Single head, and it is the O-013 revision (0010_external_gateway).
+    # Single head, and it is the O-014 revision (0011_command_center).
     heads = run_alembic("heads")
     assert heads.returncode == 0, heads.stderr
-    assert "0010_external_gateway" in heads.stdout, heads.stdout
+    assert "0011_command_center" in heads.stdout, heads.stdout
 
     # Start at head (the session fixture already upgraded).
     for table in _TABLES:

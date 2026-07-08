@@ -2328,3 +2328,207 @@ async def increment_external_gateway_rate_limit(
         {"key_id": key_id, "window_start": window_start},
     )
     return int(result.scalar_one())
+
+
+# =========================================================================== #
+# Command center + guarded distribution rollback (O-014, ADR-0014). The summary reads run
+# on the PRIVILEGED session (cross-tenant fleet triage, mirrors the O-007 admin reads).
+# The rollback action's lookup + write run on get_tenant_session(tenant_id) — the operator
+# supplies tenant_id explicitly (Fork C), so no privileged-then-reread dance is needed.
+# =========================================================================== #
+
+
+async def count_registry_by_status(session: AsyncSession) -> dict[str, int]:
+    """Count sentinel_registry rows grouped by health_status (PRIVILEGED session,
+    cross-tenant — the registry itself is operator-scoped, ADR-0005)."""
+    result = await session.execute(
+        text("SELECT health_status, count(*) FROM sentinel_registry GROUP BY health_status")
+    )
+    return {row[0]: int(row[1]) for row in result.all()}
+
+
+async def count_distributions_by_state_since(
+    session: AsyncSession, since: datetime
+) -> dict[str, int]:
+    """Count policy_distributions rows created since *since*, grouped by state
+    (PRIVILEGED session, cross-tenant fleet triage)."""
+    result = await session.execute(
+        text(
+            "SELECT state, count(*) FROM policy_distributions "
+            "WHERE created_at >= :since GROUP BY state"
+        ),
+        {"since": since},
+    )
+    return {row[0]: int(row[1]) for row in result.all()}
+
+
+async def count_automation_executions_by_disposition_since(
+    session: AsyncSession, since: datetime
+) -> dict[str, int]:
+    """Count automation_executions rows created since *since*, grouped by disposition
+    (PRIVILEGED session, cross-tenant fleet triage)."""
+    result = await session.execute(
+        text(
+            "SELECT disposition, count(*) FROM automation_executions "
+            "WHERE created_at >= :since GROUP BY disposition"
+        ),
+        {"since": since},
+    )
+    return {row[0]: int(row[1]) for row in result.all()}
+
+
+async def count_external_gateway_by_outcome_since(
+    session: AsyncSession, since: datetime
+) -> dict[str, int]:
+    """Count external_gateway_audit_log rows created since *since*, grouped by outcome
+    (PRIVILEGED session, cross-tenant fleet triage)."""
+    result = await session.execute(
+        text(
+            "SELECT outcome, count(*) FROM external_gateway_audit_log "
+            "WHERE created_at >= :since GROUP BY outcome"
+        ),
+        {"since": since},
+    )
+    return {row[0]: int(row[1]) for row in result.all()}
+
+
+async def count_ingest_events_since(session: AsyncSession, since: datetime) -> int:
+    """Count ingest_events rows with event_timestamp since *since* (PRIVILEGED session,
+    cross-tenant fleet triage, mirrors list_recent_events_admin's scope).
+
+    event_timestamp is a caller-supplied TEXT column (the F-002 envelope's RFC-3339
+    string, verbatim — mirrors list_events' own `since`/`until` string-comparison filter,
+    NOT a real timestamptz), so *since* is formatted as a 'Z'-suffixed RFC-3339 string
+    (seconds precision, matching the ingest pipeline's own convention) before binding —
+    passing a Python datetime directly raises an asyncpg DataError against a text column.
+    """
+    since_str = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+    result = await session.execute(
+        text("SELECT count(*) FROM ingest_events WHERE event_timestamp >= :since"),
+        {"since": since_str},
+    )
+    return int(result.scalar_one())
+
+
+async def count_rollbacks_since(session: AsyncSession, since: datetime) -> int:
+    """Count distribution_rollbacks rows created since *since* (PRIVILEGED session,
+    cross-tenant fleet triage)."""
+    result = await session.execute(
+        text("SELECT count(*) FROM distribution_rollbacks WHERE created_at >= :since"),
+        {"since": since},
+    )
+    return int(result.scalar_one())
+
+
+async def list_recent_distributions_for_policy(
+    session: AsyncSession, *, policy_id: str, limit: int
+) -> list[dict[str, Any]]:
+    """Return the `limit` most-recent policy_distributions rows for *policy_id*, newest
+    first (tenant session, RLS-scoped — the caller opens get_tenant_session(tenant_id)
+    with the operator-supplied tenant_id, Fork C)."""
+    from orchestrator.persistence.models.policy_distribution import PolicyDistribution
+
+    result = await session.execute(
+        select(PolicyDistribution)
+        .where(PolicyDistribution.policy_id == policy_id)
+        .order_by(PolicyDistribution.created_at.desc())
+        .limit(limit)
+    )
+    return [
+        {c.name: getattr(row, c.name) for c in PolicyDistribution.__table__.columns}
+        for row in result.scalars()
+    ]
+
+
+_ROLLBACK_CHAIN_LOCK_KEY = int.from_bytes(
+    hashlib.sha256(b"anoryx-orchestrator:distribution-rollback-audit-chain").digest()[:8],
+    "big",
+    signed=True,
+)
+
+
+async def rollback_chain_tip_hash(session: AsyncSession) -> str:
+    """Return the most-recent distribution_rollbacks row_hash, or the genesis hash."""
+    result = await session.execute(
+        text("SELECT row_hash FROM distribution_rollbacks ORDER BY sequence_number DESC LIMIT 1")
+    )
+    tip = result.scalar_one_or_none()
+    return tip if tip is not None else hash_chain.ROLLBACK_GENESIS_HASH
+
+
+async def append_rollback_audit_link(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    policy_id: str,
+    source_distribution_id: str,
+    superseded_distribution_id: str,
+    new_distribution_id: str,
+) -> str:
+    """Append one hash-chained distribution_rollbacks link (privileged session).
+
+    Caller opens the privileged transaction (`async with session.begin()`). A
+    transaction-scoped advisory lock (own key) serialises concurrent appends so prev_hash
+    always references the true tip. Returns the new row_hash. Every rollback is an
+    operator-triggered action — there is no rejected/no-op case for this chain to
+    distinguish (unlike the messaging/state chains' dual dispositions).
+    """
+    from orchestrator.persistence.models.distribution_rollback import DistributionRollback
+
+    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _ROLLBACK_CHAIN_LOCK_KEY})
+    prev_hash = await rollback_chain_tip_hash(session)
+    row = {
+        "tenant_id": tenant_id,
+        "policy_id": policy_id,
+        "source_distribution_id": source_distribution_id,
+        "superseded_distribution_id": superseded_distribution_id,
+        "new_distribution_id": new_distribution_id,
+        "prev_hash": prev_hash,
+    }
+    row["row_hash"] = hash_chain.compute_rollback_row_hash(row)
+    await session.execute(insert(DistributionRollback).values(**row))
+    return row["row_hash"]
+
+
+async def validate_rollback_chain(session: AsyncSession) -> bool:
+    """Re-validate the full distribution-rollback chain: each row_hash recomputes + links.
+
+    Returns True iff every link verifies. O(n) — privileged session (mirrors
+    validate_external_gateway_chain's FAIL-LOUD BYPASSRLS assertion: this chain carries
+    RLS, so a non-bypass role would only see its own tenant's rows and could falsely
+    report integrity).
+    """
+    from orchestrator.persistence.models.distribution_rollback import DistributionRollback
+
+    bypass = (
+        await session.execute(
+            text(
+                "SELECT bool_or(rolbypassrls OR rolsuper) FROM pg_roles "
+                "WHERE rolname = current_user"
+            )
+        )
+    ).scalar()
+    if not bypass:
+        raise RuntimeError(
+            "validate_rollback_chain requires a BYPASSRLS/superuser privileged session; a "
+            "non-bypass role sees an RLS-scoped subset and would falsely report integrity."
+        )
+    result = await session.execute(
+        select(DistributionRollback).order_by(DistributionRollback.sequence_number.asc())
+    )
+    expected_prev = hash_chain.ROLLBACK_GENESIS_HASH
+    for row in result.scalars():
+        if row.prev_hash != expected_prev:
+            return False
+        row_data = {
+            "tenant_id": row.tenant_id,
+            "policy_id": row.policy_id,
+            "source_distribution_id": row.source_distribution_id,
+            "superseded_distribution_id": row.superseded_distribution_id,
+            "new_distribution_id": row.new_distribution_id,
+            "prev_hash": row.prev_hash,
+        }
+        if not hash_chain.verify_rollback_row_hash(row_data, row.row_hash):
+            return False
+        expected_prev = row.row_hash
+    return True

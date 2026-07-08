@@ -24,9 +24,15 @@ boundaries), the third-party external gateway (POST/GET /v1/admin/external-keys,
 POST /v1/admin/external-keys/{key_id}/revoke, GET /v1/external/events — O-013, ADR-0013:
 API-key issuance, rate limiting, scope enforcement, and governance audit for one gated
 read seam, NOT the roadmap's literal global cross-product third-party gateway — see
-ADR-0013's honesty boundaries), plus a health probe. The query/distribution seams derive
-a per-tenant principal (require_tenant_principal); a missing/invalid token -> a uniform
-401. mTLS termination is O-008.
+ADR-0013's honesty boundaries), the command center + guarded distribution rollback
+(GET /v1/admin/command-center/summary, POST /v1/admin/policy-distributions/rollback —
+O-014, ADR-0014: a read-only fleet-health snapshot over metrics the Orchestrator already
+collects, plus one OPERATOR-TRIGGERED re-submission of a policy's prior signed record via
+the existing O-004 distribution engine, NOT the roadmap's literal cross-product command
+center or autonomous failure-detection-triggered rollback — see ADR-0014's honesty
+boundaries), plus a health probe. The query/distribution seams derive a per-tenant
+principal (require_tenant_principal); a missing/invalid token -> a uniform 401. mTLS
+termination is O-008.
 """
 
 from __future__ import annotations
@@ -38,8 +44,10 @@ from fastapi.responses import JSONResponse
 
 from orchestrator.admin.router import router as admin_router
 from orchestrator.automation.router import router as automation_router
+from orchestrator.command_center.router import router as command_center_router
 from orchestrator.config import (
     get_automation_settings,
+    get_command_center_settings,
     get_coordination_settings,
     get_distribution_settings,
     get_external_gateway_settings,
@@ -99,6 +107,11 @@ def create_app() -> FastAPI:
     # unconfigured deployment never exposes it merely by upgrading. Key issuance/
     # revocation is admin-token-gated regardless of this flag (ADR-0013).
     app.state.external_gateway_settings = get_external_gateway_settings()
+    # Command center + guarded distribution rollback (O-014) settings resolve
+    # NON-FATALLY. No master switch: the summary is read-only, and the rollback action
+    # already requires the operator bearer plus an explicit (tenant_id, policy_id) target
+    # — there is no autonomous trigger to gate (ADR-0014).
+    app.state.command_center_settings = get_command_center_settings()
 
     @app.exception_handler(Exception)
     async def _fail_safe_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -186,4 +199,5 @@ def create_app() -> FastAPI:
     app.include_router(automation_router)
     app.include_router(messaging_router)
     app.include_router(external_gateway_router)
+    app.include_router(command_center_router)
     return app

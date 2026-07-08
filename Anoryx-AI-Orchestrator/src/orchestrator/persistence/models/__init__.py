@@ -15,6 +15,7 @@ from orchestrator.persistence.models.agent_state_audit_log import AgentStateAudi
 from orchestrator.persistence.models.base import Base
 from orchestrator.persistence.models.dead_letter import DeadLetterEntry
 from orchestrator.persistence.models.distribution_audit_log import DistributionAuditLog
+from orchestrator.persistence.models.distribution_rollback import DistributionRollback
 from orchestrator.persistence.models.external_gateway_audit_log import ExternalGatewayAuditLog
 from orchestrator.persistence.models.external_gateway_rate_limit_counter import (
     ExternalGatewayRateLimitCounter,
@@ -61,4 +62,6 @@ __all__ = [
     "ThirdPartyApiKey",
     "ExternalGatewayAuditLog",
     "ExternalGatewayRateLimitCounter",
+    # O-014 command center + guarded distribution rollback (ADR-0014).
+    "DistributionRollback",
 ]
