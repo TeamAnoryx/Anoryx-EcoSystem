@@ -729,3 +729,44 @@ def get_external_gateway_settings() -> ExternalGatewaySettings:
             minimum=1,
         ),
     )
+
+
+# =========================================================================== #
+# Command center + guarded distribution rollback (O-014, ADR-0014) — ADDITIVE,
+# STANDALONE. The command-center summary and the rollback action both reuse the EXISTING
+# operator credential (CoordinationSettings.admin_token) at the router call site — no new
+# trust root. No master enable/disable switch: the summary is read-only, and the rollback
+# action already requires the operator bearer PLUS an explicit per-call (tenant_id,
+# policy_id) target — there is no autonomous trigger to gate (see ADR-0014 Fork B).
+# =========================================================================== #
+
+#: Default lookback window (hours) the command-center summary aggregates over.
+DEFAULT_COMMAND_CENTER_LOOKBACK_HOURS: int = 24
+
+
+@dataclass(frozen=True, slots=True)
+class CommandCenterSettings:
+    """Resolved command-center configuration (O-014, ADR-0014).
+
+    lookback_hours bounds the window `GET /v1/admin/command-center/summary` aggregates
+    distribution/automation/external-gateway/ingest counts over — a fixed, bounded scan,
+    never an unbounded full-table COUNT.
+    """
+
+    lookback_hours: int
+
+
+def get_command_center_settings() -> CommandCenterSettings:
+    """Resolve command-center settings from the environment (NON-FATAL on absence).
+
+    Env vars:
+      ORCH_COMMAND_CENTER_LOOKBACK_HOURS  summary aggregation window in hours
+                                         (default 24, >= 1).
+    """
+    return CommandCenterSettings(
+        lookback_hours=_env_int(
+            "ORCH_COMMAND_CENTER_LOOKBACK_HOURS",
+            DEFAULT_COMMAND_CENTER_LOOKBACK_HOURS,
+            minimum=1,
+        ),
+    )

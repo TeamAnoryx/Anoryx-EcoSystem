@@ -565,3 +565,60 @@ def verify_external_gateway_row_hash(row_data: dict[str, Any], stored_hash: str)
     """Recompute and compare the external-gateway row_hash for a single row. True iff it
     matches."""
     return compute_external_gateway_row_hash(row_data) == stored_hash
+
+
+# =========================================================================== #
+# Distribution-rollback correlation chain (O-014, ADR-0014) — ADDITIVE, parallel to every
+# chain above. Same canonicalization discipline over a distinct field set and a
+# domain-separated genesis so this chain can never be confused with any other. Records
+# every OPERATOR-TRIGGERED rollback action — there is no autonomous trigger, so every row
+# here represents a genuine human decision (mirrors "only genuine outcomes" in spirit,
+# but trivially so: there is no rejected/no-op case to distinguish, unlike the messaging
+# or state chains).
+# =========================================================================== #
+
+# Domain-separated genesis constant, distinct from every other chain's genesis.
+ROLLBACK_GENESIS_HASH = hashlib.sha256(
+    b"anoryx-orchestrator:distribution-rollback-audit:genesis:v1"
+).hexdigest()
+
+# Fields folded into the canonical hash content, in a fixed documented order.
+# prev_hash MUST be last to surface ordering issues clearly.
+ROLLBACK_CANONICAL_FIELDS = [
+    "tenant_id",
+    "policy_id",
+    "source_distribution_id",
+    "superseded_distribution_id",
+    "new_distribution_id",
+    # Chain field — last.
+    "prev_hash",
+]
+
+
+def canonical_rollback_json(data: dict[str, Any]) -> bytes:
+    """Serialize distribution-rollback row data to canonical JSON: sorted keys, no
+    whitespace, UTF-8.
+
+    Only ROLLBACK_CANONICAL_FIELDS are included (missing -> None, to prevent omission
+    attacks). There are no opt-in-when-present fields for this chain — every field is
+    always present on every row.
+    """
+    filtered: dict[str, Any] = {k: data.get(k) for k in ROLLBACK_CANONICAL_FIELDS}
+    return json.dumps(filtered, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+
+
+def compute_rollback_row_hash(data: dict[str, Any]) -> str:
+    """Return the 64-char lowercase SHA-256 hex digest of the canonical JSON of *data*.
+
+    *data* MUST include 'prev_hash'.
+    """
+    if "prev_hash" not in data:
+        raise ValueError("row data must include 'prev_hash' to compute row_hash")
+    return hashlib.sha256(canonical_rollback_json(data)).hexdigest()
+
+
+def verify_rollback_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
+    """Recompute and compare the rollback row_hash for a single row. True iff it matches."""
+    return compute_rollback_row_hash(row_data) == stored_hash

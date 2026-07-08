@@ -973,3 +973,25 @@ def external_gateway_ready() -> None:
                 "ORCH_REQUIRE_EXTERNAL_GATEWAY_E2E=1 but the Orchestrator Postgres is unreachable"
             )
         pytest.skip("Orchestrator Postgres not reachable -- external-gateway e2e")
+
+
+# =========================================================================== #
+# O-014 command-center + guarded-rollback harness. APPENDED to the harness above (no
+# edits to it). Adds a gate mirroring external_gateway_ready -- FAILS (not skips) under
+# ORCH_REQUIRE_COMMAND_CENTER_E2E=1 so the non-stubbed e2e provably EXECUTES on CI.
+# =========================================================================== #
+
+
+@pytest.fixture
+def command_center_ready() -> None:
+    """Gate the O-014 command-center/rollback e2e. Skips when the Orchestrator Postgres
+    is unreachable -- UNLESS ORCH_REQUIRE_COMMAND_CENTER_E2E=1, in which case an
+    unreachable DB FAILS the run (a silent skip can never masquerade as a green
+    command-center gate)."""
+    require = os.environ.get("ORCH_REQUIRE_COMMAND_CENTER_E2E") == "1"
+    if not _pg_reachable():
+        if require:
+            pytest.fail(
+                "ORCH_REQUIRE_COMMAND_CENTER_E2E=1 but the Orchestrator Postgres is unreachable"
+            )
+        pytest.skip("Orchestrator Postgres not reachable -- command-center e2e")
