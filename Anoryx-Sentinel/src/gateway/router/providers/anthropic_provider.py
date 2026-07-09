@@ -151,6 +151,16 @@ class AnthropicAdapter:
         self._api_key = api_key
         self._default_max_tokens = default_max_tokens
 
+    def set_api_key(self, api_key: str) -> None:
+        """Swap the in-use API key (F-027 runtime rotation, ADR-0033).
+
+        Takes effect on the NEXT call — _headers() reads self._api_key fresh
+        per-request rather than caching a header dict at construction, so no
+        in-flight request is affected and no client/adapter recreation is
+        needed. Never logged (key material).
+        """
+        self._api_key = api_key
+
     def _headers(self) -> dict[str, str]:
         return {
             "x-api-key": self._api_key,

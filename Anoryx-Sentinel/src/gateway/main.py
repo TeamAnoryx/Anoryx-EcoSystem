@@ -45,6 +45,8 @@ cp1252 consoles.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import sys
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
@@ -68,6 +70,8 @@ from admin.sso.oidc_routes import sso_login_router
 from bulk.api import router as bulk_router
 from gateway.config import get_settings
 from gateway.exceptions import ERROR_TABLE, GatewayError
+from gateway.keyvault.factory import build_key_source
+from gateway.keyvault.settings import get_keyvault_settings
 from gateway.logging import configure_logging
 from gateway.middleware.auth import AuthMiddleware
 from gateway.middleware.request_validation import RequestValidationMiddleware
@@ -97,6 +101,23 @@ if hasattr(sys.stdout, "reconfigure"):
 log = structlog.get_logger(__name__)
 
 
+async def _provider_credential_refresh_loop(
+    registry: ProviderRegistry, key_source: object, ttl_seconds: float
+) -> None:
+    """F-027 (ADR-0033): periodic non-strict credential refresh.
+
+    Runs for the lifetime of the app. A single fetch failure logs and keeps
+    the last-known-good credential (registry.refresh_credentials strict=False)
+    — this loop never raises, so it never takes the gateway down.
+    """
+    while True:
+        await asyncio.sleep(ttl_seconds)
+        try:
+            await registry.refresh_credentials(key_source, strict=False)  # type: ignore[arg-type]
+        except Exception:  # noqa: BLE001 — background loop must never die
+            log.exception("provider_credential_refresh_loop_error")
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """App lifespan: initialize + teardown shared resources."""
@@ -114,6 +135,24 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     registry.init(settings)
     app.state.provider_registry = registry
 
+    # F-027 (ADR-0033): when keyvault_backend != "env", replace the empty
+    # placeholder credentials init() constructed with a real fetch BEFORE the
+    # app starts serving (strict=True — a fetch failure removes that provider,
+    # matching init()'s own fail-closed posture), then start a periodic
+    # non-strict background refresh for rotation. No-op cost when backend is
+    # the default "env" — one settings read, zero fetches, zero task.
+    keyvault_settings = get_keyvault_settings()
+    refresh_task: asyncio.Task | None = None
+    if keyvault_settings.keyvault_backend != "env":
+        key_source = build_key_source(settings, keyvault_settings)
+        await registry.refresh_credentials(key_source, strict=True)
+        refresh_task = asyncio.create_task(
+            _provider_credential_refresh_loop(
+                registry, key_source, keyvault_settings.keyvault_cache_ttl_seconds
+            )
+        )
+    app.state.keyvault_refresh_task = refresh_task
+
     # F-009: initialise Redis connection pool + start health-loop task (ADR-0011 D2).
     # Failure mode γ: if Redis is unreachable at startup the pool init logs a warning
     # and sets _redis_degraded=True — the gateway continues with in-process fallback.
@@ -128,6 +167,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # F-027: stop the credential-refresh loop before tearing down the
+        # registry it refreshes.
+        if refresh_task is not None:
+            refresh_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await refresh_task
         # F-009: shut down health loop + close pool before registry/httpx teardown.
         await redis_client.shutdown()
         await registry.teardown()
