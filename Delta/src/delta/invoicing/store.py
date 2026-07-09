@@ -361,6 +361,45 @@ async def get_purchase_order_summary(
     )
 
 
+async def get_purchase_order_summary_for_update(
+    session: AsyncSession, *, po_id: str
+) -> PurchaseOrderSummary | None:
+    """Same as :func:`get_purchase_order_summary`, but takes a ``SELECT ... FOR UPDATE``
+    row lock on the PO. MUST be used (not the plain read) by any caller that goes on to
+    sum-and-compare against this PO's invoices before inserting a new one — the lock
+    serializes concurrent invoice submissions against the SAME PO so the second
+    transaction's sum-check only proceeds once the first has committed (or rolled
+    back), closing the TOCTOU window a plain read-then-insert would leave open
+    (independent security review, ADR-0018 Fork 1 correction — see
+    docs/audit/d-018-security-audit.md Finding 1). Submissions against DIFFERENT POs
+    are unaffected (distinct rows, no contention).
+    """
+    row = (
+        await session.execute(
+            select(
+                purchase_orders.c.po_id,
+                purchase_orders.c.vendor_id,
+                purchase_orders.c.status,
+                purchase_orders.c.amount_minor_units,
+                purchase_orders.c.currency,
+            )
+            .where(purchase_orders.c.po_id == po_id)
+            .with_for_update()
+        )
+    ).first()
+    return (
+        None
+        if row is None
+        else PurchaseOrderSummary(
+            po_id=row.po_id,
+            vendor_id=row.vendor_id,
+            status=row.status,
+            amount_minor_units=row.amount_minor_units,
+            currency=row.currency,
+        )
+    )
+
+
 async def get_task_status(session: AsyncSession, *, task_id: str) -> str | None:
     row = (await session.execute(select(tasks.c.status).where(tasks.c.task_id == task_id))).first()
     return None if row is None else row[0]

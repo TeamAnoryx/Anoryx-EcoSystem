@@ -68,7 +68,7 @@ class InvoiceCreateRequest(BaseModel):
     milestone_task_id: TaskId | None = None
     invoice_number: str = Field(min_length=1, max_length=_INVOICE_NUMBER_MAX_LENGTH)
     description: str = Field(min_length=1, max_length=_DESCRIPTION_MAX_LENGTH)
-    amount_minor_units: int = Field(ge=0, le=MAX_INVOICE_AMOUNT_MINOR_UNITS)
+    amount_minor_units: int = Field(gt=0, le=MAX_INVOICE_AMOUNT_MINOR_UNITS)
     currency: Currency = DEFAULT_CURRENCY
     submitted_by: str = Field(min_length=1, max_length=_ACTOR_MAX_LENGTH)
 

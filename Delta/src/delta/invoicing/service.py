@@ -80,6 +80,10 @@ class PaymentExceedsInvoiceBalanceError(ValueError):
     invoice's own billed amount."""
 
 
+class PaymentCurrencyMismatchError(ValueError):
+    """The payment's currency does not match the invoice's own currency."""
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -125,7 +129,13 @@ async def create_invoice(session: AsyncSession, req: InvoiceCreateRequest) -> In
     if vendor_status is None:
         raise VendorNotFoundError(req.vendor_id)
 
-    po = await store.get_purchase_order_summary(session, po_id=req.po_id)
+    # SELECT ... FOR UPDATE: locks the PO row for the rest of this transaction, so a
+    # second concurrent invoice submission against the SAME PO blocks here until this
+    # one commits or rolls back — closing the TOCTOU window a plain read before the
+    # sum-check below would leave open (independent security review, ADR-0018 Fork 1
+    # correction; see docs/audit/d-018-security-audit.md Finding 1, reproduced live as
+    # a 10x over-commitment before this fix).
+    po = await store.get_purchase_order_summary_for_update(session, po_id=req.po_id)
     if po is None:
         raise PurchaseOrderNotFoundError(req.po_id)
     if po.vendor_id != req.vendor_id:
@@ -234,6 +244,20 @@ async def decide_invoice(
 async def record_payment(
     session: AsyncSession, *, invoice_id: str, req: PaymentRecordRequest
 ) -> InvoicePaymentView:
+    # Currency is immutable per invoice (never concurrently written), so a plain read
+    # ahead of the atomic amount guard below carries no race — only the AMOUNT needs
+    # the single atomic UPDATE (independent security review, ADR-0018 correction; see
+    # docs/audit/d-018-security-audit.md Finding 2: a payment's currency was never
+    # checked against the invoice's own currency, letting e.g. a JPY payment silently
+    # settle a USD invoice and corrupt the reconciliation report's totals).
+    existing = await store.get_invoice(session, invoice_id=invoice_id)
+    if existing is None:
+        raise InvoiceNotFoundError(invoice_id)
+    if req.currency != existing.currency:
+        raise PaymentCurrencyMismatchError(
+            f"payment currency {req.currency} != invoice currency {existing.currency}"
+        )
+
     now = _now()
     new_status = await store.try_record_payment(
         session, invoice_id=invoice_id, amount_minor_units=req.amount_minor_units, now=now

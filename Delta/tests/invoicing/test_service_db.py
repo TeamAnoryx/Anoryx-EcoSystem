@@ -7,11 +7,13 @@ commit, never reused across two writes (same discipline as ``tests/erp/test_serv
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timezone
 
 import pytest
 
+from delta.invoicing import store
 from delta.invoicing.schemas import (
     InvoiceCreateRequest,
     InvoiceDecisionRequest,
@@ -25,6 +27,7 @@ from delta.invoicing.service import (
     InvoiceNotPayableError,
     MilestoneTaskNotDoneError,
     MilestoneTaskNotFoundError,
+    PaymentCurrencyMismatchError,
     PaymentExceedsInvoiceBalanceError,
     PurchaseOrderNotApprovedError,
     PurchaseOrderNotFoundError,
@@ -446,3 +449,85 @@ async def test_reconciliation_reflects_committed_invoiced_paid(tenant_id) -> Non
     assert report.over_invoiced is False
     assert report.over_paid is False
     assert report.disputed_invoice_count == 0
+
+
+@db_required
+async def test_concurrent_invoice_creation_never_exceeds_po_commitment(tenant_id) -> None:
+    """Regression test for the independent security-auditor's High finding
+    (docs/audit/d-018-security-audit.md Finding 1): before the fix, 10 concurrent
+    invoice submissions each claiming the full PO ceiling all committed, producing a
+    10x over-commitment. `create_invoice`'s `SELECT ... FOR UPDATE` on the PO row
+    (ADR-0018 Fork 1 correction) must serialize these — exactly one of 10 concurrent
+    100_000-unit invoice submissions against a 100_000-unit PO should succeed."""
+    async with get_tenant_session(tenant_id) as session:
+        vendor_id, po_id = await seed_approved_po(
+            session, tenant_id=tenant_id, amount_minor_units=100_000
+        )
+
+    async def _attempt(n: int):
+        async with get_tenant_session(tenant_id) as session:
+            try:
+                return await create_invoice(
+                    session,
+                    _invoice_req(
+                        tenant_id=tenant_id,
+                        vendor_id=vendor_id,
+                        po_id=po_id,
+                        amount=100_000,
+                        invoice_number=f"INV-RACE-{n}",
+                    ),
+                )
+            except InvoiceExceedsPurchaseOrderError:
+                return None
+
+    results = await asyncio.gather(*[_attempt(n) for n in range(10)])
+    succeeded = [r for r in results if r is not None]
+    assert len(succeeded) == 1
+
+    async with get_tenant_session(tenant_id) as session:
+        total = await store.sum_non_disputed_invoiced_for_po(session, po_id=po_id)
+    assert total == 100_000  # never exceeds the PO's own committed amount
+
+
+@db_required
+async def test_record_payment_currency_mismatch_raises(tenant_id) -> None:
+    """Regression test for the independent security-auditor's Medium finding
+    (docs/audit/d-018-security-audit.md Finding 2): a payment denominated in a
+    different currency than its invoice must be rejected, not silently accepted."""
+    async with get_tenant_session(tenant_id) as session:
+        vendor_id, po_id = await seed_approved_po(session, tenant_id=tenant_id, currency="USD")
+
+    async with get_tenant_session(tenant_id) as session:
+        invoice = await create_invoice(
+            session,
+            _invoice_req(
+                tenant_id=tenant_id, vendor_id=vendor_id, po_id=po_id, amount=10_000, currency="USD"
+            ),
+        )
+
+    async with get_tenant_session(tenant_id) as session:
+        await decide_invoice(
+            session,
+            invoice_id=invoice.invoice_id,
+            decision=InvoiceDecisionRequest(
+                tenant_id=tenant_id, action="approve", actor="lead@example.com"
+            ),
+        )
+
+    async with get_tenant_session(tenant_id) as session:
+        with pytest.raises(PaymentCurrencyMismatchError):
+            await record_payment(
+                session,
+                invoice_id=invoice.invoice_id,
+                req=PaymentRecordRequest(
+                    tenant_id=tenant_id,
+                    amount_minor_units=10_000,
+                    currency="JPY",
+                    paid_at=_PAID_AT,
+                    recorded_by="treasury@example.com",
+                ),
+            )
+
+    async with get_tenant_session(tenant_id) as session:
+        fetched = await store.get_invoice(session, invoice_id=invoice.invoice_id)
+    assert fetched.amount_paid_minor_units == 0  # the mismatched payment never applied

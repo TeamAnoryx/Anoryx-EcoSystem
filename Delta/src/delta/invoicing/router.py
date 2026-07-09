@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ..allocation_admin.auth import require_admin
 from ..identifiers import InvoiceId, PurchaseOrderId, TenantId, VendorId
-from ..money import DEFAULT_CURRENCY
+from ..money import DEFAULT_CURRENCY, Currency
 from ..persistence.database import get_tenant_session
 from . import service
 from .schemas import DEFAULT_LIST_LIMIT as _DEFAULT_LIMIT
@@ -35,6 +35,7 @@ from .service import (
     InvoiceNotPayableError,
     MilestoneTaskNotDoneError,
     MilestoneTaskNotFoundError,
+    PaymentCurrencyMismatchError,
     PaymentExceedsInvoiceBalanceError,
     PurchaseOrderNotApprovedError,
     PurchaseOrderNotFoundError,
@@ -122,7 +123,7 @@ async def post_invoice_payment(
             raise _not_found("invoice_not_found") from exc
         except InvoiceNotPayableError as exc:
             raise _conflict(str(exc)) from exc
-        except PaymentExceedsInvoiceBalanceError as exc:
+        except (PaymentExceedsInvoiceBalanceError, PaymentCurrencyMismatchError) as exc:
             raise _unprocessable(str(exc)) from exc
 
 
@@ -139,7 +140,7 @@ async def get_invoice_payments(
 
 @router.get("/reconciliation", response_model=VendorReconciliationView)
 async def get_reconciliation(
-    tenant_id: TenantId, vendor_id: VendorId, currency: str = DEFAULT_CURRENCY
+    tenant_id: TenantId, vendor_id: VendorId, currency: Currency = DEFAULT_CURRENCY
 ) -> VendorReconciliationView:
     async with get_tenant_session(tenant_id) as session:
         try:
