@@ -131,11 +131,19 @@ the roadmap's own wording most literally names: D-008's dashboards.
   `POST /v1/admin/rbac/tokens` (401 — cannot self-escalate), revoked the token via the
   UI, and confirmed the revoked token's dashboard access is genuinely rejected
   afterward (401) — every step verified against the real backend, not mocked.
-- Independent security-auditor review: scheduled next (dispatched after this ADR is
-  committed, per the established D-013→D-016 procedure) — this is a genuine new auth
-  surface, so it receives the highest scrutiny of any task this session; findings and
-  fixes, if any, will be recorded in `docs/audit/d-017-security-audit.md` before this
-  branch merges.
+- Independent security-auditor review: verdict **CLEAN** — no High or Critical
+  findings. This being a genuine new auth surface, the review received the highest
+  scrutiny of any task in this session: 10 prioritized adversarial attack vectors
+  (auth bypass, token entropy/collision, timing attacks, privilege escalation,
+  cross-tenant RLS leakage under 40-way concurrency, the dashboards-retrofit
+  regression risk, a revocation-race check, a self-bootstrap-abuse check, frontend
+  token handling, input validation), each exercised against the live database and a
+  real running ASGI app, not assessed by code review alone — every one held. Three
+  Low findings surfaced, all already-documented residual-risk notes in §3 above (the
+  BFF's break-glass-implies-full-trust boundary, no audit-chain wiring for token
+  issuance/revocation, no token TTL/expiry) — none are defects introduced by this
+  diff and none required a code change. Full findings in
+  `docs/audit/d-017-security-audit.md`.
 
 ## 6. Alternatives considered
 
