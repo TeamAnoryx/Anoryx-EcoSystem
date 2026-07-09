@@ -399,6 +399,10 @@ sprints = sa.Table(
 
 # `sprint_id` is nullable — an unassigned task lives in the backlog. `story_points` is
 # the velocity unit; `completed_at` is set exactly when `status` becomes 'done'.
+# `team_id` (nullable, added by migration 0010/D-016) is an additive extension —
+# mirrors migration 0006's own precedent of extending an earlier task's table
+# (`change_history`) with new nullable columns. delta.pm's own code never reads or
+# writes this column; only delta.capacity does.
 tasks = sa.Table(
     "tasks",
     metadata,
@@ -413,6 +417,7 @@ tasks = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("team_id", sa.String(64), nullable=True),
 )
 
 # A directed edge: `blocking_task_id` must complete before `blocked_task_id` can
@@ -426,4 +431,20 @@ task_dependencies = sa.Table(
     sa.Column("blocking_task_id", sa.String(64), nullable=False),
     sa.Column("blocked_task_id", sa.String(64), nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# --- D-016 team capacity management (migration 0010) ---
+# `capacity_points_per_sprint` is an operator-declared, deterministic figure — not
+# inferred from calendars, PTO, or working hours (Delta has no such data anywhere).
+# See docs/adr/0016-delta-team-capacity-management.md §3 for what's deferred
+# (individual-level capacity/PTO, burnout/wellbeing signals, automatic reassignment).
+teams = sa.Table(
+    "teams",
+    metadata,
+    sa.Column("team_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("name", sa.String(256), nullable=False),
+    sa.Column("capacity_points_per_sprint", sa.Integer, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )

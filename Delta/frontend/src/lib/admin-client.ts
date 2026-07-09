@@ -30,6 +30,7 @@ import type {
   PurchaseOrderDecisionRequest,
   PurchaseOrderStatus,
   PurchaseOrderView,
+  RebalanceReportView,
   RelationshipScoreView,
   SpendSummaryView,
   SprintCreateRequest,
@@ -37,13 +38,20 @@ import type {
   SprintView,
   StakeholderCreateRequest,
   StakeholderView,
+  TaskAssignmentView,
+  TaskCapacityView,
   TaskCreateRequest,
   TaskDependencyCreateRequest,
   TaskDependencyView,
   TaskStatus,
   TaskStatusUpdateRequest,
+  TaskTeamAssignRequest,
   TaskView,
+  TeamCapacityUpdateRequest,
+  TeamCreateRequest,
+  TeamView,
   TimeSeriesPointView,
+  UtilizationReportView,
   VelocityReportView,
   VendorCreateRequest,
   VendorView,
@@ -367,6 +375,43 @@ export const adminApi = {
   getBottleneckReport: (tenantId: string, projectId: string, limit?: number) =>
     adminFetch<BottleneckReportView>("/pm/bottlenecks", {
       query: { tenant_id: tenantId, project_id: projectId, limit },
+    }),
+
+  // D-016 team capacity — a deliberately bounded vertical slice (teams with an
+  // operator-declared per-sprint capacity, task-to-team assignment, a deterministic
+  // utilization report, an advisory-only rebalance suggestion; no individual-level
+  // capacity/PTO data, no burnout/wellbeing signal, no automatic reassignment).
+  listTeams: (tenantId: string, limit?: number) =>
+    adminFetch<TeamView[]>("/capacity/teams", { query: { tenant_id: tenantId, limit } }),
+
+  createTeam: (body: TeamCreateRequest) =>
+    adminFetch<TeamView>("/capacity/teams", { method: "POST", body }),
+
+  updateTeamCapacity: (teamId: string, body: TeamCapacityUpdateRequest) =>
+    adminFetch<TeamView>(`/capacity/teams/${encodeURIComponent(teamId)}/capacity`, {
+      method: "POST",
+      body,
+    }),
+
+  listCapacityTasks: (tenantId: string, projectId: string, sprintId: string) =>
+    adminFetch<TaskCapacityView[]>("/capacity/tasks", {
+      query: { tenant_id: tenantId, project_id: projectId, sprint_id: sprintId },
+    }),
+
+  assignTaskTeam: (taskId: string, body: TaskTeamAssignRequest) =>
+    adminFetch<TaskAssignmentView>(`/capacity/tasks/${encodeURIComponent(taskId)}/team`, {
+      method: "POST",
+      body,
+    }),
+
+  getUtilizationReport: (tenantId: string, projectId: string, sprintId: string) =>
+    adminFetch<UtilizationReportView>("/capacity/utilization", {
+      query: { tenant_id: tenantId, project_id: projectId, sprint_id: sprintId },
+    }),
+
+  getRebalanceReport: (tenantId: string, projectId: string, sprintId: string) =>
+    adminFetch<RebalanceReportView>("/capacity/rebalance", {
+      query: { tenant_id: tenantId, project_id: projectId, sprint_id: sprintId },
     }),
 };
 

@@ -724,7 +724,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-013 Unified CRM ✅ (shipped PR #87 — bounded vertical slice, see docs/adr/0013-delta-unified-crm.md)
 - [x] D-014 Comprehensive ERP engine ✅ (shipped PR #92 — bounded vertical slice: asset register + vendor/PO procurement, see docs/adr/0014-delta-erp-assets-procurement.md)
 - [x] D-015 AI-driven project management ✅ (shipped PR #94 — bounded vertical slice: sprints, tasks, dependency graph, velocity + bottleneck heuristic, see docs/adr/0015-delta-pm-sprints-dependencies.md)
-- [ ] D-016 Dynamic team / capacity management — Complex 🏦
+- [x] D-016 Dynamic team / capacity management ✅ (shipped PR TBD — bounded vertical slice: teams, task assignment, utilization report, advisory rebalancing, see docs/adr/0016-delta-team-capacity-management.md)
 - [ ] D-017 Strict RBAC operational dashboards — Complex 🏦
 - [ ] D-018 Automated invoicing + vendor reconciliation — Heavy 🏦
 - [ ] D-019 Corporate ERP integrations (NetSuite/SAP/Coupa/cloud) — Heavy 🏦
