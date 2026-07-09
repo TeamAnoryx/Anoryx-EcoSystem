@@ -15,9 +15,7 @@ does no masking (the common, cheap path).
 
 from __future__ import annotations
 
-import asyncio
 import time
-from collections import defaultdict
 
 import structlog
 
@@ -42,32 +40,33 @@ class CustomPiiPatternLoader:
         # session. Defaults to get_tenant_session(tenant_id) at call time.
         self._session_factory = session_factory
         self._cache: dict[str, tuple[float, list[CompiledPattern]]] = {}
-        self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def load(self, tenant_id: str) -> list[CompiledPattern]:
+        # NO per-tenant asyncio.Lock: this loader is a PROCESS-GLOBAL singleton
+        # (hook.py) that must survive across many request event loops. A Lock
+        # bound to the loop that first awaited it raises "attached to a different
+        # loop" when reused under a later loop. The lock only guarded against a
+        # cold-cache thundering herd; a duplicate concurrent fetch is merely a
+        # wasted DB read (idempotent, self-healing once cached), so we drop the
+        # lock entirely rather than carry cross-loop fragility.
         cached = self._cache.get(tenant_id)
         if cached is not None and self._clock() - cached[0] < self._ttl_seconds:
             return cached[1]
 
-        async with self._locks[tenant_id]:
-            cached = self._cache.get(tenant_id)
-            if cached is not None and self._clock() - cached[0] < self._ttl_seconds:
-                return cached[1]
-
-            rows = await self._fetch_rows(tenant_id)
-            compiled: list[CompiledPattern] = []
-            for row in rows:
-                try:
-                    compiled.append(
-                        compile_pattern(row.name, row.pattern, score=row.score, action=row.action)
-                    )
-                except Exception:  # noqa: S112 — a stored pattern that won't compile
-                    # (shouldn't happen — validated at write) is skipped, not fatal;
-                    # it simply does not contribute matches. Logged below.
-                    log.warning("custom_pii.stored_pattern_compile_failed", pattern_name=row.name)
-                    continue
-            self._cache[tenant_id] = (self._clock(), compiled)
-            return compiled
+        rows = await self._fetch_rows(tenant_id)
+        compiled: list[CompiledPattern] = []
+        for row in rows:
+            try:
+                compiled.append(
+                    compile_pattern(row.name, row.pattern, score=row.score, action=row.action)
+                )
+            except Exception:  # noqa: S112 — a stored pattern that won't compile
+                # (shouldn't happen — validated at write) is skipped, not fatal;
+                # it simply does not contribute matches. Logged below.
+                log.warning("custom_pii.stored_pattern_compile_failed", pattern_name=row.name)
+                continue
+        self._cache[tenant_id] = (self._clock(), compiled)
+        return compiled
 
     async def _fetch_rows(self, tenant_id: str):
         if self._session_factory is not None:

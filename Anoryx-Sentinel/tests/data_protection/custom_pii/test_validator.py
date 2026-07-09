@@ -51,3 +51,20 @@ class TestValidatePattern:
     def test_rejects_star_of_star(self):
         with pytest.raises(InvalidPattern):
             validate_pattern(r"(a*)*", max_length=512)
+
+    def test_rejects_dotstar_plus(self):
+        with pytest.raises(InvalidPattern):
+            validate_pattern(r"(.*)+", max_length=512)
+
+    # Regression: the ReDoS heuristic must NOT reject SAFE patterns where a group
+    # (whose body is not itself quantified) is followed by a quantifier — these
+    # are extremely common and legitimate. An earlier over-broad rule wrongly
+    # rejected them.
+    def test_accepts_optional_noncapturing_group(self):
+        validate_pattern(r"(?:MRN)?\s*\d{5}", max_length=512)  # no raise
+
+    def test_accepts_quantified_plain_group(self):
+        validate_pattern(r"(abc)*def", max_length=512)  # no raise
+
+    def test_accepts_optional_group_and_alternation(self):
+        validate_pattern(r"(a|b)+\d{3}", max_length=512)  # no raise

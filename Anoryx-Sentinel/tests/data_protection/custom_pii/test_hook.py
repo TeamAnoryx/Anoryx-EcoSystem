@@ -116,11 +116,14 @@ async def test_per_pattern_block_override_wins_over_mask_default():
 
 
 @pytest.mark.asyncio
-async def test_loader_failure_is_fail_safe_block_raises():
+async def test_loader_failure_degrades_to_pass_through():
+    # A custom-pattern-store load failure must NOT block the request (custom PII
+    # is an optional layer after the mandatory F-005 layer). It degrades to
+    # pass-through — a transient custom-table blip is not a gateway outage.
     _reset_loader_for_testing(_FakeLoader(raises=True))
     hook = CustomPiiHook(settings=_settings())
-    with pytest.raises(RuntimeError):
-        await hook.inspect("EMP-123456", _ctx())
+    result = await hook.inspect("EMP-123456", _ctx())
+    assert result.action == "pass"
 
 
 @pytest.mark.asyncio

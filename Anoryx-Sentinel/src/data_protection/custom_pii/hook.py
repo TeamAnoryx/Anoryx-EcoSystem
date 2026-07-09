@@ -7,10 +7,15 @@ with the ReDoS-safe engine, and masks / tokenizes / blocks — emitting the SAME
 contract-conformant `pii_blocked` event type the built-in detector uses (no new
 events.schema.json type needed, so no contracts/ change).
 
-Fail-safe (CLAUDE.md #5): if the tenant's pattern store cannot be loaded, the
-hook BLOCKS rather than passing content uninspected. A per-pattern match
-timeout is isolated (one pathological pattern is skipped + logged, the request
-is not taken down).
+Fail posture (deliberate, ADR-0034 "fail-degraded, not fail-closed"): custom
+PII is an OPTIONAL, additive, per-tenant augmentation that runs AFTER the
+MANDATORY fail-closed F-005 layer (secret/injection/PII), which already
+inspected and can block this same content. So if the tenant's pattern STORE is
+transiently unreachable, this hook DEGRADES to pass-through (loud ERROR log +
+metric) rather than fail-closed-blocking 100% of the tenant's traffic — a
+custom-table blip must not be a self-inflicted gateway outage. A genuine
+pattern MATCH still fails closed (mask/block). A per-pattern match timeout is
+isolated (one pathological pattern is skipped + logged; the request survives).
 """
 
 from __future__ import annotations
@@ -41,6 +46,19 @@ def _get_loader(ttl_seconds: float) -> CustomPiiPatternLoader:
 def _reset_loader_for_testing(loader: CustomPiiPatternLoader | None = None) -> None:
     global _loader
     _loader = loader
+
+
+def _record_load_failure_metric(tenant_id: str) -> None:
+    """Emit a metric on a custom-PII pattern-store load failure (best-effort).
+
+    Isolated + swallow-all so instrumentation never affects the pass-through
+    decision (mirrors HookContext.emit's metric discipline)."""
+    try:
+        from gateway.observability import metrics as _metrics  # noqa: PLC0415
+
+        _metrics.record_audit_write_failure(component="custom-pii-load")
+    except Exception:
+        pass
 
 
 def _confidence_to_severity(score: float) -> str:
@@ -82,13 +100,16 @@ class CustomPiiHook(PreRequestHook):
 
         try:
             patterns = await loader.load(tenant_id)
-        except Exception as exc:
-            # Fail-safe BLOCK: a tenant with custom patterns must not have
-            # content pass uninspected because the pattern store was briefly
-            # unreachable (CLAUDE.md #5). Raise so the registry wraps it as
-            # HookFailSafeError -> 500.
+        except Exception:
+            # Fail-DEGRADED (NOT fail-closed): the MANDATORY F-005 layer already
+            # ran and can block; blocking all of this tenant's traffic because
+            # the OPTIONAL custom-pattern store had a transient error would be a
+            # self-inflicted outage. Log loudly + emit a metric, then pass
+            # through (built-in coverage still applied). A genuine match below
+            # still fails closed.
             log.error("custom_pii.pattern_load_failed", tenant_id=tenant_id)
-            raise RuntimeError("custom PII pattern load failed (fail-safe block)") from exc
+            _record_load_failure_metric(tenant_id)
+            return DetectorResult(action="pass")
 
         if not patterns:
             return DetectorResult(action="pass")

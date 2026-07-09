@@ -86,10 +86,21 @@ contract-conformant `pii_blocked` event the built-in detector uses — so **no
 `contracts/events.schema.json` change** is needed. Gated on its OWN
 `custom_pii_enabled` setting, not `pii_detection_enabled`, precisely because
 it is spaCy-independent (a slim deploy can run custom patterns with Presidio
-off). Fail-safe (CLAUDE.md #5): if a tenant's pattern store can't be loaded,
-the hook BLOCKS rather than passing content uninspected. Action resolution is
-strict: if ANY matched pattern resolves to `block`, the whole request blocks,
-regardless of other matches.
+off). Action resolution is strict: if ANY matched pattern resolves to `block`,
+the whole request blocks, regardless of other matches.
+
+**Fail posture — fail-degraded, NOT fail-closed (deliberate).** CLAUDE.md #5's
+fail-closed rule is satisfied by the MANDATORY F-005 layer (secret/injection/
+PII), which runs BEFORE CustomPII in the chain and blocks on its own inspection
+error. Custom PII is an OPTIONAL, additive, per-tenant augmentation. If its
+pattern STORE is transiently unreachable, the hook DEGRADES to pass-through
+(loud ERROR log + a `custom-pii-load` failure metric) rather than fail-closed-
+blocking 100% of the tenant's traffic — a custom-table blip must not become a
+self-inflicted gateway outage (availability is also a security property, and
+the mandatory layer already inspected this content). A genuine pattern MATCH
+still fails closed (mask/block). *(This corrects the initial fail-closed-block
+design, which — discovered via CI — turned any custom-PII load hiccup into a
+500 for the whole request; see the git history of this ADR.)*
 
 ### `sentinel-pii` CLI (`custom_pii/cli.py`)
 

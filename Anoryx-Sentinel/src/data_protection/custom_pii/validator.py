@@ -16,12 +16,16 @@ from data_protection.custom_pii.exceptions import InvalidPattern, InvalidPattern
 # Entity label: uppercase snake, e.g. EMPLOYEE_ID. Surfaced in [REDACTED:{name}].
 _NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 
-# Heuristic ReDoS lint: a quantifier applied to a group that itself ends in a
-# quantifier — the classic catastrophic-backtracking shape (a+)+ / (a*)* /
-# (a+)* / (.*)+ etc. Not exhaustive (no linter is), but it rejects the
-# overwhelmingly most common footguns before they are ever stored; the
-# per-match timeout in engine.py covers whatever slips through.
-_NESTED_QUANTIFIER_RE = re.compile(r"[)\]][*+?]|[*+][)\]]*[*+]")
+# Heuristic ReDoS lint: a quantifier applied to a group whose body ALSO ends in
+# a quantifier — the classic catastrophic-backtracking shape (a+)+ / (a*)* /
+# (a+)* / (.*)+ etc. Matched as "quantifier, group-close(s), quantifier"
+# (`[*+][)\]]*[*+]`). This deliberately does NOT flag a group followed by a
+# quantifier when the group body is NOT itself quantified — `(abc)*`, `(?:x)?`,
+# `(a|b)+` are all safe and common, and an earlier over-broad rule that rejected
+# them (`[)\]][*+?]`) produced false positives on legitimate patterns. Not
+# exhaustive (e.g. `{n,}`-based nesting slips through); the per-match timeout in
+# engine.py is the runtime backstop for whatever the heuristic misses.
+_NESTED_QUANTIFIER_RE = re.compile(r"[*+][)\]]*[*+]")
 
 
 def normalize_name(name: str) -> str:
