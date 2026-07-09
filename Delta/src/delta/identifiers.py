@@ -60,6 +60,9 @@ TaskDependencyId = UuidStr
 # team's primary key and the tasks.team_id assignment column — no new identifier
 # type needed.
 
+# D-017 RBAC-gated dashboards (locally-issued, role-tagged bearer tokens).
+AccessTokenId = UuidStr
+
 # Internal Sentinel component slug (NOT the end-user model name).
 AgentId = Annotated[str, StringConstraints(pattern=_AGENT_ID_PATTERN, max_length=_ID_MAX_LENGTH)]
 

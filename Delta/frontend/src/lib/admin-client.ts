@@ -3,6 +3,10 @@ import "server-only";
 import { adminToken, deltaApiUrl } from "@/lib/env";
 import { AdminApiError } from "@/lib/errors";
 import type {
+  AccessTokenCreateRequest,
+  AccessTokenIssuedView,
+  AccessTokenRevokeRequest,
+  AccessTokenView,
   AllocationCreateRequest,
   AllocationStatus,
   AllocationView,
@@ -412,6 +416,21 @@ export const adminApi = {
   getRebalanceReport: (tenantId: string, projectId: string, sprintId: string) =>
     adminFetch<RebalanceReportView>("/capacity/rebalance", {
       query: { tenant_id: tenantId, project_id: projectId, sprint_id: sprintId },
+    }),
+
+  // D-017 RBAC-gated dashboards — locally-issued, role-tagged bearer tokens
+  // (tenant_admin/tenant_auditor), not real SSO/OIDC/SAML. Only the create call ever
+  // returns the raw token value (one-time reveal).
+  listAccessTokens: (tenantId: string, limit?: number) =>
+    adminFetch<AccessTokenView[]>("/rbac/tokens", { query: { tenant_id: tenantId, limit } }),
+
+  createAccessToken: (body: AccessTokenCreateRequest) =>
+    adminFetch<AccessTokenIssuedView>("/rbac/tokens", { method: "POST", body }),
+
+  revokeAccessToken: (tokenId: string, body: AccessTokenRevokeRequest) =>
+    adminFetch<AccessTokenView>(`/rbac/tokens/${encodeURIComponent(tokenId)}/revoke`, {
+      method: "POST",
+      body,
     }),
 };
 

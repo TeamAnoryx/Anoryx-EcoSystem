@@ -332,6 +332,38 @@ automatic task reassignment, no trained/validated ML.** See
   individual-level capacity, PTO, or burnout signal exists anywhere in Delta (mirrors D-014's "no
   HR" boundary).
 
+## D-017 — RBAC-Gated Dashboards: Locally-Issued Role-Tagged Access Tokens (🏦 post-investment vision tier)
+
+D-017 is the fifth task built past Delta's committed MVP into the vision tier, continuing
+directly from D-016 per explicit instruction to keep going. A deliberately bounded slice of the
+roadmap's "org-tier-scoped dashboards — users view/execute only what their tier authorizes":
+locally-issued, role-tagged bearer tokens (two seeded roles, `tenant_admin`/`tenant_auditor` —
+mirroring Anoryx-Sentinel's own already-shipped F-014 role vocabulary for ecosystem consistency)
+gating D-008's dashboards, the ONE existing admin surface this task retrofits. **No real
+SSO/OIDC/SAML (that's Sentinel's own F-014, out of scope here), no retrofit across the other six
+admin surfaces, no fine-grained permissions.** See
+[`docs/adr/0017-delta-rbac-dashboards.md`](docs/adr/0017-delta-rbac-dashboards.md).
+
+- **Backend:** `src/delta/rbac/` — `schemas.py` (token DTOs; only `AccessTokenIssuedView`, returned
+  once at creation, ever carries the raw token), `store.py`/`service.py` (SHA-256 hashing, only the
+  hash is ever persisted), `auth.py` (`require_role`/`authorize` — the break-glass `DELTA_ADMIN_TOKEN`
+  keeps working unchanged, treated as implicit `tenant_admin` for any tenant; an issued token is
+  looked up inside the caller-supplied tenant's own RLS-scoped session, so a wrong-tenant token is
+  simply invisible, no separate mismatch check needed).
+- **New table** (migration 0011): `access_tokens` — additive, no other table touched.
+- **New endpoints:** `POST/GET /v1/admin/rbac/tokens`, `POST .../tokens/{id}/revoke` — gated at
+  `tenant_admin` (managing access requires the highest role). **One existing file modified:**
+  `dashboards/router.py`'s auth dependency widened from `require_admin`-only to
+  `require_role("tenant_auditor")` — a strict superset, every existing caller/test unaffected.
+- **Frontend:** `/rbac` — token list with a revoke action, and an issue-token form that reveals the
+  raw value exactly once (never shown again, never persisted client-side beyond that reveal).
+- **Honesty boundary:** this is NOT real SSO — no per-person identity, no `idp_subject`, no signed
+  operator-session, no audit trail attributing an action to a verified human (only to an operator-
+  chosen token label). Real per-operator accountability requires federating with Sentinel's own
+  already-shipped F-014/ADR-0017 identity layer, named here as the concrete future integration
+  target. Six of Delta's seven admin surfaces (everything except dashboards) remain
+  `require_admin`-only — a real, large retrofit explicitly deferred, not silently incomplete.
+
 ## Layout
 
 ```
@@ -345,6 +377,7 @@ src/delta/crm/                D-013 unified CRM (deal pipeline, stakeholders, in
 src/delta/erp/                D-014 asset register + vendor/purchase-order procurement
 src/delta/pm/                 D-015 sprints, tasks, dependency mapping, velocity + bottleneck reports
 src/delta/capacity/           D-016 teams, task assignment, utilization + advisory rebalancing
+src/delta/rbac/                D-017 locally-issued role-tagged access tokens gating dashboards
 frontend/         D-007/D-008 Next.js admin console (BFF-only, see frontend/README.md)
 contracts/        Delta-owned JSON Schemas (Draft 2020-12, additionalProperties:false)
 tests/            non-stubbed proofs of every invariant + the Budget round-trip
