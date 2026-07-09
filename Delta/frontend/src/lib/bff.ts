@@ -26,6 +26,7 @@ export const ALLOWED_ROOTS = new Set([
   "chargeback",
   "crm",
   "erp",
+  "pm",
 ]);
 
 export interface ProxyResult {

@@ -51,6 +51,11 @@ AssetId = UuidStr
 VendorId = UuidStr
 PurchaseOrderId = UuidStr
 
+# D-015 project management (sprints, tasks, dependency mapping) identifiers.
+SprintId = UuidStr
+TaskId = UuidStr
+TaskDependencyId = UuidStr
+
 # Internal Sentinel component slug (NOT the end-user model name).
 AgentId = Annotated[str, StringConstraints(pattern=_AGENT_ID_PATTERN, max_length=_ID_MAX_LENGTH)]
 

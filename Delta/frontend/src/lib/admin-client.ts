@@ -11,6 +11,7 @@ import type {
   AssetCreateRequest,
   AssetStatusTransitionRequest,
   AssetView,
+  BottleneckReportView,
   ChangeHistoryEntryView,
   ChargebackReportView,
   ClientCreateRequest,
@@ -31,9 +32,19 @@ import type {
   PurchaseOrderView,
   RelationshipScoreView,
   SpendSummaryView,
+  SprintCreateRequest,
+  SprintStatusUpdateRequest,
+  SprintView,
   StakeholderCreateRequest,
   StakeholderView,
+  TaskCreateRequest,
+  TaskDependencyCreateRequest,
+  TaskDependencyView,
+  TaskStatus,
+  TaskStatusUpdateRequest,
+  TaskView,
   TimeSeriesPointView,
+  VelocityReportView,
   VendorCreateRequest,
   VendorView,
 } from "@/lib/types";
@@ -298,6 +309,64 @@ export const adminApi = {
     adminFetch<PurchaseOrderView>(`/erp/purchase-orders/${encodeURIComponent(poId)}/decision`, {
       method: "POST",
       body,
+    }),
+
+  // D-015 project management — a deliberately bounded vertical slice (sprints,
+  // tasks, a dependency graph, a velocity report, a deterministic blocking-fan-out
+  // bottleneck heuristic; no push updates, no external issue-tracker sync, no ML).
+  listSprints: (tenantId: string, projectId: string, limit?: number) =>
+    adminFetch<SprintView[]>("/pm/sprints", {
+      query: { tenant_id: tenantId, project_id: projectId, limit },
+    }),
+
+  createSprint: (body: SprintCreateRequest) =>
+    adminFetch<SprintView>("/pm/sprints", { method: "POST", body }),
+
+  updateSprintStatus: (sprintId: string, body: SprintStatusUpdateRequest) =>
+    adminFetch<SprintView>(`/pm/sprints/${encodeURIComponent(sprintId)}/status`, {
+      method: "POST",
+      body,
+    }),
+
+  listTasks: (
+    tenantId: string,
+    projectId: string,
+    opts: { sprintId?: string; status?: TaskStatus; limit?: number } = {},
+  ) =>
+    adminFetch<TaskView[]>("/pm/tasks", {
+      query: {
+        tenant_id: tenantId,
+        project_id: projectId,
+        sprint_id: opts.sprintId,
+        status: opts.status,
+        limit: opts.limit,
+      },
+    }),
+
+  createTask: (body: TaskCreateRequest) => adminFetch<TaskView>("/pm/tasks", { method: "POST", body }),
+
+  updateTaskStatus: (taskId: string, body: TaskStatusUpdateRequest) =>
+    adminFetch<TaskView>(`/pm/tasks/${encodeURIComponent(taskId)}/status`, {
+      method: "POST",
+      body,
+    }),
+
+  createDependency: (body: TaskDependencyCreateRequest) =>
+    adminFetch<TaskDependencyView>("/pm/dependencies", { method: "POST", body }),
+
+  listTaskDependencies: (tenantId: string, taskId: string) =>
+    adminFetch<TaskDependencyView[]>(`/pm/tasks/${encodeURIComponent(taskId)}/dependencies`, {
+      query: { tenant_id: tenantId },
+    }),
+
+  getVelocityReport: (tenantId: string, projectId: string, limit?: number) =>
+    adminFetch<VelocityReportView>("/pm/velocity", {
+      query: { tenant_id: tenantId, project_id: projectId, limit },
+    }),
+
+  getBottleneckReport: (tenantId: string, projectId: string, limit?: number) =>
+    adminFetch<BottleneckReportView>("/pm/bottlenecks", {
+      query: { tenant_id: tenantId, project_id: projectId, limit },
     }),
 };
 

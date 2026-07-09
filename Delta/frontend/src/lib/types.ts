@@ -356,3 +356,109 @@ export interface PurchaseOrderView {
   decided_by: string | null;
   decided_at: string | null;
 }
+
+/**
+ * D-015 project management: sprints, tasks, a dependency graph, sprint velocity,
+ * and a deterministic blocking-fan-out bottleneck heuristic
+ * (Delta/src/delta/pm/schemas.py). Not the roadmap's literal "real-time... AI-driven
+ * execution-bottleneck prediction" — no push updates, no trained/validated ML. See
+ * docs/adr/0015-delta-pm-sprints-dependencies.md.
+ */
+export type SprintStatus = "planned" | "active" | "completed";
+export type TaskStatus = "todo" | "in_progress" | "done" | "blocked";
+
+export interface SprintCreateRequest {
+  tenant_id: string;
+  project_id: string;
+  name: string;
+  start_date: string;
+  end_date: string;
+}
+
+export interface SprintStatusUpdateRequest {
+  tenant_id: string;
+  status: SprintStatus;
+}
+
+export interface SprintView {
+  sprint_id: string;
+  tenant_id: string;
+  project_id: string;
+  name: string;
+  start_date: string;
+  end_date: string;
+  status: SprintStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskCreateRequest {
+  tenant_id: string;
+  project_id: string;
+  sprint_id?: string | null;
+  title: string;
+  story_points?: number | null;
+  assignee?: string | null;
+}
+
+export interface TaskStatusUpdateRequest {
+  tenant_id: string;
+  status: TaskStatus;
+}
+
+export interface TaskView {
+  task_id: string;
+  tenant_id: string;
+  project_id: string;
+  sprint_id: string | null;
+  title: string;
+  status: TaskStatus;
+  story_points: number | null;
+  assignee: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface TaskDependencyCreateRequest {
+  tenant_id: string;
+  blocking_task_id: string;
+  blocked_task_id: string;
+}
+
+export interface TaskDependencyView {
+  dependency_id: string;
+  tenant_id: string;
+  blocking_task_id: string;
+  blocked_task_id: string;
+  created_at: string;
+}
+
+export interface SprintVelocityRow {
+  sprint_id: string;
+  sprint_name: string;
+  status: SprintStatus;
+  completed_story_points: number;
+  completed_task_count: number;
+  total_task_count: number;
+}
+
+export interface VelocityReportView {
+  project_id: string;
+  sprints: SprintVelocityRow[];
+}
+
+export interface BottleneckRow {
+  task_id: string;
+  title: string;
+  status: TaskStatus;
+  blocking_count: number;
+}
+
+export interface BottleneckReportView {
+  project_id: string;
+  bottlenecks: BottleneckRow[];
+  /** A deterministic blocking-fan-out ranking, not a trained/validated statistical
+   * or ML prediction model — see docs/adr/0015-delta-pm-sprints-dependencies.md. */
+  method: "blocking_fanout_v1";
+}
