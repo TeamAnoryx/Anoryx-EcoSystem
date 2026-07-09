@@ -8,6 +8,9 @@ import type {
   AllocationView,
   AnomalyReportView,
   ApprovalDecisionRequest,
+  AssetCreateRequest,
+  AssetStatusTransitionRequest,
+  AssetView,
   ChangeHistoryEntryView,
   ChargebackReportView,
   ClientCreateRequest,
@@ -22,11 +25,17 @@ import type {
   GroupSpendView,
   InteractionCreateRequest,
   InteractionView,
+  PurchaseOrderCreateRequest,
+  PurchaseOrderDecisionRequest,
+  PurchaseOrderStatus,
+  PurchaseOrderView,
   RelationshipScoreView,
   SpendSummaryView,
   StakeholderCreateRequest,
   StakeholderView,
   TimeSeriesPointView,
+  VendorCreateRequest,
+  VendorView,
 } from "@/lib/types";
 
 /**
@@ -256,6 +265,40 @@ export const adminApi = {
       `/crm/clients/${encodeURIComponent(clientId)}/relationship-score`,
       { query: { tenant_id: tenantId } },
     ),
+
+  // D-014 ERP — a deliberately bounded vertical slice (asset register + vendor/
+  // purchase-order procurement; no payroll, no HR, no external real-time sync).
+  listVendors: (tenantId: string, limit?: number) =>
+    adminFetch<VendorView[]>("/erp/vendors", { query: { tenant_id: tenantId, limit } }),
+
+  createVendor: (body: VendorCreateRequest) =>
+    adminFetch<VendorView>("/erp/vendors", { method: "POST", body }),
+
+  listAssets: (tenantId: string, limit?: number) =>
+    adminFetch<AssetView[]>("/erp/assets", { query: { tenant_id: tenantId, limit } }),
+
+  createAsset: (body: AssetCreateRequest) =>
+    adminFetch<AssetView>("/erp/assets", { method: "POST", body }),
+
+  transitionAssetStatus: (assetId: string, body: AssetStatusTransitionRequest) =>
+    adminFetch<AssetView>(`/erp/assets/${encodeURIComponent(assetId)}/status`, {
+      method: "POST",
+      body,
+    }),
+
+  listPurchaseOrders: (tenantId: string, status?: PurchaseOrderStatus, limit?: number) =>
+    adminFetch<PurchaseOrderView[]>("/erp/purchase-orders", {
+      query: { tenant_id: tenantId, status, limit },
+    }),
+
+  createPurchaseOrder: (body: PurchaseOrderCreateRequest) =>
+    adminFetch<PurchaseOrderView>("/erp/purchase-orders", { method: "POST", body }),
+
+  decidePurchaseOrder: (poId: string, body: PurchaseOrderDecisionRequest) =>
+    adminFetch<PurchaseOrderView>(`/erp/purchase-orders/${encodeURIComponent(poId)}/decision`, {
+      method: "POST",
+      body,
+    }),
 };
 
 export type AdminApi = typeof adminApi;

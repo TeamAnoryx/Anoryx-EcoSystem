@@ -315,3 +315,65 @@ interactions = sa.Table(
     sa.Column("created_by", sa.String(128), nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
+
+# --- D-014 ERP: asset register + vendor/purchase-order procurement (migration 0008) ---
+# A deliberately scoped vertical slice of the roadmap's "real-time sync of supply
+# chain, payroll, HR, and physical assets" — see docs/adr/0014-delta-erp-assets-procurement.md
+# §3 for why payroll/HR are named deferrals (sensitive PII/compliance domains with no
+# precedent anywhere in this codebase) and why "real-time SYNC" with external ERPs is
+# D-019's job (this task builds the internal record-keeping those integrations would
+# sync into, not the integrations themselves).
+vendors = sa.Table(
+    "vendors",
+    metadata,
+    sa.Column("vendor_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("name", sa.String(256), nullable=False),
+    sa.Column("contact_email", sa.String(320), nullable=True),
+    sa.Column("status", sa.String(16), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# Physical/software asset register. `status` moves forward only:
+# active -> retired -> disposed (enforced by delta.erp.service, mirrors D-013's
+# deal-stage terminality guard — not a DB CHECK, since the linear vocabulary could
+# still grow without needing a migration).
+assets = sa.Table(
+    "assets",
+    metadata,
+    sa.Column("asset_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("name", sa.String(256), nullable=False),
+    sa.Column("category", sa.String(32), nullable=False),
+    sa.Column("status", sa.String(16), nullable=False),
+    sa.Column("acquisition_cost_minor_units", sa.BigInteger, nullable=True),
+    sa.Column("currency", sa.String(3), nullable=True),
+    sa.Column("acquired_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("assigned_team_id", sa.String(64), nullable=True),
+    sa.Column("retired_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# A procurement commitment against a vendor, optionally tied to the asset it
+# purchases. `status` starts 'requested'; only an explicit admin decision moves it to
+# 'approved'/'rejected' (identical shape to D-007's allocations propose/decide
+# workflow) — wired into D-009's hash-chained audit log on decision (a purchase
+# commitment IS a financial event, unlike D-013's CRM edits).
+purchase_orders = sa.Table(
+    "purchase_orders",
+    metadata,
+    sa.Column("po_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("vendor_id", sa.String(64), nullable=False),
+    sa.Column("asset_id", sa.String(64), nullable=True),
+    sa.Column("description", sa.String(512), nullable=False),
+    sa.Column("amount_minor_units", sa.BigInteger, nullable=False),
+    sa.Column("currency", sa.String(3), nullable=False),
+    sa.Column("status", sa.String(16), nullable=False),
+    sa.Column("requested_by", sa.String(128), nullable=False),
+    sa.Column("requested_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("decided_by", sa.String(128), nullable=True),
+    sa.Column("decided_at", sa.DateTime(timezone=True), nullable=True),
+)
