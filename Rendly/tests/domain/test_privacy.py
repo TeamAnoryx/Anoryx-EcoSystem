@@ -139,13 +139,21 @@ def test_reveal_grants_everything_when_all_fields_granted():
     assert view.career_target_stage == "staff_engineer"
 
 
-def test_reveal_granted_field_with_no_source_record_is_still_none():
-    # TEAM/INTENT_SEEKING granted but no intent_profile supplied at all -- a
-    # viewer cannot distinguish "not granted" from "granted but nothing to show".
-    settings = _settings(PrivacyField.INTENT_SEEKING, PrivacyField.CAREER_CURRENT_STAGE)
+@pytest.mark.parametrize(
+    ("field", "attr"),
+    [
+        (PrivacyField.INTENT_SEEKING, "intent_seeking"),
+        (PrivacyField.INTENT_OFFERING, "intent_offering"),
+        (PrivacyField.CAREER_CURRENT_STAGE, "career_current_stage"),
+        (PrivacyField.CAREER_TARGET_STAGE, "career_target_stage"),
+    ],
+)
+def test_reveal_granted_field_with_no_source_record_is_still_none(field, attr):
+    # A field granted but with no intent_profile/career_goal supplied at all --
+    # a viewer cannot distinguish "not granted" from "granted but nothing to show".
+    settings = _settings(field)
     view = reveal(_PROFILE, settings)  # no intent_profile, no career_goal
-    assert view.intent_seeking is None
-    assert view.career_current_stage is None
+    assert getattr(view, attr) is None
 
 
 def test_reveal_team_none_on_profile_is_withheld_as_none_even_when_granted():
@@ -153,6 +161,16 @@ def test_reveal_team_none_on_profile_is_withheld_as_none_even_when_granted():
     settings = bind_privacy_settings(profile, granted_fields=(PrivacyField.TEAM,), updated_at=_NOW)
     view = reveal(profile, settings)
     assert view.team is None
+
+
+def test_reveal_grants_a_real_empty_value_not_a_withheld_none():
+    # A granted field whose opted-in source value is itself empty must surface
+    # as the real empty value, not be confused with "withheld" (None).
+    settings = _settings(PrivacyField.INTENT_SEEKING)
+    intent = _intent(seeking=(), offering=("python",))
+    view = reveal(_PROFILE, settings, intent_profile=intent)
+    assert view.intent_seeking == ()
+    assert view.intent_seeking is not None
 
 
 # --- reveal: provenance checks ----------------------------------------------------------
@@ -167,6 +185,19 @@ def test_reveal_rejects_settings_for_a_different_user():
     )
     with pytest.raises(ValueError, match="same user"):
         reveal(_PROFILE, other_settings)
+
+
+def test_reveal_rejects_settings_for_same_user_id_but_different_tenant():
+    # Same user_id, different tenant_id -- _check_owner's OR must catch a
+    # tenant mismatch even when the user_id half happens to match.
+    mismatched_settings = PrivacySettings(
+        user_id=_USER_ID,
+        tenant_id="99999999-9999-4999-8999-999999999999",
+        granted_fields=(PrivacyField.TEAM,),
+        updated_at=_NOW,
+    )
+    with pytest.raises(ValueError, match="same user"):
+        reveal(_PROFILE, mismatched_settings)
 
 
 def test_reveal_rejects_intent_profile_for_a_different_user():

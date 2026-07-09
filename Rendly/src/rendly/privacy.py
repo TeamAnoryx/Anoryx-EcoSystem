@@ -115,8 +115,8 @@ class ExposedProfileView(BaseModel):
     :func:`reveal`. Immutable. Each optional field is either its real value (if
     granted) or ``None`` (withheld OR simply absent on the source record — a viewer
     cannot distinguish "not granted" from "granted but not set", which is itself
-    part of the privacy guarantee: a withheld field must not leak its own
-    withheld-ness any more precisely than an absent one).
+    part of this seam's fail-closed design: a withheld field must not leak its
+    own withheld-ness any more precisely than an absent one).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
