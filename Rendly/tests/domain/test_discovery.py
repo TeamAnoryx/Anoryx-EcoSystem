@@ -14,7 +14,7 @@ from rendly.discovery import (
     discover_events,
 )
 from rendly.enums import OrgRole
-from rendly.event import Event, bind_event, schedule_session
+from rendly.event import MAX_SESSIONS_PER_EVENT, Event, bind_event, schedule_session
 from rendly.profile import Profile
 
 _NOW = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
@@ -156,9 +156,29 @@ def test_discover_events_respects_limit_and_clamps_to_max():
     assert len(discover_events(["remote"], candidates, limit=MAX_DISCOVERY_RESULTS + 1000)) <= 1
 
 
+def test_discover_events_negative_limit_clamps_to_zero():
+    event = _event()
+    tag = bind_event_locality(event, locality="remote")
+    assert discover_events(["remote"], [(event, tag, [])], limit=-1) == []
+
+
+def test_discover_events_does_not_deduplicate_repeated_candidates():
+    # Mirrors intent.rank_matches/career.rank_trajectory_matches's own documented
+    # non-dedup behavior -- a caller passing the same event twice gets it twice.
+    event = _event()
+    tag = bind_event_locality(event, locality="remote")
+    results = discover_events(["remote"], [(event, tag, []), (event, tag, [])])
+    assert [r.event_id for r in results] == [event.event_id, event.event_id]
+
+
 def test_discover_events_rejects_oversized_locality_list():
     with pytest.raises(ValueError, match="subject_localities"):
         discover_events([f"loc-{i}" for i in range(MAX_LOCALITIES + 1)], [])
+
+
+def test_discover_events_rejects_oversized_subject_locality_entry():
+    with pytest.raises(ValueError, match="subject_localities"):
+        discover_events(["x" * 65], [])
 
 
 def test_discover_events_rejects_oversized_candidate_pool():
@@ -166,6 +186,16 @@ def test_discover_events_rejects_oversized_candidate_pool():
     tag = bind_event_locality(event, locality="remote")
     with pytest.raises(ValueError, match="candidates"):
         discover_events(["remote"], [(event, tag, [])] * (MAX_CANDIDATE_EVENTS + 1))
+
+
+def test_discover_events_rejects_oversized_session_list_for_one_candidate():
+    event = _event()
+    tag = bind_event_locality(event, locality="remote")
+    one_session = schedule_session(
+        event, [], title="Talk", starts_at=_NOW, ends_at=_NOW + timedelta(hours=1)
+    )
+    with pytest.raises(ValueError, match="sessions"):
+        discover_events(["remote"], [(event, tag, [one_session] * (MAX_SESSIONS_PER_EVENT + 1))])
 
 
 def test_discover_events_rejects_mismatched_event_locality_pair():

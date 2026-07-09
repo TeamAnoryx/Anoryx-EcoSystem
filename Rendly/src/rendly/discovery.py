@@ -41,7 +41,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
-from .event import Event, EventSession
+from .event import MAX_SESSIONS_PER_EVENT, Event, EventSession
 from .identifiers import EventId, TenantId, UserId
 
 # A sentinel strictly later than any real EventSession.starts_at (event.py requires
@@ -53,7 +53,8 @@ _SORT_LAST = datetime.max.replace(tzinfo=timezone.utc)
 # An opaque locality label: short, non-empty, bounded (mirrors intent.py's
 # IntentTag / career.py's CareerStage discipline — no fixed vocabulary, no
 # geocoding; exact string equality is the whole matching semantics, see Fork C).
-Locality = Annotated[str, StringConstraints(min_length=1, max_length=64)]
+_LOCALITY_MAX_LENGTH = 64
+Locality = Annotated[str, StringConstraints(min_length=1, max_length=_LOCALITY_MAX_LENGTH)]
 
 # Bounds a subject's locality-interest set (mirrors intent.py's MAX_TAGS).
 MAX_LOCALITIES = 16
@@ -133,10 +134,15 @@ def discover_events(
     Deterministic: results sort by ``(next_session_starts_at ascending, NULLs
     last, event_id ascending)``, so the same input always produces the same
     output (mirrors ``intent.rank_matches``/``career.rank_trajectory_matches``).
+    This function does NOT de-duplicate ``candidates`` by ``event_id`` — a caller
+    passing the same event twice gets it evaluated (and possibly listed) twice,
+    mirroring ``intent.rank_matches``/``career.rank_trajectory_matches``'s own
+    documented non-dedup behavior.
 
     ``limit`` is clamped to ``[0, MAX_DISCOVERY_RESULTS]``. ``subject_localities``
-    beyond ``MAX_LOCALITIES`` and ``candidates`` beyond ``MAX_CANDIDATE_EVENTS``
-    are both rejected outright rather than silently truncated.
+    beyond ``MAX_LOCALITIES``, ``candidates`` beyond ``MAX_CANDIDATE_EVENTS``, and
+    any one candidate's ``sessions`` beyond ``event.MAX_SESSIONS_PER_EVENT`` are
+    all rejected outright rather than silently truncated.
 
     Raises ``ValueError`` if any ``(event, locality_tag)`` pair does not describe
     the same event, or if ``sessions`` for a candidate contains a session that
@@ -151,6 +157,12 @@ def discover_events(
     """
     if len(subject_localities) > MAX_LOCALITIES:
         raise ValueError(f"subject_localities must not exceed {MAX_LOCALITIES} entries")
+    for locality in subject_localities:
+        if not (1 <= len(locality) <= _LOCALITY_MAX_LENGTH):
+            raise ValueError(
+                f"subject_localities entries must be 1..{_LOCALITY_MAX_LENGTH} characters "
+                "(matches LocalizedEvent.locality's own bound)"
+            )
     if len(candidates) > MAX_CANDIDATE_EVENTS:
         raise ValueError(f"candidates must not exceed {MAX_CANDIDATE_EVENTS} entries")
     bounded_limit = max(0, min(limit, MAX_DISCOVERY_RESULTS))
@@ -159,6 +171,11 @@ def discover_events(
     discovered: list[DiscoveredEvent] = []
     for event, tag, sessions in candidates:
         _require_same_event(event, tag)
+        if len(sessions) > MAX_SESSIONS_PER_EVENT:
+            raise ValueError(
+                f"a candidate's sessions must not exceed {MAX_SESSIONS_PER_EVENT} entries "
+                "(mirrors event.schedule_session's own agenda cap)"
+            )
         for session in sessions:
             if session.event_id != event.event_id or session.tenant_id != event.tenant_id:
                 raise ValueError("sessions must all belong to their candidate's event")
