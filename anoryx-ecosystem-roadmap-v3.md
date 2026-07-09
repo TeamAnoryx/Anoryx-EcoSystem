@@ -771,7 +771,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 ## Cross-product — 6 tasks
 
 - [x] X-001 Sentinel ↔ Orchestrator wiring — Easy-Tricky (6-10h) (shipped PR #91)
-- [ ] X-002 Orchestrator ↔ Delta wiring — Easy-Tricky (6-10h)
+- [x] X-002 Orchestrator ↔ Delta wiring — Easy-Tricky (6-10h) (shipped PR #97)
 - [ ] X-003 Budget enforcement loop (killer feature) — Tricky (10-14h)
 - [ ] X-004 Rendly ↔ Sentinel safety — Easy-Tricky 🔮
 - [ ] X-005 Rendly ↔ Delta monetization — Tricky 🏦
