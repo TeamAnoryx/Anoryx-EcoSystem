@@ -754,7 +754,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] R-015 Context-aware comms/transcript summarization — Complex 🏦 ✅ (shipped PR #84, scoped to a deterministic extractive-digest seam over chat messages + metadata-only huddle digests — no AI/LLM, no meeting-transcript source, no calendar/outreach integration — see ADR-0015)
 - [x] R-016 Intent-based matching (B2C) 🏦 ✅ (shipped PR #86, scoped to a deterministic complementary-intent matching core over the existing enterprise Profile domain — no B2C identity/persistence/REST, see ADR-0016)
 - [x] R-017 AI profile optimization + career matching 🏦 ✅ (shipped PR #89, scoped to a deterministic career-trajectory stage-matching seam + a fixed profile-completeness checklist — no ML/generated text, no persistence, no REST; see ADR-0017)
-- [ ] R-018 Hyper-personalized peer networking 🏦
+- [x] R-018 Hyper-personalized peer networking 🏦 ✅ (shipped PR #102, scoped to a deterministic merge of R-016 intent-matches + R-017 trajectory-matches into one ranked per-candidate feed — no ML, no persistence, no REST; see ADR-0018)
 - [ ] R-019 Privacy-controlled DM portal 🏦
 - [ ] R-020 Localized tech-event discovery 🏦
 - [ ] R-021 Skill-based opportunity matching 🏦
