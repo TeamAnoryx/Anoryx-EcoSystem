@@ -265,3 +265,94 @@ export interface ClientDetailView {
   stakeholders: StakeholderView[];
   relationship_score: RelationshipScoreView;
 }
+
+/**
+ * D-014 ERP: asset register + vendor/purchase-order procurement
+ * (Delta/src/delta/erp/schemas.py). A deliberately bounded vertical slice — no
+ * payroll, no HR, no external real-time sync (that's D-019's job). See
+ * docs/adr/0014-delta-erp-assets-procurement.md.
+ */
+export type AssetCategory = "equipment" | "software_license" | "furniture" | "vehicle" | "other";
+export type AssetStatus = "active" | "retired" | "disposed";
+export type VendorStatus = "active" | "inactive";
+export type PurchaseOrderStatus = "requested" | "approved" | "rejected";
+export type PurchaseOrderAction = "approve" | "reject";
+
+export interface VendorCreateRequest {
+  tenant_id: string;
+  name: string;
+  contact_email?: string | null;
+}
+
+export interface VendorView {
+  vendor_id: string;
+  tenant_id: string;
+  name: string;
+  contact_email: string | null;
+  status: VendorStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssetCreateRequest {
+  tenant_id: string;
+  name: string;
+  category: AssetCategory;
+  acquisition_cost_minor_units?: number | null;
+  currency?: string | null;
+  acquired_at?: string | null;
+  assigned_team_id?: string | null;
+}
+
+export interface AssetStatusTransitionRequest {
+  tenant_id: string;
+  status: AssetStatus;
+  actor: string;
+}
+
+export interface AssetView {
+  asset_id: string;
+  tenant_id: string;
+  name: string;
+  category: AssetCategory;
+  status: AssetStatus;
+  acquisition_cost_minor_units: number | null;
+  currency: string | null;
+  acquired_at: string | null;
+  assigned_team_id: string | null;
+  retired_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PurchaseOrderCreateRequest {
+  tenant_id: string;
+  vendor_id: string;
+  asset_id?: string | null;
+  description: string;
+  amount_minor_units: number;
+  currency?: string;
+  requested_by: string;
+}
+
+export interface PurchaseOrderDecisionRequest {
+  tenant_id: string;
+  action: PurchaseOrderAction;
+  actor: string;
+  note?: string | null;
+}
+
+export interface PurchaseOrderView {
+  po_id: string;
+  tenant_id: string;
+  vendor_id: string;
+  asset_id: string | null;
+  description: string;
+  amount_minor_units: number;
+  currency: string;
+  status: PurchaseOrderStatus;
+  requested_by: string;
+  requested_at: string;
+  decided_by: string | null;
+  decided_at: string | null;
+}

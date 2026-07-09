@@ -231,6 +231,36 @@ heuristic. See [`docs/adr/0013-delta-unified-crm.md`](docs/adr/0013-delta-unifie
   D-009's hash-chained audit log (that chain is scoped to automated FINANCIAL workflows; CRM edits
   are business-process data) — named as a deliberate scope boundary, not an oversight.
 
+## D-014 — ERP: Asset Register + Vendor/Purchase-Order Procurement (🏦 post-investment vision tier)
+
+D-014 is the second task built past Delta's committed MVP into the vision tier, continuing
+directly from D-013 per explicit instruction to keep going. A deliberately bounded slice of the
+roadmap's "real-time sync of supply chain, payroll, HR, and physical assets — the full ERP": an
+asset register and a vendor/purchase-order procurement workflow. **No payroll, no HR, no external
+real-time sync** (that's D-019's explicitly-dependent future task). See
+[`docs/adr/0014-delta-erp-assets-procurement.md`](docs/adr/0014-delta-erp-assets-procurement.md).
+
+- **Backend:** `src/delta/erp/` — `schemas.py` (vendor/asset/PO DTOs, the same value/currency
+  pairing discipline D-013's audit caught, applied here proactively from the start), `store.py`
+  (SQLAlchemy Core persistence — forward-only asset lifecycle via a conditional
+  `UPDATE ... WHERE status = required_prior`, same race-guard shape as D-007's allocation decisions
+  and D-013's deal-stage transitions), `service.py` (orchestration — a PO decision writes into
+  D-009's hash-chained audit log in the SAME transaction as the status change, since a purchase
+  order IS a financial commitment, unlike D-013's CRM edits).
+- **New tables** (migration 0008): `vendors`, `assets`, `purchase_orders` — every FK is a composite
+  `(entity_id, tenant_id)` pair, same fail-closed RLS predicate as every prior Delta migration, no
+  DELETE grants anywhere.
+- **New endpoints:** `GET/POST /v1/admin/erp/vendors`, `.../assets`, `POST .../assets/{id}/status`,
+  `.../purchase-orders`, `POST .../purchase-orders/{id}/decision` — all on the same D-007 admin app,
+  same `require_admin` auth.
+- **Frontend:** `/erp` — vendor directory, asset register with an inline lifecycle-transition
+  control, and a purchase-order list with inline approve/reject decisions, via Server Actions.
+- **Honesty boundary:** a purchase order's amount is a procurement commitment an operator enters,
+  never validated against a real payment or contract — Delta still has no billing/AR/payments
+  system. No depreciation schedule, no multi-line PO items, no receiving/fulfillment tracking (that
+  overlaps D-018's separate scope). Asset lifecycle is forward-only (active → retired → disposed)
+  by design — enforced at the query layer like D-013's deal stages, not a closed DB vocabulary.
+
 ## Layout
 
 ```
@@ -241,6 +271,7 @@ src/delta/dashboards/        D-008 read-only spend aggregates (summary, time ser
 src/delta/forecasting/       D-011 current-rate budget-forecast projection + advisory recommendations
 src/delta/chargeback/        D-012 departmental chargeback/showback + trailing-average anomaly detection
 src/delta/crm/                D-013 unified CRM (deal pipeline, stakeholders, interactions, relationship score)
+src/delta/erp/                D-014 asset register + vendor/purchase-order procurement
 frontend/         D-007/D-008 Next.js admin console (BFF-only, see frontend/README.md)
 contracts/        Delta-owned JSON Schemas (Draft 2020-12, additionalProperties:false)
 tests/            non-stubbed proofs of every invariant + the Budget round-trip
