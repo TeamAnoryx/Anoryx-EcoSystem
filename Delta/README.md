@@ -298,6 +298,40 @@ no external issue-tracker integration, no trained/validated ML prediction.** See
   issue-tracker sync (Jira/Linear/GitHub Issues) — named as unclaimed future work, not
   approximated.
 
+## D-016 — Team Capacity Management: Teams, Task Assignment, Utilization, Advisory Rebalancing (🏦 post-investment vision tier)
+
+D-016 is the fourth task built past Delta's committed MVP into the vision tier, continuing
+directly from D-015 per explicit instruction to keep going. A deliberately bounded slice of the
+roadmap's "squad performance, capacity tracking, automated resource allocation, real-time
+utilization to prevent burnout": teams with an operator-declared per-sprint capacity,
+task-to-team assignment, a deterministic utilization report, and an advisory rebalancing
+suggestion. **No individual-level capacity/PTO tracking, no burnout/wellbeing measurement, no
+automatic task reassignment, no trained/validated ML.** See
+[`docs/adr/0016-delta-team-capacity-management.md`](docs/adr/0016-delta-team-capacity-management.md).
+
+- **Backend:** `src/delta/capacity/` — `schemas.py` (team/assignment DTOs, `reject_non_integer` on
+  `capacity_points_per_sprint` applied proactively from the start), `store.py` (SQLAlchemy Core
+  persistence — the utilization report is ONE bounded aggregate SQL query, never a per-team Python
+  loop), `service.py` (orchestration — `_greedy_rebalance` is a pure, dependency-free function
+  mirroring `pm.service._would_create_cycle`'s testability shape, returning plain dataclasses the
+  caller maps to the wire DTO).
+- **New table** (migration 0010): `teams`, plus an ADDITIVE nullable `team_id` column on D-015's
+  existing `tasks` table (the same `op.add_column`-on-an-earlier-table shape migration 0006 already
+  used to extend `change_history`) — `delta/pm/*.py` is never modified by this task.
+- **New endpoints:** `GET/POST /v1/admin/capacity/teams`, `POST .../teams/{id}/capacity`,
+  `GET .../tasks`, `POST .../tasks/{id}/team`, `GET .../utilization`, `GET .../rebalance` — all on
+  the same D-007 admin app, same `require_admin` auth.
+- **Frontend:** `/capacity` — team list with an inline capacity-update control, per-task team
+  assignment, a utilization table, and a rebalance-suggestion table with an Apply action, via
+  Server Actions.
+- **Honesty boundary:** `method: "capacity_ratio_v1"`/`"greedy_rebalance_v1"` are always
+  returned — deterministic, explainable computations, **not** trained/validated statistical or ML
+  models (same "no ecosystem precedent" reasoning as D-011/D-012/D-013/D-015). The rebalance report
+  is read-only; applying a suggestion requires the SAME manual assignment call an operator would
+  make by hand — nothing is ever moved automatically. Capacity is declared per TEAM only; no
+  individual-level capacity, PTO, or burnout signal exists anywhere in Delta (mirrors D-014's "no
+  HR" boundary).
+
 ## Layout
 
 ```
@@ -310,6 +344,7 @@ src/delta/chargeback/        D-012 departmental chargeback/showback + trailing-a
 src/delta/crm/                D-013 unified CRM (deal pipeline, stakeholders, interactions, relationship score)
 src/delta/erp/                D-014 asset register + vendor/purchase-order procurement
 src/delta/pm/                 D-015 sprints, tasks, dependency mapping, velocity + bottleneck reports
+src/delta/capacity/           D-016 teams, task assignment, utilization + advisory rebalancing
 frontend/         D-007/D-008 Next.js admin console (BFF-only, see frontend/README.md)
 contracts/        Delta-owned JSON Schemas (Draft 2020-12, additionalProperties:false)
 tests/            non-stubbed proofs of every invariant + the Budget round-trip

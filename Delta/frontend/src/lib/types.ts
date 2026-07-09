@@ -462,3 +462,91 @@ export interface BottleneckReportView {
    * or ML prediction model — see docs/adr/0015-delta-pm-sprints-dependencies.md. */
   method: "blocking_fanout_v1";
 }
+
+/**
+ * D-016 team capacity management: teams, task-to-team assignment, a deterministic
+ * utilization report, and an advisory (never automatic) rebalancing suggestion
+ * (Delta/src/delta/capacity/schemas.py). Not the roadmap's literal "squad
+ * performance... automated resource allocation... real-time utilization to prevent
+ * burnout" — no individual-level capacity/PTO data, no burnout/wellbeing signal, no
+ * automatic task reassignment, no real-time push. See
+ * docs/adr/0016-delta-team-capacity-management.md.
+ */
+export interface TeamCreateRequest {
+  tenant_id: string;
+  name: string;
+  capacity_points_per_sprint: number;
+}
+
+export interface TeamCapacityUpdateRequest {
+  tenant_id: string;
+  capacity_points_per_sprint: number;
+}
+
+export interface TeamView {
+  team_id: string;
+  tenant_id: string;
+  name: string;
+  capacity_points_per_sprint: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskTeamAssignRequest {
+  tenant_id: string;
+  team_id?: string | null;
+}
+
+export interface TaskAssignmentView {
+  task_id: string;
+  tenant_id: string;
+  team_id: string | null;
+}
+
+/** A task's capacity-relevant fields for one sprint — `TaskView` (D-015) does not
+ * expose `team_id`, so the capacity UI reads through `/capacity/tasks` instead of
+ * `/pm/tasks` whenever it needs a task's current team assignment. */
+export interface TaskCapacityView {
+  task_id: string;
+  title: string;
+  status: string;
+  story_points: number | null;
+  team_id: string | null;
+}
+
+export interface UtilizationRow {
+  team_id: string;
+  team_name: string;
+  capacity_points_per_sprint: number;
+  total_assigned_points: number;
+  remaining_points: number;
+  utilization_ratio: number | null;
+}
+
+export interface UtilizationReportView {
+  project_id: string;
+  sprint_id: string;
+  teams: UtilizationRow[];
+  /** A deterministic ratio, not a trained/validated statistical or ML prediction —
+   * see docs/adr/0016-delta-team-capacity-management.md. */
+  method: "capacity_ratio_v1";
+}
+
+export interface RebalanceSuggestion {
+  task_id: string;
+  title: string;
+  story_points: number;
+  from_team_id: string;
+  from_team_name: string;
+  to_team_id: string;
+  to_team_name: string;
+}
+
+export interface RebalanceReportView {
+  project_id: string;
+  sprint_id: string;
+  suggestions: RebalanceSuggestion[];
+  /** A deterministic greedy suggestion, purely advisory — nothing is moved
+   * automatically. See docs/adr/0016-delta-team-capacity-management.md. */
+  method: "greedy_rebalance_v1";
+}

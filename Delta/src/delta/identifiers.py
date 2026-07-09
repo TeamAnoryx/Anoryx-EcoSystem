@@ -56,6 +56,10 @@ SprintId = UuidStr
 TaskId = UuidStr
 TaskDependencyId = UuidStr
 
+# D-016 team capacity management reuses the ecosystem-wide TeamId (above) as both a
+# team's primary key and the tasks.team_id assignment column — no new identifier
+# type needed.
+
 # Internal Sentinel component slug (NOT the end-user model name).
 AgentId = Annotated[str, StringConstraints(pattern=_AGENT_ID_PATTERN, max_length=_ID_MAX_LENGTH)]
 
