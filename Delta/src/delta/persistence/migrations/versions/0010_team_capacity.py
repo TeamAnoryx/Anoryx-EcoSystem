@@ -83,18 +83,14 @@ def upgrade() -> None:
         sa.Column("capacity_points_per_sprint", sa.Integer, nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.CheckConstraint(
-            "capacity_points_per_sprint >= 0", name="ck_team_capacity_nonneg"
-        ),
+        sa.CheckConstraint("capacity_points_per_sprint >= 0", name="ck_team_capacity_nonneg"),
         sa.UniqueConstraint("team_id", "tenant_id", name="uq_team_id_tenant"),
         schema=_SCHEMA,
     )
     op.create_index("ix_teams_tenant", "teams", ["tenant_id"], schema=_SCHEMA)
 
     # ------------------------------------------------------- tasks.team_id (additive)
-    op.add_column(
-        "tasks", sa.Column("team_id", sa.String(64), nullable=True), schema=_SCHEMA
-    )
+    op.add_column("tasks", sa.Column("team_id", sa.String(64), nullable=True), schema=_SCHEMA)
     op.create_foreign_key(
         "fk_task_team",
         "tasks",
