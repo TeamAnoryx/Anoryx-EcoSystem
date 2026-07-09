@@ -364,6 +364,43 @@ admin surfaces, no fine-grained permissions.** See
   target. Six of Delta's seven admin surfaces (everything except dashboards) remain
   `require_admin`-only — a real, large retrofit explicitly deferred, not silently incomplete.
 
+## D-018 — Automated Invoicing + Vendor Payment Reconciliation (🏦 post-investment vision tier)
+
+D-018 is the sixth task built past Delta's committed MVP into the vision tier, continuing
+directly from D-017 per the standing instruction to complete all post-investment tasks. A
+deliberately bounded slice of the roadmap's "invoicing + vendor payment reconciliation linked to
+project milestones/delivery metrics; continuous ERP ledger reconciliation": a classic
+accounts-payable **three-way match** — a D-014 approved purchase order (commitment) → a submitted
+invoice (billing claim, optionally proven by a D-015 task's `'done'` status as the delivery-metric
+leg) → recorded payments (settlement) — plus a computed per-vendor reconciliation report. **Does
+NOT wire vendor payments into D-003's ledger** (that schema is scoped to AI-usage cost attribution,
+not accounts-payable — D-014 never did this either, for the identical reason); real external
+ERP/bank-feed sync is D-019's own already-roadmapped job. See
+[`docs/adr/0018-delta-invoicing-reconciliation.md`](docs/adr/0018-delta-invoicing-reconciliation.md).
+
+- **Backend:** `src/delta/invoicing/` — `schemas.py` (invoice/payment DTOs, strict-integer money,
+  control-character rejection — mirrors `erp.schemas`), `store.py` (a single atomic
+  conditional-UPDATE for payment recording — `amount_paid_minor_units + :amount <= amount_minor_units`
+  in the WHERE clause itself, race-safe under concurrency by construction, not by a
+  read-then-write check), `service.py` (the PO-approved / vendor-match / currency-match /
+  milestone-done / not-over-committed guards that gate invoice creation, plus D-009 audit-chain
+  wiring on submission, decision, AND payment recording).
+- **New tables** (migration 0012): `invoices`, `invoice_payments` — additive, composite
+  tenant-scoped FKs to `vendors`/`purchase_orders`/`invoices` (mirrors migration 0010's precedent),
+  no other table touched.
+- **New endpoints:** `POST/GET /v1/admin/invoicing/invoices`, `POST .../invoices/{id}/decision`,
+  `POST/GET .../invoices/{id}/payments`, `GET .../reconciliation` — gated at `require_admin` only
+  (six of Delta's seven admin surfaces stay break-glass-only; D-017's RBAC retrofit was
+  deliberately bounded to D-008's dashboards alone).
+- **Frontend:** `/invoicing` — an invoice table with inline approve/dispute and payment-recording
+  controls, a PO-backed invoice-submission form (vendor → its approved POs only, optional
+  milestone-task-ID field), and a per-vendor reconciliation panel showing
+  committed/invoiced/paid/outstanding totals.
+- **Honesty boundary:** reconciliation here is entirely INTERNAL to Delta's own procurement and
+  billing records — no external ERP/bank-feed sync, no invoice line items/tax/multi-currency FX, no
+  due-date/aging/dunning tracking, no automatic invoice generation from milestone completion (a
+  task reaching `'done'` is a required PROOF when claimed, never a trigger), no multi-PO invoices.
+
 ## Layout
 
 ```
@@ -378,6 +415,7 @@ src/delta/erp/                D-014 asset register + vendor/purchase-order procu
 src/delta/pm/                 D-015 sprints, tasks, dependency mapping, velocity + bottleneck reports
 src/delta/capacity/           D-016 teams, task assignment, utilization + advisory rebalancing
 src/delta/rbac/                D-017 locally-issued role-tagged access tokens gating dashboards
+src/delta/invoicing/          D-018 PO-backed invoice/payment three-way match + vendor reconciliation
 frontend/         D-007/D-008 Next.js admin console (BFF-only, see frontend/README.md)
 contracts/        Delta-owned JSON Schemas (Draft 2020-12, additionalProperties:false)
 tests/            non-stubbed proofs of every invariant + the Budget round-trip
