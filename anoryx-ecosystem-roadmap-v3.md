@@ -724,7 +724,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-013 Unified CRM ✅ (shipped PR #87 — bounded vertical slice, see docs/adr/0013-delta-unified-crm.md)
 - [x] D-014 Comprehensive ERP engine ✅ (shipped PR #92 — bounded vertical slice: asset register + vendor/PO procurement, see docs/adr/0014-delta-erp-assets-procurement.md)
 - [x] D-015 AI-driven project management ✅ (shipped PR #94 — bounded vertical slice: sprints, tasks, dependency graph, velocity + bottleneck heuristic, see docs/adr/0015-delta-pm-sprints-dependencies.md)
-- [ ] D-016 Dynamic team / capacity management — Complex 🏦
+- [x] D-016 Dynamic team / capacity management ✅ (shipped PR #96 — bounded vertical slice: teams, task assignment, utilization report, advisory rebalancing, see docs/adr/0016-delta-team-capacity-management.md)
 - [ ] D-017 Strict RBAC operational dashboards — Complex 🏦
 - [ ] D-018 Automated invoicing + vendor reconciliation — Heavy 🏦
 - [ ] D-019 Corporate ERP integrations (NetSuite/SAP/Coupa/cloud) — Heavy 🏦
@@ -753,8 +753,8 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] R-014 Encrypted live-streaming infrastructure — Heavy 🏦 ✅ (shipped PR #73, scoped to a key-epoch derivation/rotation seam over R-013's EventSession — no SFU/broadcast delivery, see ADR-0014)
 - [x] R-015 Context-aware comms/transcript summarization — Complex 🏦 ✅ (shipped PR #84, scoped to a deterministic extractive-digest seam over chat messages + metadata-only huddle digests — no AI/LLM, no meeting-transcript source, no calendar/outreach integration — see ADR-0015)
 - [x] R-016 Intent-based matching (B2C) 🏦 ✅ (shipped PR #86, scoped to a deterministic complementary-intent matching core over the existing enterprise Profile domain — no B2C identity/persistence/REST, see ADR-0016)
-- [ ] R-017 AI profile optimization + career matching 🏦
-- [ ] R-018 Hyper-personalized peer networking 🏦
+- [x] R-017 AI profile optimization + career matching 🏦 ✅ (shipped PR #89, scoped to a deterministic career-trajectory stage-matching seam + a fixed profile-completeness checklist — no ML/generated text, no persistence, no REST; see ADR-0017)
+- [x] R-018 Hyper-personalized peer networking 🏦 ✅ (shipped PR TBD, scoped to a deterministic composition seam combining R-016's intent matcher + R-017's career-trajectory matcher into one ranked peer suggestion — no ML, no persistence, no REST/UI; see ADR-0018)
 - [ ] R-019 Privacy-controlled DM portal 🏦
 - [ ] R-020 Localized tech-event discovery 🏦
 - [ ] R-021 Skill-based opportunity matching 🏦
