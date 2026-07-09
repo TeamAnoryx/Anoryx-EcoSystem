@@ -187,6 +187,15 @@ jobs:
   # accepting shim for O-004's forward target — the Delta -> O-004 leg is fully real. CI on a
   # fresh Postgres is the authority of record (local green can mask drift). Mirrors the
   # ledger-db job + the Orchestrator's orchestrator-integration job.
+  #
+  # This job also runs the OTHER cross-product direction (X-002, ADR Delta-0016): the
+  # ingest seam test `tests/ingest/test_seam_e2e.py` drives the REAL Orchestrator O-003
+  # receiver, the REAL D-004 outbox dispatcher, and the REAL Delta ingest app together. That
+  # file has existed since D-004 (PR #41) but was never invoked by any CI job — it self-skips
+  # unless BOTH `APP_DATABASE_URL` and `ORCH_APP_DATABASE_URL` are set, which no job did until
+  # now (the banked "gate new test lanes in CI — verified to execute, not skip" lesson, F-018).
+  # Reusing this job's two-DB harness (rather than standing up a near-duplicate one) is the
+  # minimal fix: every env var the ingest seam needs is already present here.
   delta-o004-integration:
     runs-on: ubuntu-latest
     defaults:
@@ -245,3 +254,10 @@ jobs:
         run: psql -h localhost -p 5432 -U delta -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE orch_dev;"
       - name: Delta -> real O-004 distribution e2e (non-stubbed, fresh Postgres)
         run: python -m pytest tests/budget_engine/test_o004_e2e.py --tb=short -rN -q
+      - name: Orchestrator -> real Delta ingest seam e2e (X-002, non-stubbed, fresh Postgres)
+        # Must actually PASS, not silently skip: pytest's skipif exits 0 on an all-skipped
+        # run, which would make a broken/misconfigured seam look green. Grepping the summary
+        # line for the exact passed-count is the same discipline the F-018 lesson calls for.
+        run: |
+          python -m pytest tests/ingest/test_seam_e2e.py --tb=short -rA -q | tee /tmp/seam_e2e.log
+          grep -qE "^1 passed" /tmp/seam_e2e.log

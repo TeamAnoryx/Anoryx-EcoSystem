@@ -182,7 +182,8 @@ def upgrade() -> None:
     # all of a txn's entries are the GUC tenant (WITH CHECK enforces this at INSERT),
     # so the aggregate sees the complete set. An unset GUC collapses the view to zero
     # rows -> count<2 -> RAISE (fail-closed).
-    op.execute(f"""
+    op.execute(
+        f"""
         CREATE OR REPLACE FUNCTION {_SCHEMA}.assert_txn_balanced()
         RETURNS TRIGGER AS $$
         DECLARE
@@ -246,13 +247,16 @@ def upgrade() -> None:
             RETURN NULL;
         END;
         $$ LANGUAGE plpgsql;
-        """)
-    op.execute(f"""
+        """
+    )
+    op.execute(
+        f"""
         CREATE CONSTRAINT TRIGGER trg_le_balanced
         AFTER INSERT ON {_SCHEMA}.ledger_entries
         DEFERRABLE INITIALLY DEFERRED
         FOR EACH ROW EXECUTE FUNCTION {_SCHEMA}.assert_txn_balanced();
-        """)
+        """
+    )
 
     # ------------------------------------------------ committed-txn immutability
     # An entry may only be inserted in the SAME DB transaction that created its
@@ -265,7 +269,8 @@ def upgrade() -> None:
     # is NOT epoch-safe — it raises once the xid epoch >= 1 — so we mask instead.)
     # A legitimate append sees the parent row's xmin == this transaction's xid; a
     # later amendment sees a different (committed) xid and is rejected at INSERT.
-    op.execute(f"""
+    op.execute(
+        f"""
         CREATE OR REPLACE FUNCTION {_SCHEMA}.assert_entry_in_txn_creation()
         RETURNS TRIGGER AS $$
         DECLARE v_xmin xid;
@@ -284,15 +289,19 @@ def upgrade() -> None:
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql;
-        """)
-    op.execute(f"""
+        """
+    )
+    op.execute(
+        f"""
         CREATE TRIGGER trg_le_in_txn_creation
         BEFORE INSERT ON {_SCHEMA}.ledger_entries
         FOR EACH ROW EXECUTE FUNCTION {_SCHEMA}.assert_entry_in_txn_creation();
-        """)
+        """
+    )
 
     # -------------------------------------------------------- append-only guard
-    op.execute(f"""
+    op.execute(
+        f"""
         CREATE OR REPLACE FUNCTION {_SCHEMA}.deny_ledger_modification()
         RETURNS TRIGGER AS $$
         BEGIN
@@ -302,23 +311,29 @@ def upgrade() -> None:
             RETURN NULL;
         END;
         $$ LANGUAGE plpgsql;
-        """)
+        """
+    )
     for table in ("accounts", "transactions", "ledger_entries"):
-        op.execute(f"""
+        op.execute(
+            f"""
             CREATE TRIGGER trg_{table}_deny_update
             BEFORE UPDATE ON {_SCHEMA}.{table}
             FOR EACH ROW EXECUTE FUNCTION {_SCHEMA}.deny_ledger_modification();
-            """)
-        op.execute(f"""
+            """
+        )
+        op.execute(
+            f"""
             CREATE TRIGGER trg_{table}_deny_delete
             BEFORE DELETE ON {_SCHEMA}.{table}
             FOR EACH ROW EXECUTE FUNCTION {_SCHEMA}.deny_ledger_modification();
-            """)
+            """
+        )
 
     # ----------------------------------------------------- delta_app role + grants
     # Idempotent; NO password in SQL (secrets rule). The entrypoint provisions the
     # SCRAM password POST-migrate (DELTA_PROVISION_APP_ROLE=1).
-    op.execute(f"""
+    op.execute(
+        f"""
         DO $$
         BEGIN
             IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{_APP_ROLE}') THEN
@@ -327,7 +342,8 @@ def upgrade() -> None:
             END IF;
         END
         $$;
-        """)
+        """
+    )
     op.execute(f"GRANT USAGE ON SCHEMA {_SCHEMA} TO {_APP_ROLE}")
     # SELECT + INSERT only — never UPDATE/DELETE (append-only at the grant layer too).
     for table in ("accounts", "transactions", "ledger_entries"):
@@ -373,7 +389,8 @@ def downgrade() -> None:
     op.execute(f"DROP FUNCTION IF EXISTS {_SCHEMA}.deny_ledger_modification()")
 
     # Drop delta_app only if it owns no objects (never destructive).
-    op.execute(f"""
+    op.execute(
+        f"""
         DO $$
         DECLARE owned_count INT;
         BEGIN
@@ -387,4 +404,5 @@ def downgrade() -> None:
             END IF;
         END
         $$;
-        """)
+        """
+    )

@@ -68,7 +68,8 @@ def upgrade() -> None:
     op.add_column(_TABLE, sa.Column("row_hash", sa.String(64), nullable=True), schema=_SCHEMA)
 
     # ------------------------------------------------- 2. backfill sequence_number
-    op.execute(f"""
+    op.execute(
+        f"""
         WITH ordered AS (
             SELECT history_id, ROW_NUMBER() OVER (ORDER BY created_at, history_id) AS rn
             FROM {_SCHEMA}.{_TABLE}
@@ -77,7 +78,8 @@ def upgrade() -> None:
         SET sequence_number = ordered.rn
         FROM ordered
         WHERE ch.history_id = ordered.history_id
-        """)
+        """
+    )
 
     # ------------------------------------------------- 3. sequence for future inserts
     op.execute(
@@ -169,16 +171,20 @@ def upgrade() -> None:
     # Append-only backstop: reuse the SAME trigger function the D-003 ledger's own
     # append-only guard uses (migration 0001) — no new function, no drift risk between
     # two near-identical "you can't touch this table" implementations.
-    op.execute(f"""
+    op.execute(
+        f"""
         CREATE TRIGGER trg_{_TABLE}_deny_update
         BEFORE UPDATE ON {_SCHEMA}.{_TABLE}
         FOR EACH ROW EXECUTE FUNCTION {_SCHEMA}.deny_ledger_modification();
-        """)
-    op.execute(f"""
+        """
+    )
+    op.execute(
+        f"""
         CREATE TRIGGER trg_{_TABLE}_deny_delete
         BEFORE DELETE ON {_SCHEMA}.{_TABLE}
         FOR EACH ROW EXECUTE FUNCTION {_SCHEMA}.deny_ledger_modification();
-        """)
+        """
+    )
 
 
 def downgrade() -> None:
