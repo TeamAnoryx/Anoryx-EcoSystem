@@ -245,8 +245,9 @@ class TestNotApplicableParsing:
 
 class TestFailClosedUnknownFramework:
     def test_unknown_framework_raises_mapping_validation_error(self) -> None:
-        # Arrange
-        bad_name = "HIPAA"
+        # Arrange — a framework NOT in FRAMEWORKS (HIPAA is now shipped, F-029;
+        # PCI_DSS remains unregistered).
+        bad_name = "PCI_DSS"
         # Act / Assert
         with pytest.raises(MappingValidationError, match="Unknown framework"):
             load_framework(bad_name)

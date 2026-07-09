@@ -157,6 +157,8 @@ sentinel-mcp = "mcp_gateway.cli:main"
 sentinel-keyvault = "gateway.keyvault.cli:main"
 # F-028 operator CLI (ADR-0034): custom PII pattern add/list/revoke/test.
 sentinel-pii = "data_protection.custom_pii.cli:main"
+# F-029 operator CLI (ADR-0035): HIPAA PHI scan + BAA-readiness evidence summary.
+sentinel-hipaa = "compliance.hipaa.cli:main"
 
 [tool.ruff]
 target-version = "py312"

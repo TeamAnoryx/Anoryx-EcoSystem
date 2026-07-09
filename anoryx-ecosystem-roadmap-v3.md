@@ -680,7 +680,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] F-026 MCP & Third-Party Integration Layer 🔮 (shipped PR #66 — governance substrate: per-tenant allow-list + SSRF guard + F-005 inspection reuse via sentinel-mcp operator CLI; live proxy deferred as open design decision, see docs/followups/f-026-mcp-proxy-endpoint.md)
 - [x] F-027 Provider Key Vaulting 🔮 (shipped PR #76 — pluggable env/Vault/KMS ProviderKeySource with TTL-cached runtime fetch + bounded-lag rotation; env backend byte-identical to prior behavior; OpenAI-key-auth + instant-push rotation deferred, see docs/followups/f-027-*.md)
 - [x] F-028 Custom Client-Defined PII Engine 🔮 (shipped — per-tenant client-defined regex PII: standalone ReDoS-safe engine, no spacy dependency, hot-reload + sentinel-pii CLI; runs after built-in PIIHook, emits existing pii_blocked event. Presidio ad-hoc "ML hooks" reading deferred, see docs/adr/0034 + docs/followups/f-028-presidio-adhoc-recognizers.md)
-- [ ] F-029 HIPAA Compliance Module 🔮
+- [x] F-029 HIPAA Compliance Module 🔮 (shipped — HIPAA Security Rule control map (§164.312/§164.308) on the F-011 engine; built-in PHI patterns reusing F-028's ReDoS-safe engine; BAA-ready evidence summary + sentinel-hipaa CLI. Contract-free/CLI-only — HTTP export deferred, see docs/adr/0035 + docs/followups/f-029-hipaa-http-export.md)
 - [ ] F-030 EU AI Act Compliance Module 🔮
 - [ ] F-031 Production Due-Diligence Gate 🔮
 - [ ] F-032 Practical Zero-Knowledge Storage SDK 🔮

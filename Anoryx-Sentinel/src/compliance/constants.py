@@ -5,8 +5,12 @@ Honest-language rule: "audit-ready" throughout; never "compliant".
 
 from __future__ import annotations
 
-# Frameworks supported in v1.  HIPAA / GDPR / EU_AI_ACT are deferred extension points.
-FRAMEWORKS: tuple[str, ...] = ("SOC2", "ISO27001")
+# Frameworks with a shipped control-map YAML in frameworks/.  HIPAA (F-029) is
+# CLI/engine-only — the HTTP export surface (routes/compliance.py) stays
+# SOC2+ISO27001 as pinned in contracts/openapi.yaml (api-architect-owned; a
+# HIPAA HTTP enum entry is deferred, see docs/adr/0035).  GDPR / EU_AI_ACT
+# remain deferred extension points.
+FRAMEWORKS: tuple[str, ...] = ("SOC2", "ISO27001", "HIPAA")
 
 # Mandatory disclaimer — MUST appear on every evidence artifact and UI element.
 DISCLAIMER: str = (

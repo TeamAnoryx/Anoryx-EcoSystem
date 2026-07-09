@@ -1,0 +1,196 @@
+# HIPAA Security Rule — Sentinel control mapping (F-029, ADR-0035).
+#
+# Scope: the HIPAA Security Rule (45 CFR Part 164, Subpart C) Technical and
+# Administrative Safeguards for which Sentinel — an application-layer AI gateway —
+# produces machine-verifiable evidence in its append-only hash-chained audit log.
+#
+# Honesty rule (R8), enforced identically to soc2.yaml / iso27001.yaml:
+#   sentinel_controls: []  => Sentinel produces NO evidence => reported not_covered,
+#                             NEVER fabricated as coverage.
+#   status_override: not_applicable => the safeguard is outside a software AI
+#                             gateway's boundary (physical media, workforce process).
+#
+# CRITICAL FRAMING (mandatory, mirrors DISCLAIMER): this mapping is evidence for
+# audit PREPARATION and Business-Associate-Agreement due diligence. It is NOT a
+# HIPAA certification (HIPAA has no certification), does NOT make the operator a
+# covered entity or business associate compliant, and a signed BAA + a full
+# administrative/physical safeguard program remain the operator's responsibility.
+# Sentinel evidences only the technical safeguards within its code boundary.
+#
+# All evidence_event_types below are EXISTING members of VALID_EVENT_TYPES
+# (persistence/models/events_audit_log.py) — no new contract event types are
+# introduced, so this file requires no contracts/ change.
+
+framework: HIPAA
+framework_version: "2013-Omnibus-45CFR164-SubpartC"
+
+controls:
+  # ── §164.312 Technical Safeguards ──────────────────────────────────────────
+
+  - control_id: "164.312(a)(1)"
+    title: "Access Control — allow only authorized persons/software to access ePHI"
+    sentinel_controls: [policy_enforcement, virtual_key_auth, tenant_isolation]
+    evidence_event_types:
+      - policy_decision_allow
+      - policy_decision_deny
+      - policy_violated
+      - usage
+    rationale: >
+      Sentinel authenticates every request via per-tenant Bearer virtual keys and
+      enforces allow/deny policy decisions at the gateway boundary, recorded in the
+      append-only audit log. Tenant isolation (RLS) confines each tenant's traffic
+      and records to that tenant, evidencing technical access control over ePHI in
+      transit through the gateway.
+
+  - control_id: "164.312(a)(2)(iv)"
+    title: "Access Control — encryption/decryption of ePHI (addressable)"
+    sentinel_controls: [pii_protection, secret_detection]
+    evidence_event_types:
+      - pii_blocked
+      - secret_leaked
+    rationale: >
+      Sentinel masks/blocks PII/PHI and secrets in AI traffic (F-005), logging each
+      interception with action_taken. This evidences the minimum-necessary handling
+      of ePHI in the AI path. Note: encryption of ePHI AT REST is an infrastructure
+      responsibility outside Sentinel's code boundary (see 164.312(e) below).
+
+  - control_id: "164.312(b)"
+    title: "Audit Controls — record and examine activity in systems with ePHI"
+    sentinel_controls: [audit_log_chain, tamper_evident_logging]
+    evidence_event_types:
+      - usage
+      - pii_blocked
+      - injection_detected
+      - secret_leaked
+      - policy_violated
+      - policy_decision_allow
+      - policy_decision_deny
+    rationale: >
+      The core HIPAA technical safeguard Sentinel most directly satisfies: an
+      append-only, hash-chained (F-003) audit log records every gateway event with
+      tamper-evident sequence/prev_hash/row_hash integrity, enabling the activity
+      recording and examination §164.312(b) requires. The chain itself is the
+      evidence of the audit control.
+
+  - control_id: "164.312(c)(1)"
+    title: "Integrity — protect ePHI from improper alteration or destruction"
+    sentinel_controls: [audit_log_chain, pii_protection]
+    evidence_event_types:
+      - pii_blocked
+      - usage
+    rationale: >
+      The hash-chained audit log makes any alteration of recorded activity detectable
+      (integrity of the audit record). PII/PHI masking prevents improper disclosure of
+      ePHI in AI responses. Integrity of ePHI in the primary clinical store is outside
+      Sentinel's boundary.
+
+  - control_id: "164.312(d)"
+    title: "Person or Entity Authentication — verify identity before ePHI access"
+    sentinel_controls: [virtual_key_auth, sso_authentication]
+    evidence_event_types:
+      - policy_decision_allow
+      - policy_decision_deny
+      - operator_sso_login
+      - operator_sso_denied
+    rationale: >
+      Requests are authenticated by per-tenant virtual API keys; operator/admin access
+      is authenticated via SSO (F-014) with login and denial events recorded. These
+      evidence entity authentication at both the traffic and administrative planes.
+
+  - control_id: "164.312(e)(1)"
+    title: "Transmission Security — guard against unauthorized access to ePHI in transit"
+    sentinel_controls: []
+    evidence_event_types: []
+    rationale: ""
+    # TLS termination and network transport security are infrastructure concerns
+    # (ingress/load balancer/service mesh), outside Sentinel's application code
+    # boundary. Sentinel provides no evidence for this safeguard. (Internal mTLS —
+    # F-034 — may later supply partial evidence for the internal service plane.)
+
+  # ── §164.308 Administrative Safeguards (where technically evidenced) ────────
+
+  - control_id: "164.308(a)(1)(ii)(D)"
+    title: "Information System Activity Review — regularly review audit logs/reports"
+    sentinel_controls: [audit_log_chain, injection_detection]
+    evidence_event_types:
+      - injection_detected
+      - prompt_injection_detected_ml
+      - secret_leaked
+      - shadow_ai_detected_outbound
+      - usage
+    rationale: >
+      Sentinel produces the structured, tamper-evident activity records that an
+      information-system activity review examines, and surfaces security-relevant
+      anomalies (injection, secret leakage, shadow-AI egress) as discrete events.
+      The review PROCESS itself is a human administrative control.
+
+  - control_id: "164.308(a)(4)(ii)(B)"
+    title: "Access Authorization — policies for granting access to ePHI"
+    sentinel_controls: [policy_intake]
+    evidence_event_types:
+      - policy_intake_accepted
+      - policy_intake_rejected_signature
+      - policy_intake_rejected_schema
+      - policy_intake_rejected_replay
+    rationale: >
+      F-008 policy intake requires an ECDSA (ES256) signature for every access-policy
+      change, cryptographically evidencing authorized modification of access rules;
+      rejected submissions are logged with reason.
+
+  - control_id: "164.308(a)(5)(ii)(C)"
+    title: "Log-in Monitoring — procedures for monitoring log-in attempts"
+    sentinel_controls: [sso_authentication]
+    evidence_event_types:
+      - operator_sso_login
+      - operator_sso_denied
+      - admin_breakglass_used
+    rationale: >
+      Operator/admin log-in successes and denials (F-014 SSO), plus break-glass
+      usage, are recorded as discrete audit events, evidencing log-in monitoring for
+      the administrative plane that governs ePHI-handling configuration.
+
+  - control_id: "164.308(a)(6)(ii)"
+    title: "Security Incident Procedures — identify and respond to security incidents"
+    sentinel_controls: [injection_detection, secret_detection, policy_enforcement]
+    evidence_event_types:
+      - injection_detected
+      - prompt_injection_detected_ml
+      - secret_leaked
+      - policy_violated
+      - shadow_ai_detected_outbound
+    rationale: >
+      Sentinel detects and blocks/logs security events at the gateway boundary,
+      producing the forensic record used by incident-response procedures. The
+      response PROCESS (triage, notification, breach assessment under §164.410) is a
+      human administrative control outside Sentinel's scope.
+
+  # ── Administrative/physical safeguards explicitly outside scope ─────────────
+
+  - control_id: "164.308(a)(3)(ii)(A)"
+    title: "Workforce Security — authorization/supervision of workforce with ePHI access"
+    status_override: not_applicable
+    sentinel_controls: []
+    evidence_event_types: []
+    rationale: >
+      Workforce authorization and supervision are human-resource administrative
+      controls. Sentinel is a software component and does not manage workforce
+      membership, training, or sanctions. Explicitly not applicable.
+
+  - control_id: "164.310(a)(1)"
+    title: "Facility Access Controls — physical safeguards for systems housing ePHI"
+    status_override: not_applicable
+    sentinel_controls: []
+    evidence_event_types: []
+    rationale: >
+      Physical facility access is a data-centre/infrastructure-provider control.
+      Sentinel provides no evidence for physical safeguards. Explicitly not applicable.
+
+  - control_id: "164.308(a)(7)(i)"
+    title: "Contingency Plan — data backup, disaster recovery, emergency mode"
+    sentinel_controls: []
+    evidence_event_types: []
+    rationale: ""
+    # Sentinel's own disaster-recovery tooling (F-024) backs up Sentinel's audit/
+    # config store, but the covered entity's ePHI contingency plan is a broader
+    # administrative program outside Sentinel's evidence boundary. Reported
+    # not_covered (no fabricated coverage).
