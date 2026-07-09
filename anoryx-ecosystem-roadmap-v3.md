@@ -721,7 +721,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-010 Deployment ✅ (shipped PR #71)
 - [x] D-011 Predictive SaaS/cloud budget optimization ✅ (shipped PR #77)
 - [x] D-012 Chargeback/showback + anomaly detection ✅ (shipped PR #81)
-- [x] D-013 Unified CRM ✅ (shipped PR TBD — bounded vertical slice, see docs/adr/0013-delta-unified-crm.md)
+- [x] D-013 Unified CRM ✅ (shipped PR #87 — bounded vertical slice, see docs/adr/0013-delta-unified-crm.md)
 - [ ] D-014 Comprehensive ERP engine — Heavy 🏦
 - [ ] D-015 AI-driven project management — Complex 🏦
 - [ ] D-016 Dynamic team / capacity management — Complex 🏦
