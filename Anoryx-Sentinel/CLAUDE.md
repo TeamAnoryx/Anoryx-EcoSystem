@@ -14,7 +14,9 @@ It is ITSELF a security product. Its own code is a target. Build accordingly.
                            client-defined regex PII, ReDoS-safe, see docs/adr/0034)
 - src/defense/          — prompt injection detection, secret leak detection
 - src/code_scan/        — LLM code output scanning (v2)
-- src/compliance/       — SOC 2 / GDPR readiness, evidence generation
+- src/compliance/       — SOC 2 / ISO 27001 / HIPAA readiness, evidence generation
+                           (src/compliance/hipaa/: F-029 PHI patterns + BAA-ready
+                           evidence summary, CLI-only — see docs/adr/0035)
 - src/orchestration/    — event bus emitter, policy intake, internal mTLS
 - src/bulk/             — async bulk batch pipeline
 - src/persistence/      — Postgres schema, RBAC, audit log
