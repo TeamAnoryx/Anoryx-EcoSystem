@@ -410,6 +410,22 @@ def build_default_registry(settings: Any | None = None) -> HookRegistry:
 
         pre_hooks.append(PIIHook(settings=settings))
 
+    # F-028 (ADR-0034): per-tenant client-defined custom PII patterns. Runs
+    # AFTER the built-in PIIHook (order: SecretInbound -> Injection -> PII ->
+    # CustomPII). Independent of Presidio/spacy (standalone regex engine), so it
+    # is gated on its OWN setting, not pii_detection_enabled — a slim-image /
+    # spacy-less deploy can still run custom patterns. A tenant with zero
+    # registered patterns incurs only one cached empty DB read (cheap no-op).
+    try:
+        from data_protection.custom_pii.config import get_custom_pii_settings
+        from data_protection.custom_pii.hook import CustomPiiHook
+
+        custom_pii_settings = get_custom_pii_settings()
+        if custom_pii_settings.custom_pii_enabled:
+            pre_hooks.append(CustomPiiHook(settings=custom_pii_settings))
+    except ImportError:
+        pass  # data_protection package not importable — no-op, not an error
+
     # F-016: CodeScanDetector registered in the dedicated code_scan slot.
     # Default-OFF (per-tenant opt-in via code_scan policy — ADR-0019 Fork 4);
     # the detector itself gates on tenant config, so we always register it

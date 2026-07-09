@@ -38,6 +38,12 @@ dependencies = [
     # jsonschema: F-008 validates policy records with JSON Schema Draft 2020-12 at
     # RUNTIME (src/policy/schema_validator.py); also used by contract tests.
     "jsonschema[format]>=4.22,<5",
+    # regex: F-028 custom-PII engine (src/data_protection/custom_pii/). Used
+    # instead of the stdlib `re` specifically for its per-call timeout= (a hard
+    # ReDoS backstop when matching client-supplied patterns — re has no timeout).
+    # A core dep, NOT an extra: the custom-PII engine is deliberately independent
+    # of the optional [pii-spacy] Presidio stack so it runs on the slim image.
+    "regex>=2024.0,<2027",
     # prometheus-client: F-009 /metrics exposition endpoint (ADR-0011 D4).
     "prometheus-client>=0.20,<1",
     # opentelemetry OTLP HTTP exporter: F-010 (ADR-0012 §5) wires app→collector OTLP
@@ -149,6 +155,8 @@ sentinel-onboarding = "onboarding.cli:main"
 sentinel-mcp = "mcp_gateway.cli:main"
 # F-027 operator CLI (ADR-0033): provider key vault status + fetch verification.
 sentinel-keyvault = "gateway.keyvault.cli:main"
+# F-028 operator CLI (ADR-0034): custom PII pattern add/list/revoke/test.
+sentinel-pii = "data_protection.custom_pii.cli:main"
 
 [tool.ruff]
 target-version = "py312"
