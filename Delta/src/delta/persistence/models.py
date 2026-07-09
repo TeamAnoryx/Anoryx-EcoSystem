@@ -448,3 +448,22 @@ teams = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
+
+# --- D-017 RBAC-gated dashboards (migration 0011) ---
+# A locally-issued, role-tagged bearer token — NOT real SSO/OIDC/SAML (that's
+# Anoryx-Sentinel's already-shipped F-014/ADR-0017, out of scope for this task; see
+# docs/adr/0017-delta-rbac-dashboards.md §3). `role` mirrors Sentinel's own seeded
+# role vocabulary (`tenant_admin`/`tenant_auditor`) for ecosystem naming consistency.
+# Only `token_hash` (SHA-256) is ever stored — the raw token is shown once, at
+# creation, and never again.
+access_tokens = sa.Table(
+    "access_tokens",
+    metadata,
+    sa.Column("token_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("name", sa.String(256), nullable=False),
+    sa.Column("role", sa.String(16), nullable=False),
+    sa.Column("token_hash", sa.String(64), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+)

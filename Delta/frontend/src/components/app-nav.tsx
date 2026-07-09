@@ -10,6 +10,7 @@ const LINKS: Array<[string, string]> = [
   ["ERP", "/erp"],
   ["PM", "/pm"],
   ["Capacity", "/capacity"],
+  ["Access", "/rbac"],
   ["Allocations", "/allocations"],
   ["History", "/history"],
 ];

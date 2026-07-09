@@ -550,3 +550,38 @@ export interface RebalanceReportView {
    * automatically. See docs/adr/0016-delta-team-capacity-management.md. */
   method: "greedy_rebalance_v1";
 }
+
+/**
+ * D-017 RBAC-gated dashboards: locally-issued, role-tagged bearer tokens
+ * (Delta/src/delta/rbac/schemas.py). NOT real SSO/OIDC/SAML (that's Anoryx-
+ * Sentinel's already-shipped F-014) — a two-role model (`tenant_admin`/
+ * `tenant_auditor`, mirroring Sentinel's own role vocabulary for ecosystem naming
+ * consistency) gating D-008's dashboards, the ONE existing admin surface this task
+ * retrofits. See docs/adr/0017-delta-rbac-dashboards.md.
+ */
+export type AccessRole = "tenant_admin" | "tenant_auditor";
+
+export interface AccessTokenCreateRequest {
+  tenant_id: string;
+  name: string;
+  role: AccessRole;
+}
+
+export interface AccessTokenRevokeRequest {
+  tenant_id: string;
+}
+
+export interface AccessTokenView {
+  token_id: string;
+  tenant_id: string;
+  name: string;
+  role: AccessRole;
+  created_at: string;
+  revoked_at: string | null;
+}
+
+/** The one-time reveal of a newly-issued token's raw value — returned ONLY by the
+ * create call, never again. */
+export interface AccessTokenIssuedView extends AccessTokenView {
+  token: string;
+}

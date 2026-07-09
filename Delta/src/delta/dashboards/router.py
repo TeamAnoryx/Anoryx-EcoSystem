@@ -1,6 +1,13 @@
 """Dashboard HTTP surface: ``GET /v1/admin/dashboards/{summary,timeseries,top-spenders}``
-(D-008). Reuses D-007's ``require_admin`` (same admin console, same auth) — mounted
-into the shared admin app in ``allocation_admin/app.py``, not a second app/port.
+(D-008). Gated by D-017's ``rbac.require_role("tenant_auditor")`` — an ADDITIVE
+widening of D-007's original ``require_admin``-only gate (see
+``rbac/auth.py``'s own docstring): the break-glass ``DELTA_ADMIN_TOKEN`` continues to
+work completely unchanged (every existing caller/test is unaffected), and a caller
+may ALSO now present a locally-issued `tenant_auditor`-or-above access token. This is
+the ONE existing D-007-D-016 router this task retrofits — the literal "operational
+dashboards" the roadmap names; the other six admin surfaces stay `require_admin`-only,
+named as deferred future work (ADR-0017 §3). Mounted into the shared admin app in
+``allocation_admin/app.py``, not a second app/port.
 """
 
 from __future__ import annotations
@@ -10,9 +17,9 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 
-from ..allocation_admin.auth import require_admin
 from ..identifiers import AgentId, ProjectId, TeamId, TenantId
 from ..persistence.database import get_tenant_session
+from ..rbac.auth import require_role
 from .schemas import (
     BucketGranularity,
     DashboardQuery,
@@ -25,7 +32,9 @@ from .schemas import (
 )
 from .service import get_summary, get_time_series, get_top_spenders
 
-router = APIRouter(prefix="/v1/admin/dashboards", dependencies=[Depends(require_admin)])
+router = APIRouter(
+    prefix="/v1/admin/dashboards", dependencies=[Depends(require_role("tenant_auditor"))]
+)
 
 
 def _query_error(exc: ValidationError) -> HTTPException:
