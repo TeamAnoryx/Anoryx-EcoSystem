@@ -93,14 +93,24 @@ vertical slice, not the label's full literal breadth.
 ## 5. Verification
 
 - `black --check` / `ruff check .` clean.
-- New `tests/erp/` suite: 40 tests — 18 pure schema-validation tests
-  (`test_schemas.py`), 6 DB-backed store tests (`test_store_db.py`), 8 DB-backed
-  service tests (`test_service_db.py`, incl. the D-009 audit-chain wiring test), 5
-  non-stubbed HTTP e2e tests (`test_router_e2e.py`, real ASGI app, real auth, real DB).
-- Full existing Delta suite green (664 passed, 15 skipped) — zero regressions, zero
+- New `tests/erp/` suite: 45 tests — 20 pure schema-validation tests
+  (`test_schemas.py`, incl. the float-rejection regression tests below), 9 DB-backed
+  store tests (`test_store_db.py`, incl. the DB-level cross-tenant-FK and
+  genuinely-concurrent race tests below), 8 DB-backed service tests
+  (`test_service_db.py`, incl. the D-009 audit-chain wiring test), 5 non-stubbed
+  HTTP e2e tests (`test_router_e2e.py`, real ASGI app, real auth, real DB).
+- Full existing Delta suite green (669 passed, 15 skipped) — zero regressions, zero
   changes to any D-001…D-013 file's runtime behavior (the only modification to
   existing code is one router mount in `allocation_admin/app.py`, and one new section
   each in `identifiers.py`/`persistence/models.py`, additive only).
+- Independent security-auditor review: verdict CLEAN, two Low findings, both fixed on
+  this branch before merge (see `docs/audit/d-014-security-audit.md`) — money fields
+  (`acquisition_cost_minor_units`, `amount_minor_units`) now reject a wire float
+  outright via `delta.money.reject_non_integer` (matching `Money`'s own discipline,
+  previously only a Pydantic-lax-coercion gap with no exploitable impact), and three
+  new tests exercise invariants the ADR had previously only verified by code review: a
+  DB-level cross-tenant FK rejection (via a privileged, RLS-bypassing session) and two
+  genuinely-concurrent (`asyncio.gather`) double-decision/double-transition races.
 - Migration 0008 verified round-trip (`alembic upgrade head` → `downgrade -1` →
   `upgrade head`) against a live local Postgres, `delta_app` role provisioned exactly
   as every prior migration's test harness does.

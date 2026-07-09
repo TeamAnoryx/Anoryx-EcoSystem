@@ -3,13 +3,14 @@ RLS. Mirrors ``tests/crm/test_store_db.py``'s shape."""
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
 from delta.erp import store
-from delta.persistence.database import get_tenant_session
+from delta.persistence.database import get_privileged_session, get_tenant_session
 
 from .conftest import db_required
 
@@ -210,3 +211,111 @@ async def test_cross_tenant_isolation_vendors_invisible_to_other_tenant(
 
     assert fetched is None
     assert listed == []
+
+
+@db_required
+async def test_po_cannot_reference_vendor_from_different_tenant_at_db_level(
+    tenant_id, other_tenant_id
+) -> None:
+    # Security-review finding (ADR-0014 §4): the cross-tenant FK guard was only
+    # verified by code review, not exercised at the DB layer. Uses a PRIVILEGED
+    # session (bypasses RLS entirely) to prove the composite (id, tenant_id) FK
+    # itself rejects a cross-tenant reference — not just the RLS-mediated 404 the
+    # app normally returns before ever reaching the FK.
+    async with get_tenant_session(tenant_id) as session:
+        vendor = await store.create_vendor(
+            session, tenant_id=tenant_id, name="Acme", contact_email=None, now=_NOW
+        )
+        await session.commit()
+
+    async with get_privileged_session() as session:
+        with pytest.raises(IntegrityError):
+            await store.create_purchase_order(
+                session,
+                tenant_id=other_tenant_id,
+                vendor_id=vendor.vendor_id,
+                asset_id=None,
+                description="Cross-tenant PO",
+                amount_minor_units=1000,
+                currency="USD",
+                requested_by="Eve",
+                now=_NOW,
+            )
+
+
+@db_required
+async def test_concurrent_purchase_order_decisions_only_one_wins(tenant_id) -> None:
+    # Security-review finding (ADR-0014 §4): the idempotency guard was only exercised
+    # sequentially. Race two genuinely concurrent decisions against the same PO.
+    async with get_tenant_session(tenant_id) as session:
+        vendor = await store.create_vendor(
+            session, tenant_id=tenant_id, name="Acme", contact_email=None, now=_NOW
+        )
+        await session.commit()
+
+    async with get_tenant_session(tenant_id) as session:
+        po = await store.create_purchase_order(
+            session,
+            tenant_id=tenant_id,
+            vendor_id=vendor.vendor_id,
+            asset_id=None,
+            description="Office chairs",
+            amount_minor_units=50_000,
+            currency="USD",
+            requested_by="Jane",
+            now=_NOW,
+        )
+        await session.commit()
+
+    async def decide(new_status: str) -> bool:
+        async with get_tenant_session(tenant_id) as session:
+            result = await store.try_decide_purchase_order(
+                session, po_id=po.po_id, new_status=new_status, decided_by="racer", now=_NOW
+            )
+            await session.commit()
+            return result
+
+    results = await asyncio.gather(decide("approved"), decide("rejected"))
+    assert sorted(results) == [False, True]
+
+    async with get_tenant_session(tenant_id) as session:
+        final = await store.get_purchase_order(session, po_id=po.po_id)
+    assert final is not None
+    assert final.status in ("approved", "rejected")
+
+
+@db_required
+async def test_concurrent_asset_status_transitions_only_one_wins(tenant_id) -> None:
+    async with get_tenant_session(tenant_id) as session:
+        asset = await store.create_asset(
+            session,
+            tenant_id=tenant_id,
+            name="Laptop",
+            category="equipment",
+            acquisition_cost_minor_units=None,
+            currency=None,
+            acquired_at=None,
+            assigned_team_id=None,
+            now=_NOW,
+        )
+        await session.commit()
+
+    async def transition() -> bool:
+        async with get_tenant_session(tenant_id) as session:
+            result = await store.try_transition_asset_status(
+                session,
+                asset_id=asset.asset_id,
+                target_status="retired",
+                required_prior="active",
+                now=_NOW,
+            )
+            await session.commit()
+            return result
+
+    results = await asyncio.gather(transition(), transition())
+    assert sorted(results) == [False, True]
+
+    async with get_tenant_session(tenant_id) as session:
+        final = await store.get_asset(session, asset_id=asset.asset_id)
+    assert final is not None
+    assert final.status == "retired"

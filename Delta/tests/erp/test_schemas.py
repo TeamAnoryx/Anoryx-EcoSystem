@@ -177,3 +177,27 @@ def test_purchase_order_decision_rejects_control_chars_in_note() -> None:
 def test_purchase_order_decision_rejects_unknown_action() -> None:
     with pytest.raises(ValidationError):
         PurchaseOrderDecisionRequest(tenant_id=_TENANT, action="cancel", actor="Jane Doe")
+
+
+def test_asset_create_rejects_float_cost() -> None:
+    # Security-review finding (ADR-0014 §4): a wire float like 100.0 must be rejected
+    # outright, not silently coerced to int by Pydantic's lax mode — the same strict
+    # discipline delta.money.Money applies everywhere else.
+    with pytest.raises(ValidationError):
+        AssetCreateRequest(
+            tenant_id=_TENANT,
+            name="Laptop",
+            category="equipment",
+            acquisition_cost_minor_units=100.0,
+        )
+
+
+def test_purchase_order_create_rejects_float_amount() -> None:
+    with pytest.raises(ValidationError):
+        PurchaseOrderCreateRequest(
+            tenant_id=_TENANT,
+            vendor_id=_VENDOR,
+            description="Office chairs",
+            amount_minor_units=1000.0,
+            requested_by="Jane Doe",
+        )

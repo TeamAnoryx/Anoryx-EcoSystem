@@ -18,7 +18,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..identifiers import AssetId, PurchaseOrderId, TeamId, TenantId, VendorId
-from ..money import DEFAULT_CURRENCY, Currency, require_aware_utc
+from ..money import DEFAULT_CURRENCY, Currency, reject_non_integer, require_aware_utc
 
 AssetCategory = Literal["equipment", "software_license", "furniture", "vehicle", "other"]
 AssetStatus = Literal["active", "retired", "disposed"]
@@ -113,6 +113,14 @@ class AssetCreateRequest(BaseModel):
     def _name_no_control_chars(cls, value: str) -> str:
         return _reject_control_chars(value, "name")
 
+    @field_validator("acquisition_cost_minor_units", mode="before")
+    @classmethod
+    def _cost_strict_integer(cls, value: object) -> object:
+        # Pydantic's lax mode would otherwise coerce a wire float like 100.0 to int —
+        # reject it explicitly, the same discipline delta.money.Money applies to every
+        # other monetary field (independent security review, ADR-0014 §4).
+        return value if value is None else reject_non_integer(value, "acquisition_cost_minor_units")
+
     @field_validator("acquired_at")
     @classmethod
     def _acquired_at_aware(cls, value: datetime | None) -> datetime | None:
@@ -166,6 +174,14 @@ class PurchaseOrderCreateRequest(BaseModel):
     amount_minor_units: int = Field(ge=0, le=MAX_PO_AMOUNT_MINOR_UNITS)
     currency: Currency = DEFAULT_CURRENCY
     requested_by: str = Field(min_length=1, max_length=_ACTOR_MAX_LENGTH)
+
+    @field_validator("amount_minor_units", mode="before")
+    @classmethod
+    def _amount_strict_integer(cls, value: object) -> object:
+        # Same strict-integer discipline as AssetCreateRequest.acquisition_cost_minor_units
+        # (independent security review, ADR-0014 §4) — a wire float is rejected, never
+        # silently coerced.
+        return reject_non_integer(value, "amount_minor_units")
 
     @field_validator("description")
     @classmethod
