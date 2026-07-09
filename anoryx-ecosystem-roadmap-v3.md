@@ -679,7 +679,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] F-025 Self-serve onboarding 🔮 (shipped PR #63 — operator CLI, scoped down from public signup; team/project admin API deferred, see docs/followups/f-025-team-project-admin-api.md)
 - [x] F-026 MCP & Third-Party Integration Layer 🔮 (shipped PR #66 — governance substrate: per-tenant allow-list + SSRF guard + F-005 inspection reuse via sentinel-mcp operator CLI; live proxy deferred as open design decision, see docs/followups/f-026-mcp-proxy-endpoint.md)
 - [x] F-027 Provider Key Vaulting 🔮 (shipped PR #76 — pluggable env/Vault/KMS ProviderKeySource with TTL-cached runtime fetch + bounded-lag rotation; env backend byte-identical to prior behavior; OpenAI-key-auth + instant-push rotation deferred, see docs/followups/f-027-*.md)
-- [ ] F-028 Custom Client-Defined PII Engine 🔮
+- [x] F-028 Custom Client-Defined PII Engine 🔮 (shipped — per-tenant client-defined regex PII: standalone ReDoS-safe engine, no spacy dependency, hot-reload + sentinel-pii CLI; runs after built-in PIIHook, emits existing pii_blocked event. Presidio ad-hoc "ML hooks" reading deferred, see docs/adr/0034 + docs/followups/f-028-presidio-adhoc-recognizers.md)
 - [ ] F-029 HIPAA Compliance Module 🔮
 - [ ] F-030 EU AI Act Compliance Module 🔮
 - [ ] F-031 Production Due-Diligence Gate 🔮
@@ -721,8 +721,8 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-010 Deployment ✅ (shipped PR #71)
 - [x] D-011 Predictive SaaS/cloud budget optimization ✅ (shipped PR #77)
 - [x] D-012 Chargeback/showback + anomaly detection ✅ (shipped PR #81)
-- [ ] D-013 Unified CRM — Heavy 🏦
-- [ ] D-014 Comprehensive ERP engine — Heavy 🏦
+- [x] D-013 Unified CRM ✅ (shipped PR #87 — bounded vertical slice, see docs/adr/0013-delta-unified-crm.md)
+- [x] D-014 Comprehensive ERP engine ✅ (shipped PR #92 — bounded vertical slice: asset register + vendor/PO procurement, see docs/adr/0014-delta-erp-assets-procurement.md)
 - [ ] D-015 AI-driven project management — Complex 🏦
 - [ ] D-016 Dynamic team / capacity management — Complex 🏦
 - [ ] D-017 Strict RBAC operational dashboards — Complex 🏦

@@ -10,6 +10,8 @@ It is ITSELF a security product. Its own code is a target. Build accordingly.
                            (src/gateway/keyvault/: pluggable env/Vault/KMS
                            provider-key backend + rotation, see docs/adr/0033)
 - src/data_protection/  — PII detection, masking, tokenization, custom PII engine
+                           (src/data_protection/custom_pii/: F-028 per-tenant
+                           client-defined regex PII, ReDoS-safe, see docs/adr/0034)
 - src/defense/          — prompt injection detection, secret leak detection
 - src/code_scan/        — LLM code output scanning (v2)
 - src/compliance/       — SOC 2 / GDPR readiness, evidence generation

@@ -8,14 +8,34 @@ import type {
   AllocationView,
   AnomalyReportView,
   ApprovalDecisionRequest,
+  AssetCreateRequest,
+  AssetStatusTransitionRequest,
+  AssetView,
   ChangeHistoryEntryView,
   ChargebackReportView,
+  ClientCreateRequest,
+  ClientDetailView,
+  ClientView,
   DashboardBucket,
   DashboardGroupDimension,
   DashboardScope,
+  DealCreateRequest,
+  DealStageTransitionRequest,
+  DealView,
   GroupSpendView,
+  InteractionCreateRequest,
+  InteractionView,
+  PurchaseOrderCreateRequest,
+  PurchaseOrderDecisionRequest,
+  PurchaseOrderStatus,
+  PurchaseOrderView,
+  RelationshipScoreView,
   SpendSummaryView,
+  StakeholderCreateRequest,
+  StakeholderView,
   TimeSeriesPointView,
+  VendorCreateRequest,
+  VendorView,
 } from "@/lib/types";
 
 /**
@@ -200,6 +220,84 @@ export const adminApi = {
         project_id: scope.project_id,
         agent_id: scope.agent_id,
       },
+    }),
+
+  // D-013 unified CRM — a deliberately bounded vertical slice (client records, a
+  // deal pipeline, a stakeholder roster, an interaction history, a relationship
+  // score). Same per-target tenant_id shape as every other admin surface.
+  listClients: (tenantId: string, limit?: number) =>
+    adminFetch<ClientView[]>("/crm/clients", { query: { tenant_id: tenantId, limit } }),
+
+  createClient: (body: ClientCreateRequest) =>
+    adminFetch<ClientView>("/crm/clients", { method: "POST", body }),
+
+  getClientDetail: (tenantId: string, clientId: string) =>
+    adminFetch<ClientDetailView>(`/crm/clients/${encodeURIComponent(clientId)}`, {
+      query: { tenant_id: tenantId },
+    }),
+
+  createDeal: (clientId: string, body: DealCreateRequest) =>
+    adminFetch<DealView>(`/crm/clients/${encodeURIComponent(clientId)}/deals`, {
+      method: "POST",
+      body,
+    }),
+
+  transitionDealStage: (dealId: string, body: DealStageTransitionRequest) =>
+    adminFetch<DealView>(`/crm/deals/${encodeURIComponent(dealId)}/stage`, {
+      method: "POST",
+      body,
+    }),
+
+  createStakeholder: (clientId: string, body: StakeholderCreateRequest) =>
+    adminFetch<StakeholderView>(`/crm/clients/${encodeURIComponent(clientId)}/stakeholders`, {
+      method: "POST",
+      body,
+    }),
+
+  createInteraction: (clientId: string, body: InteractionCreateRequest) =>
+    adminFetch<InteractionView>(`/crm/clients/${encodeURIComponent(clientId)}/interactions`, {
+      method: "POST",
+      body,
+    }),
+
+  getRelationshipScore: (tenantId: string, clientId: string) =>
+    adminFetch<RelationshipScoreView>(
+      `/crm/clients/${encodeURIComponent(clientId)}/relationship-score`,
+      { query: { tenant_id: tenantId } },
+    ),
+
+  // D-014 ERP — a deliberately bounded vertical slice (asset register + vendor/
+  // purchase-order procurement; no payroll, no HR, no external real-time sync).
+  listVendors: (tenantId: string, limit?: number) =>
+    adminFetch<VendorView[]>("/erp/vendors", { query: { tenant_id: tenantId, limit } }),
+
+  createVendor: (body: VendorCreateRequest) =>
+    adminFetch<VendorView>("/erp/vendors", { method: "POST", body }),
+
+  listAssets: (tenantId: string, limit?: number) =>
+    adminFetch<AssetView[]>("/erp/assets", { query: { tenant_id: tenantId, limit } }),
+
+  createAsset: (body: AssetCreateRequest) =>
+    adminFetch<AssetView>("/erp/assets", { method: "POST", body }),
+
+  transitionAssetStatus: (assetId: string, body: AssetStatusTransitionRequest) =>
+    adminFetch<AssetView>(`/erp/assets/${encodeURIComponent(assetId)}/status`, {
+      method: "POST",
+      body,
+    }),
+
+  listPurchaseOrders: (tenantId: string, status?: PurchaseOrderStatus, limit?: number) =>
+    adminFetch<PurchaseOrderView[]>("/erp/purchase-orders", {
+      query: { tenant_id: tenantId, status, limit },
+    }),
+
+  createPurchaseOrder: (body: PurchaseOrderCreateRequest) =>
+    adminFetch<PurchaseOrderView>("/erp/purchase-orders", { method: "POST", body }),
+
+  decidePurchaseOrder: (poId: string, body: PurchaseOrderDecisionRequest) =>
+    adminFetch<PurchaseOrderView>(`/erp/purchase-orders/${encodeURIComponent(poId)}/decision`, {
+      method: "POST",
+      body,
     }),
 };
 

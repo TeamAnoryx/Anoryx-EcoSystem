@@ -40,6 +40,17 @@ TransactionId = UuidStr
 AllocationId = UuidStr
 EventId = UuidStr
 
+# D-013 unified CRM identifiers — same UUID shape, tenant-scoped like every other id.
+ClientId = UuidStr
+DealId = UuidStr
+InteractionId = UuidStr
+StakeholderId = UuidStr
+
+# D-014 ERP (asset register + vendor/purchase-order procurement) identifiers.
+AssetId = UuidStr
+VendorId = UuidStr
+PurchaseOrderId = UuidStr
+
 # Internal Sentinel component slug (NOT the end-user model name).
 AgentId = Annotated[str, StringConstraints(pattern=_AGENT_ID_PATTERN, max_length=_ID_MAX_LENGTH)]
 

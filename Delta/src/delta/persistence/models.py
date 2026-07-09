@@ -239,3 +239,141 @@ change_history = sa.Table(
     sa.Column("prev_hash", sa.String(64), nullable=False),
     sa.Column("row_hash", sa.String(64), nullable=False),
 )
+
+# --- D-013 unified CRM (migration 0007) --------------------------------------------
+# A deliberately scoped vertical slice, not full enterprise-CRM parity — see
+# docs/adr/0013-delta-unified-crm.md §3 for the named deferrals. Four tables: a client
+# record, its deal pipeline, its stakeholder roster, and its interaction history.
+# "Relationship scoring" and stakeholder engagement are computed live from these rows
+# (delta.crm.scoring/store) — nothing here stores a score.
+clients = sa.Table(
+    "clients",
+    metadata,
+    sa.Column("client_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("name", sa.String(256), nullable=False),
+    sa.Column("primary_contact_name", sa.String(256), nullable=True),
+    sa.Column("primary_contact_email", sa.String(320), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# One row per pipeline opportunity for a client. `stage` starts 'lead'; 'won'/'lost'
+# are terminal (enforced by delta.crm.service, mirroring D-007's allocation decision
+# idempotency guard, not by a DB constraint — a future stage could still need to
+# reopen a lost deal, which a hard DB CHECK would foreclose).
+deals = sa.Table(
+    "deals",
+    metadata,
+    sa.Column("deal_id", sa.String(64), primary_key=True),
+    sa.Column("client_id", sa.String(64), nullable=False),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("name", sa.String(256), nullable=False),
+    sa.Column("stage", sa.String(16), nullable=False),
+    sa.Column("value_minor_units", sa.BigInteger, nullable=True),
+    sa.Column("currency", sa.String(3), nullable=True),
+    sa.Column("expected_close_date", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("closed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# Stakeholder roster per client (optionally scoped to one deal). Structured data
+# entered explicitly, not free-text-extracted — see docs/adr/0013-delta-unified-crm.md
+# Fork 3 for why NLP-style extraction is a named deferral, not a silent gap.
+stakeholders = sa.Table(
+    "stakeholders",
+    metadata,
+    sa.Column("stakeholder_id", sa.String(64), primary_key=True),
+    sa.Column("client_id", sa.String(64), nullable=False),
+    sa.Column("deal_id", sa.String(64), nullable=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("name", sa.String(256), nullable=False),
+    sa.Column("role", sa.String(16), nullable=False),
+    sa.Column("email", sa.String(320), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# Client interaction history (calls/emails/meetings/notes). Append-only from the API's
+# perspective (no update/delete route) — the log itself IS the interaction record.
+# `stakeholder_id` is the "automated" half of stakeholder mapping (ADR-0013 Fork 3):
+# tagging an interaction to a stakeholder lets engagement (interaction_count/
+# last_interaction_at) be computed live by a plain GROUP BY, never by fragile
+# name-matching or NLP-style extraction from `summary`.
+interactions = sa.Table(
+    "interactions",
+    metadata,
+    sa.Column("interaction_id", sa.String(64), primary_key=True),
+    sa.Column("client_id", sa.String(64), nullable=False),
+    sa.Column("deal_id", sa.String(64), nullable=True),
+    sa.Column("stakeholder_id", sa.String(64), nullable=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("interaction_type", sa.String(16), nullable=False),
+    sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("summary", sa.String(2048), nullable=False),
+    sa.Column("created_by", sa.String(128), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# --- D-014 ERP: asset register + vendor/purchase-order procurement (migration 0008) ---
+# A deliberately scoped vertical slice of the roadmap's "real-time sync of supply
+# chain, payroll, HR, and physical assets" — see docs/adr/0014-delta-erp-assets-procurement.md
+# §3 for why payroll/HR are named deferrals (sensitive PII/compliance domains with no
+# precedent anywhere in this codebase) and why "real-time SYNC" with external ERPs is
+# D-019's job (this task builds the internal record-keeping those integrations would
+# sync into, not the integrations themselves).
+vendors = sa.Table(
+    "vendors",
+    metadata,
+    sa.Column("vendor_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("name", sa.String(256), nullable=False),
+    sa.Column("contact_email", sa.String(320), nullable=True),
+    sa.Column("status", sa.String(16), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# Physical/software asset register. `status` moves forward only:
+# active -> retired -> disposed (enforced by delta.erp.service, mirrors D-013's
+# deal-stage terminality guard — not a DB CHECK, since the linear vocabulary could
+# still grow without needing a migration).
+assets = sa.Table(
+    "assets",
+    metadata,
+    sa.Column("asset_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("name", sa.String(256), nullable=False),
+    sa.Column("category", sa.String(32), nullable=False),
+    sa.Column("status", sa.String(16), nullable=False),
+    sa.Column("acquisition_cost_minor_units", sa.BigInteger, nullable=True),
+    sa.Column("currency", sa.String(3), nullable=True),
+    sa.Column("acquired_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("assigned_team_id", sa.String(64), nullable=True),
+    sa.Column("retired_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# A procurement commitment against a vendor, optionally tied to the asset it
+# purchases. `status` starts 'requested'; only an explicit admin decision moves it to
+# 'approved'/'rejected' (identical shape to D-007's allocations propose/decide
+# workflow) — wired into D-009's hash-chained audit log on decision (a purchase
+# commitment IS a financial event, unlike D-013's CRM edits).
+purchase_orders = sa.Table(
+    "purchase_orders",
+    metadata,
+    sa.Column("po_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("vendor_id", sa.String(64), nullable=False),
+    sa.Column("asset_id", sa.String(64), nullable=True),
+    sa.Column("description", sa.String(512), nullable=False),
+    sa.Column("amount_minor_units", sa.BigInteger, nullable=False),
+    sa.Column("currency", sa.String(3), nullable=False),
+    sa.Column("status", sa.String(16), nullable=False),
+    sa.Column("requested_by", sa.String(128), nullable=False),
+    sa.Column("requested_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("decided_by", sa.String(128), nullable=True),
+    sa.Column("decided_at", sa.DateTime(timezone=True), nullable=True),
+)
