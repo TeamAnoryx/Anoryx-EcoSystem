@@ -11,6 +11,8 @@ from rendly.discovery import (
     MAX_LISTINGS,
     MAX_SUGGESTIONS,
     MAX_TOPICS,
+    DiscoveryProfile,
+    EventListing,
     bind_discovery_profile,
     bind_event_listing,
     discover_event,
@@ -99,6 +101,46 @@ def test_discovery_profile_rejects_naive_datetime():
         )
 
 
+def test_event_listing_is_frozen():
+    host = _profile("11111111-1111-4111-8111-111111111111")
+    listing = _listing(host, locale="us-sf", topics=("rust",))
+    with pytest.raises(ValidationError):
+        listing.locale = "uk-london"  # type: ignore[misc]
+
+
+def test_event_listing_rejects_extra_key():
+    host = _profile("11111111-1111-4111-8111-111111111111")
+    event = bind_event(host, title="Q3 Hackathon", created_at=_NOW)
+    with pytest.raises(ValidationError):
+        EventListing(
+            event_id=event.event_id,
+            tenant_id=event.tenant_id,
+            locale="us-sf",
+            topics=("rust",),
+            extra_field="nope",
+        )
+
+
+def test_discovery_profile_is_frozen():
+    profile = _profile("11111111-1111-4111-8111-111111111111")
+    discovery = _discovery(profile, home_locale="us-sf", interests=("rust",))
+    with pytest.raises(ValidationError):
+        discovery.home_locale = "uk-london"  # type: ignore[misc]
+
+
+def test_discovery_profile_rejects_extra_key():
+    profile = _profile("11111111-1111-4111-8111-111111111111")
+    with pytest.raises(ValidationError):
+        DiscoveryProfile(
+            user_id=profile.user_id,
+            tenant_id=profile.tenant_id,
+            home_locale="us-sf",
+            interests=("rust",),
+            opted_in_at=_NOW,
+            extra_field="nope",
+        )
+
+
 # --- discover_event: locale filter + topic overlap -----------------------------------------
 
 
@@ -177,6 +219,33 @@ def test_discover_events_orders_by_score_desc_then_event_id_asc():
 
     assert [m.event_id for m in ranked] == [strong.event_id, weak.event_id]
     assert [m.score for m in ranked] == [2, 1]
+
+
+def test_discover_events_breaks_score_ties_on_event_id_ascending():
+    subject = _profile("11111111-1111-4111-8111-111111111111")
+    subject_discovery = _discovery(subject, home_locale="us-sf", interests=("rust",))
+
+    # Both listings score 1 (one shared topic each) — the tie must break on
+    # event_id ascending, so directly construct listings with controlled ids
+    # rather than relying on bind_event's random uuid4() (mirrors
+    # test_intent.py's/test_culture.py's own controlled-id tie tests).
+    higher_id = EventListing(
+        event_id="bbbbbbbb-0000-4000-8000-000000000000",
+        tenant_id=_TENANT,
+        locale="us-sf",
+        topics=("rust",),
+    )
+    lower_id = EventListing(
+        event_id="aaaaaaaa-0000-4000-8000-000000000000",
+        tenant_id=_TENANT,
+        locale="us-sf",
+        topics=("rust",),
+    )
+
+    ranked = discover_events(subject, subject_discovery, [higher_id, lower_id])
+
+    assert [m.event_id for m in ranked] == [lower_id.event_id, higher_id.event_id]
+    assert [m.score for m in ranked] == [1, 1]
 
 
 def test_discover_events_filters_out_none_results():
