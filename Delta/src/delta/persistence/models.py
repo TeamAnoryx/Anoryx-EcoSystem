@@ -239,3 +239,79 @@ change_history = sa.Table(
     sa.Column("prev_hash", sa.String(64), nullable=False),
     sa.Column("row_hash", sa.String(64), nullable=False),
 )
+
+# --- D-013 unified CRM (migration 0007) --------------------------------------------
+# A deliberately scoped vertical slice, not full enterprise-CRM parity — see
+# docs/adr/0013-delta-unified-crm.md §3 for the named deferrals. Four tables: a client
+# record, its deal pipeline, its stakeholder roster, and its interaction history.
+# "Relationship scoring" and stakeholder engagement are computed live from these rows
+# (delta.crm.scoring/store) — nothing here stores a score.
+clients = sa.Table(
+    "clients",
+    metadata,
+    sa.Column("client_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("name", sa.String(256), nullable=False),
+    sa.Column("primary_contact_name", sa.String(256), nullable=True),
+    sa.Column("primary_contact_email", sa.String(320), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# One row per pipeline opportunity for a client. `stage` starts 'lead'; 'won'/'lost'
+# are terminal (enforced by delta.crm.service, mirroring D-007's allocation decision
+# idempotency guard, not by a DB constraint — a future stage could still need to
+# reopen a lost deal, which a hard DB CHECK would foreclose).
+deals = sa.Table(
+    "deals",
+    metadata,
+    sa.Column("deal_id", sa.String(64), primary_key=True),
+    sa.Column("client_id", sa.String(64), nullable=False),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("name", sa.String(256), nullable=False),
+    sa.Column("stage", sa.String(16), nullable=False),
+    sa.Column("value_minor_units", sa.BigInteger, nullable=True),
+    sa.Column("currency", sa.String(3), nullable=True),
+    sa.Column("expected_close_date", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("closed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# Stakeholder roster per client (optionally scoped to one deal). Structured data
+# entered explicitly, not free-text-extracted — see docs/adr/0013-delta-unified-crm.md
+# Fork 3 for why NLP-style extraction is a named deferral, not a silent gap.
+stakeholders = sa.Table(
+    "stakeholders",
+    metadata,
+    sa.Column("stakeholder_id", sa.String(64), primary_key=True),
+    sa.Column("client_id", sa.String(64), nullable=False),
+    sa.Column("deal_id", sa.String(64), nullable=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("name", sa.String(256), nullable=False),
+    sa.Column("role", sa.String(16), nullable=False),
+    sa.Column("email", sa.String(320), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# Client interaction history (calls/emails/meetings/notes). Append-only from the API's
+# perspective (no update/delete route) — the log itself IS the interaction record.
+# `stakeholder_id` is the "automated" half of stakeholder mapping (ADR-0013 Fork 3):
+# tagging an interaction to a stakeholder lets engagement (interaction_count/
+# last_interaction_at) be computed live by a plain GROUP BY, never by fragile
+# name-matching or NLP-style extraction from `summary`.
+interactions = sa.Table(
+    "interactions",
+    metadata,
+    sa.Column("interaction_id", sa.String(64), primary_key=True),
+    sa.Column("client_id", sa.String(64), nullable=False),
+    sa.Column("deal_id", sa.String(64), nullable=True),
+    sa.Column("stakeholder_id", sa.String(64), nullable=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("interaction_type", sa.String(16), nullable=False),
+    sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("summary", sa.String(2048), nullable=False),
+    sa.Column("created_by", sa.String(128), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)

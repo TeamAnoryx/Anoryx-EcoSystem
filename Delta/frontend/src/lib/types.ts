@@ -144,3 +144,124 @@ export interface AnomalyReportView {
    * statistical or ML model — see docs/adr/0012-delta-chargeback-anomaly-detection.md. */
   method: "trailing_average_ratio_v1";
 }
+
+/**
+ * D-013 unified CRM (Delta/src/delta/crm/schemas.py). A deliberately bounded vertical
+ * slice — client records, a deal pipeline, a stakeholder roster, an interaction
+ * history, and a deterministic relationship-score heuristic. See
+ * docs/adr/0013-delta-unified-crm.md.
+ */
+export type DealStage = "lead" | "qualified" | "proposal" | "negotiation" | "won" | "lost";
+export type InteractionType = "call" | "email" | "meeting" | "note";
+export type StakeholderRole = "decision_maker" | "influencer" | "champion" | "blocker" | "unknown";
+
+export interface ClientCreateRequest {
+  tenant_id: string;
+  name: string;
+  primary_contact_name?: string | null;
+  primary_contact_email?: string | null;
+}
+
+export interface ClientView {
+  client_id: string;
+  tenant_id: string;
+  name: string;
+  primary_contact_name: string | null;
+  primary_contact_email: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DealCreateRequest {
+  tenant_id: string;
+  name: string;
+  value_minor_units?: number | null;
+  currency?: string | null;
+  expected_close_date?: string | null;
+}
+
+export interface DealStageTransitionRequest {
+  tenant_id: string;
+  stage: DealStage;
+  actor: string;
+}
+
+export interface DealView {
+  deal_id: string;
+  client_id: string;
+  tenant_id: string;
+  name: string;
+  stage: DealStage;
+  value_minor_units: number | null;
+  currency: string | null;
+  expected_close_date: string | null;
+  closed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InteractionCreateRequest {
+  tenant_id: string;
+  deal_id?: string | null;
+  stakeholder_id?: string | null;
+  interaction_type: InteractionType;
+  occurred_at: string;
+  summary: string;
+  created_by: string;
+}
+
+export interface InteractionView {
+  interaction_id: string;
+  client_id: string;
+  deal_id: string | null;
+  stakeholder_id: string | null;
+  tenant_id: string;
+  interaction_type: InteractionType;
+  occurred_at: string;
+  summary: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface StakeholderCreateRequest {
+  tenant_id: string;
+  deal_id?: string | null;
+  name: string;
+  role?: StakeholderRole;
+  email?: string | null;
+}
+
+export interface StakeholderView {
+  stakeholder_id: string;
+  client_id: string;
+  deal_id: string | null;
+  tenant_id: string;
+  name: string;
+  role: StakeholderRole;
+  email: string | null;
+  created_at: string;
+  updated_at: string;
+  /** Computed live from `interactions` tagged to this stakeholder — never stored,
+   * never NLP-extracted from free text (ADR-0013 Fork 3). */
+  interaction_count: number;
+  last_interaction_at: string | null;
+}
+
+export interface RelationshipScoreView {
+  client_id: string;
+  score: number;
+  interaction_count_90d: number;
+  days_since_last_interaction: number | null;
+  open_deal_count: number;
+  /** A deterministic recency + frequency heuristic, not a trained/validated
+   * statistical or ML model — see docs/adr/0013-delta-unified-crm.md. */
+  method: "recency_frequency_v1";
+}
+
+export interface ClientDetailView {
+  client: ClientView;
+  deals: DealView[];
+  recent_interactions: InteractionView[];
+  stakeholders: StakeholderView[];
+  relationship_score: RelationshipScoreView;
+}
