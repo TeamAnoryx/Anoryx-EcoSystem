@@ -678,7 +678,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] F-024 Disaster recovery 🔮 (shipped PR #59)
 - [x] F-025 Self-serve onboarding 🔮 (shipped PR #63 — operator CLI, scoped down from public signup; team/project admin API deferred, see docs/followups/f-025-team-project-admin-api.md)
 - [x] F-026 MCP & Third-Party Integration Layer 🔮 (shipped PR #66 — governance substrate: per-tenant allow-list + SSRF guard + F-005 inspection reuse via sentinel-mcp operator CLI; live proxy deferred as open design decision, see docs/followups/f-026-mcp-proxy-endpoint.md)
-- [ ] F-027 Provider Key Vaulting 🔮
+- [x] F-027 Provider Key Vaulting 🔮 (shipped PR #76 — pluggable env/Vault/KMS ProviderKeySource with TTL-cached runtime fetch + bounded-lag rotation; env backend byte-identical to prior behavior; OpenAI-key-auth + instant-push rotation deferred, see docs/followups/f-027-*.md)
 - [ ] F-028 Custom Client-Defined PII Engine 🔮
 - [ ] F-029 HIPAA Compliance Module 🔮
 - [ ] F-030 EU AI Act Compliance Module 🔮
