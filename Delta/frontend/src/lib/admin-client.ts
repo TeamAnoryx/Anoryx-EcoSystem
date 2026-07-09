@@ -10,11 +10,22 @@ import type {
   ApprovalDecisionRequest,
   ChangeHistoryEntryView,
   ChargebackReportView,
+  ClientCreateRequest,
+  ClientDetailView,
+  ClientView,
   DashboardBucket,
   DashboardGroupDimension,
   DashboardScope,
+  DealCreateRequest,
+  DealStageTransitionRequest,
+  DealView,
   GroupSpendView,
+  InteractionCreateRequest,
+  InteractionView,
+  RelationshipScoreView,
   SpendSummaryView,
+  StakeholderCreateRequest,
+  StakeholderView,
   TimeSeriesPointView,
 } from "@/lib/types";
 
@@ -201,6 +212,50 @@ export const adminApi = {
         agent_id: scope.agent_id,
       },
     }),
+
+  // D-013 unified CRM — a deliberately bounded vertical slice (client records, a
+  // deal pipeline, a stakeholder roster, an interaction history, a relationship
+  // score). Same per-target tenant_id shape as every other admin surface.
+  listClients: (tenantId: string, limit?: number) =>
+    adminFetch<ClientView[]>("/crm/clients", { query: { tenant_id: tenantId, limit } }),
+
+  createClient: (body: ClientCreateRequest) =>
+    adminFetch<ClientView>("/crm/clients", { method: "POST", body }),
+
+  getClientDetail: (tenantId: string, clientId: string) =>
+    adminFetch<ClientDetailView>(`/crm/clients/${encodeURIComponent(clientId)}`, {
+      query: { tenant_id: tenantId },
+    }),
+
+  createDeal: (clientId: string, body: DealCreateRequest) =>
+    adminFetch<DealView>(`/crm/clients/${encodeURIComponent(clientId)}/deals`, {
+      method: "POST",
+      body,
+    }),
+
+  transitionDealStage: (dealId: string, body: DealStageTransitionRequest) =>
+    adminFetch<DealView>(`/crm/deals/${encodeURIComponent(dealId)}/stage`, {
+      method: "POST",
+      body,
+    }),
+
+  createStakeholder: (clientId: string, body: StakeholderCreateRequest) =>
+    adminFetch<StakeholderView>(`/crm/clients/${encodeURIComponent(clientId)}/stakeholders`, {
+      method: "POST",
+      body,
+    }),
+
+  createInteraction: (clientId: string, body: InteractionCreateRequest) =>
+    adminFetch<InteractionView>(`/crm/clients/${encodeURIComponent(clientId)}/interactions`, {
+      method: "POST",
+      body,
+    }),
+
+  getRelationshipScore: (tenantId: string, clientId: string) =>
+    adminFetch<RelationshipScoreView>(
+      `/crm/clients/${encodeURIComponent(clientId)}/relationship-score`,
+      { query: { tenant_id: tenantId } },
+    ),
 };
 
 export type AdminApi = typeof adminApi;
