@@ -18,6 +18,7 @@ from rendly.profile import Profile
 
 _NOW = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
 _TENANT = "12121212-1212-4212-8212-121212121212"
+_OTHER_TENANT = "99999999-9999-4999-8999-999999999999"
 _SUBJECT_ID = "11111111-1111-4111-8111-111111111111"
 
 
@@ -28,11 +29,11 @@ def _profile(user_id: str, tenant_id: str = _TENANT) -> Profile:
 _SUBJECT = _profile(_SUBJECT_ID)
 
 
-def _intent_match(candidate_id: str, *, seeking=(), offering=()):
+def _intent_match(candidate_id: str, *, seeking=(), offering=(), candidate_tenant_id=_TENANT):
     subject_intent = bind_intent_profile(
         _SUBJECT, seeking=seeking, offering=offering, opted_in_at=_NOW
     )
-    candidate = _profile(candidate_id)
+    candidate = _profile(candidate_id, tenant_id=candidate_tenant_id)
     # Build a complementary candidate intent so a match always results.
     candidate_intent = bind_intent_profile(
         candidate, seeking=offering, offering=seeking, opted_in_at=_NOW
@@ -40,11 +41,13 @@ def _intent_match(candidate_id: str, *, seeking=(), offering=()):
     return suggest_match(_SUBJECT, subject_intent, candidate, candidate_intent)
 
 
-def _trajectory_match(candidate_id: str, *, current_stage: str, target_stage: str):
+def _trajectory_match(
+    candidate_id: str, *, current_stage: str, target_stage: str, candidate_tenant_id=_TENANT
+):
     subject_goal = bind_career_goal(
         _SUBJECT, current_stage=current_stage, target_stage=target_stage, opted_in_at=_NOW
     )
-    candidate = _profile(candidate_id)
+    candidate = _profile(candidate_id, tenant_id=candidate_tenant_id)
     candidate_goal = bind_career_goal(
         candidate, current_stage=target_stage, target_stage=current_stage, opted_in_at=_NOW
     )
@@ -186,6 +189,50 @@ def test_build_peer_feed_rejects_trajectory_match_for_a_different_subject():
 
 def test_build_peer_feed_empty_inputs_yield_empty_feed():
     assert build_peer_feed(_SUBJECT_ID, _TENANT, [], []) == []
+
+
+def test_build_peer_feed_keeps_same_user_id_distinct_across_tenants():
+    # R-016/R-017 deliberately allow cross-tenant candidate pools, so two DISTINCT
+    # candidates in different tenants can legitimately share a candidate_user_id.
+    # The merge must key on (candidate_user_id, candidate_tenant_id), not
+    # candidate_user_id alone, or one candidate silently disappears/mis-merges.
+    shared_id = "22222222-2222-4222-8222-222222222222"
+    im = _intent_match(shared_id, seeking=("mentor",), offering=(), candidate_tenant_id=_TENANT)
+    tm = _trajectory_match(
+        shared_id,
+        current_stage="senior_engineer",
+        target_stage="staff_engineer",
+        candidate_tenant_id=_OTHER_TENANT,
+    )
+    assert im is not None and tm is not None
+
+    feed = build_peer_feed(_SUBJECT_ID, _TENANT, [im], [tm])
+    assert len(feed) == 2
+    by_tenant = {s.candidate_tenant_id: s for s in feed}
+    assert by_tenant[_TENANT].intent_score == im.score
+    assert by_tenant[_TENANT].trajectory_score == 0
+    assert by_tenant[_OTHER_TENANT].trajectory_score == tm.score
+    assert by_tenant[_OTHER_TENANT].intent_score == 0
+
+
+def test_build_peer_feed_sums_duplicate_candidates_within_one_input_list():
+    # intent.rank_matches/career.rank_trajectory_matches do NOT de-duplicate their
+    # own candidate pools; build_peer_feed inherits that contract rather than
+    # silently changing it -- a repeated candidate_user_id in one list sums again.
+    candidate_id = "22222222-2222-4222-8222-222222222222"
+    im = _intent_match(candidate_id, seeking=("mentor",), offering=())
+    assert im is not None
+
+    feed = build_peer_feed(_SUBJECT_ID, _TENANT, [im, im], [])
+    assert len(feed) == 1
+    assert feed[0].intent_score == im.score * 2
+
+
+@pytest.mark.parametrize("limit", [0, -1, -100])
+def test_build_peer_feed_nonpositive_limit_yields_empty_feed(limit):
+    im = _intent_match("22222222-2222-4222-8222-222222222222", seeking=("mentor",), offering=())
+    assert im is not None
+    assert build_peer_feed(_SUBJECT_ID, _TENANT, [im], [], limit=limit) == []
 
 
 def test_peer_suggestion_is_frozen():

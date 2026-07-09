@@ -101,7 +101,16 @@ def build_peer_feed(
     output, with both signals combined (a candidate present in both lists gets
     both scores summed, not two separate rows) — this is the whole of "hyper-
     personalized" as shipped: more than one opted-in signal considered together,
-    deterministically, for the same subject.
+    deterministically, for the same subject. A candidate is identified by the
+    composite ``(candidate_user_id, candidate_tenant_id)``, NOT ``candidate_user_id``
+    alone — R-016/R-017 deliberately allow cross-tenant candidate pools (ADR-0016/
+    ADR-0017 Fork B), so two distinct candidates in different tenants could share a
+    ``candidate_user_id`` and must not be merged into one row (mirrors every other
+    composite-identity check in this codebase, incl. this module's own
+    ``_check_subject``). A candidate appearing MORE THAN ONCE within a single input
+    list (its scores are then simply summed again, not de-duplicated) mirrors
+    ``intent.rank_matches``/``career.rank_trajectory_matches``'s own documented
+    non-dedup behavior — this function inherits, not changes, that contract.
 
     Deterministic: ties break on ``candidate_user_id`` ascending, so the same
     input always produces the same output (mirrors ``intent.rank_matches`` /
@@ -133,14 +142,14 @@ def build_peer_feed(
     )
     bounded_limit = max(0, min(limit, MAX_FEED_SUGGESTIONS))
 
-    # candidate_user_id -> (candidate_tenant_id, intent_score, trajectory_score)
-    merged: dict[str, list] = {}
+    # (candidate_user_id, candidate_tenant_id) -> [intent_score, trajectory_score]
+    merged: dict[tuple[str, str], list[int]] = {}
     for im in intent_matches:
-        row = merged.setdefault(im.candidate_user_id, [im.candidate_tenant_id, 0, 0])
-        row[1] += im.score
+        row = merged.setdefault((im.candidate_user_id, im.candidate_tenant_id), [0, 0])
+        row[0] += im.score
     for tm in trajectory_matches:
-        row = merged.setdefault(tm.candidate_user_id, [tm.candidate_tenant_id, 0, 0])
-        row[2] += tm.score
+        row = merged.setdefault((tm.candidate_user_id, tm.candidate_tenant_id), [0, 0])
+        row[1] += tm.score
 
     suggestions = [
         PeerSuggestion(
@@ -154,8 +163,7 @@ def build_peer_feed(
             has_intent_match=intent_score > 0,
             has_trajectory_match=trajectory_score > 0,
         )
-        for candidate_user_id, (
-            candidate_tenant_id,
+        for (candidate_user_id, candidate_tenant_id), (
             intent_score,
             trajectory_score,
         ) in merged.items()

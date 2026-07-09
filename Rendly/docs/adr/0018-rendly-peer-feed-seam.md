@@ -113,6 +113,20 @@ valid does not mean they belong to the SAME subject a caller claims to be
 building a feed for — the same "trust but verify the pairing" discipline
 `intent.py`/`career.py` themselves apply to `Profile`/opt-in pairs.
 
+On the CANDIDATE side, the merge key is the composite `(candidate_user_id,
+candidate_tenant_id)`, not `candidate_user_id` alone — R-016/R-017
+deliberately allow cross-tenant candidate pools (ADR-0016/ADR-0017 Fork B),
+so two DISTINCT candidates in different tenants could legitimately share a
+`candidate_user_id`; keying on `candidate_user_id` alone would silently
+merge them into one row, discarding one candidate's tenant and
+misattributing its score. This mirrors the composite-identity discipline
+this codebase already applies everywhere else a (user, tenant) pair is
+compared (`profile.py`'s DB primary key, this module's own `_check_subject`).
+A candidate appearing more than once WITHIN a single input list is summed
+again rather than de-duplicated — this is not a new decision, it inherits
+`intent.rank_matches`/`career.rank_trajectory_matches`'s own documented
+non-dedup contract rather than silently changing it.
+
 ### Fork D — bounds + determinism: **D1 (`MAX_INPUT_MATCHES = 50` per input list — matches `intent.py`/`career.py`'s own `MAX_SUGGESTIONS`; `MAX_FEED_SUGGESTIONS = 50`/`DEFAULT_FEED_LIMIT = 10`; ties break on `candidate_user_id` ascending)**
 
 A caller passing straight-through output from `rank_matches`/
