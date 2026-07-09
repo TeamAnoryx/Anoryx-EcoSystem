@@ -757,7 +757,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] R-018 Hyper-personalized peer networking 🏦 ✅ (shipped PR TBD, scoped to a deterministic composition seam combining R-016's intent matcher + R-017's career-trajectory matcher into one ranked peer suggestion — no ML, no persistence, no REST/UI; see ADR-0018)
 - [x] R-019 Privacy-controlled DM portal 🏦 ✅ (shipped PR #105, scoped to a deterministic, fail-closed, per-field data-exposure grant seam ("granular data exposure") — no DM portal/transport, no persistence, no REST/UI; see ADR-0019)
 - [ ] R-020 Localized tech-event discovery 🏦
-- [ ] R-021 Skill-based opportunity matching 🏦
+- [x] R-021 Skill-based opportunity matching 🏦 ✅ (shipped PR #110, scoped to a deterministic set-intersection scorer between R-016's existing IntentProfile.offering tags and a new Opportunity.required_skills — no ML, no new opt-in type, no persistence, no REST/UI; see ADR-0021)
 - [ ] R-022 Mentorship matching by tech-stack 🏦
 - [ ] R-023 Consumer onboarding 🏦
 - [ ] R-024 Discovery feed (B2C) 🏦
