@@ -322,10 +322,21 @@ async def list_all_dependency_edges(
     session: AsyncSession, *, limit: int = _MAX_DEPENDENCY_EDGES_CONSIDERED
 ) -> list[tuple[str, str]]:
     """Every ``(blocking_task_id, blocked_task_id)`` edge for the caller's tenant
-    (RLS-confined), capped at ``limit`` — used only by the cycle-freedom check
-    (``service._would_create_cycle``), never returned to a caller directly."""
-    stmt = select(task_dependencies.c.blocking_task_id, task_dependencies.c.blocked_task_id).limit(
-        _clamp_limit(limit)
+    (RLS-confined), capped at ``limit`` (fetches ``limit + 1`` rows so the caller can
+    detect truncation) — used only by the cycle-freedom check
+    (``service._would_create_cycle``), never returned to a caller directly.
+
+    Deliberately does NOT route through ``_clamp_limit``/``MAX_LIST_LIMIT`` — those
+    bound pagination page sizes (500), which is unrelated to and smaller than the
+    cycle-check's own edge budget (``_MAX_DEPENDENCY_EDGES_CONSIDERED`` = 2000); a
+    security audit caught an earlier version silently routing through the pagination
+    clamp, truncating the graph fed to the cycle check for any tenant with >500 edges.
+    """
+    fetch_limit = max(1, limit) + 1
+    stmt = (
+        select(task_dependencies.c.blocking_task_id, task_dependencies.c.blocked_task_id)
+        .order_by(task_dependencies.c.created_at, task_dependencies.c.dependency_id)
+        .limit(fetch_limit)
     )
     rows = (await session.execute(stmt)).all()
     return [(r.blocking_task_id, r.blocked_task_id) for r in rows]

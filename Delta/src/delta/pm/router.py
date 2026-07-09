@@ -33,6 +33,7 @@ from .service import (
     SelfDependencyError,
     SprintNotFoundError,
     TaskNotFoundError,
+    TooManyDependencyEdgesError,
 )
 
 router = APIRouter(prefix="/v1/admin/pm", dependencies=[Depends(require_admin)])
@@ -117,6 +118,8 @@ async def post_dependency(req: TaskDependencyCreateRequest) -> TaskDependencyVie
             raise HTTPException(status_code=422, detail="task_cannot_block_itself") from exc
         except DependencyCycleError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except TooManyDependencyEdgesError as exc:
+            raise HTTPException(status_code=422, detail="too_many_dependency_edges") from exc
 
 
 @router.get("/tasks/{task_id}/dependencies", response_model=list[TaskDependencyView])

@@ -85,7 +85,7 @@ and a deterministic (not ML) bottleneck heuristic.
 |---|---|---|
 | Cross-tenant sprint/task/dependency leak | Every query runs on the caller's tenant-scoped (RLS) `AsyncSession`; every table's RLS predicate is the same fail-closed `tenant_id = NULLIF(current_setting(...), '')` as every prior Delta migration; every FK is a composite `(entity_id, tenant_id)` pair | `test_cross_tenant_isolation_sprints_invisible_to_other_tenant`, `test_cross_tenant_sprint_list_isolated_over_http` |
 | A task references a sprint from a DIFFERENT tenant | Structurally impossible: `tasks`'s FK to `sprints` is a composite `(sprint_id, tenant_id)` pair against `sprints`'s `UniqueConstraint(sprint_id, tenant_id)`, which is itself RLS-confined at write time | code review — same FK shape D-007/D-013/D-014 already establish and tested |
-| A dependency edge closes a cycle in the task graph | `create_dependency` loads all existing edges (bounded, `MAX_DEPENDENCY_EDGES_CONSIDERED = 2000`) and runs `_would_create_cycle` (BFS) before inserting — a 422 on any edge that would create one | 8 pure `test_cycle_detection.py` tests (direct/transitive/diamond/long-chain, both cyclic and non-cyclic cases), `test_create_dependency_cycle_rejected_against_real_graph` (real 3-node A→B→C chain, real DB, real rejection of the closing C→A edge), `test_dependency_cycle_returns_422_over_http` |
+| A dependency edge closes a cycle in the task graph | `create_dependency` takes a tenant-serializing `pg_advisory_xact_lock` (closing the TOCTOU race a security audit found — see `docs/audit/d-015-security-audit.md` finding #1), then loads all existing edges (bounded, `MAX_DEPENDENCY_EDGES_CONSIDERED = 2000`, fetched with a deterministic `ORDER BY` and failing closed rather than running against a truncated set — finding #2) and runs `_would_create_cycle` (BFS) before inserting — a 422 on any edge that would create one | 8 pure `test_cycle_detection.py` tests (direct/transitive/diamond/long-chain, both cyclic and non-cyclic cases), `test_create_dependency_cycle_rejected_against_real_graph` (real 3-node A→B→C chain, real DB, real rejection of the closing C→A edge), `test_dependency_cycle_returns_422_over_http`, `test_create_dependency_race_is_serialized_by_advisory_lock`, `test_create_dependency_fails_closed_when_edge_bound_reached`, `test_list_all_dependency_edges_reports_truncation_not_silently_clamped` |
 | A task blocks itself | `create_dependency` checks `blocking_task_id == blocked_task_id` before ever touching the graph, raising `SelfDependencyError` → 422 | `test_create_dependency_self_reference_raises`, `test_self_dependency_returns_422_over_http` |
 | `completed_at` drifts out of sync with `status` | `update_task_status` unconditionally sets `completed_at = now` when the new status is `"done"` and `None` otherwise, in the same store call/transaction as the status write — a DB `CHECK ((status = 'done') = (completed_at IS NOT NULL))` is a second, independent layer | `test_task_status_done_sets_completed_at_and_reopening_clears_it` |
 | Story-points-as-float leaking into a count path | `story_points` rejects a wire float outright via `mode="before"` + `delta.money.reject_non_integer` (applied proactively, mirroring D-014's audit-driven fix) — no `float` anywhere in `delta.pm` | `test_task_create_rejects_float_story_points` |
@@ -98,12 +98,13 @@ and a deterministic (not ML) bottleneck heuristic.
 ## 5. Verification
 
 - `black --check` / `ruff check .` clean on `src/delta/pm` and `tests/pm`.
-- New `tests/pm/` suite: 41 tests — 16 pure schema-validation tests (`test_schemas.py`),
-  8 pure cycle-detection tests (`test_cycle_detection.py`, no DB/I/O), 5 DB-backed store
-  tests (`test_store_db.py`), 7 DB-backed service tests (`test_service_db.py`, incl. the
-  real-graph cycle-rejection integration test), 5 non-stubbed HTTP e2e tests
-  (`test_router_e2e.py`, real ASGI app, real auth, real DB).
-- Full existing Delta suite green (710 passed, 15 skipped) — zero regressions, zero
+- New `tests/pm/` suite: 44 tests — 16 pure schema-validation tests (`test_schemas.py`),
+  8 pure cycle-detection tests (`test_cycle_detection.py`, no DB/I/O), 6 DB-backed store
+  tests (`test_store_db.py`, incl. the truncation-detection regression test below), 9
+  DB-backed service tests (`test_service_db.py`, incl. the real-graph cycle-rejection
+  integration test and the two audit-driven regression tests below), 5 non-stubbed HTTP
+  e2e tests (`test_router_e2e.py`, real ASGI app, real auth, real DB).
+- Full existing Delta suite green (713 passed, 15 skipped) — zero regressions, zero
   changes to any D-001…D-014 file's runtime behavior (the only modification to existing
   code is one router mount in `allocation_admin/app.py`, and one new section each in
   `identifiers.py`/`persistence/models.py`, additive only).
@@ -121,9 +122,20 @@ and a deterministic (not ML) bottleneck heuristic.
   bottleneck report emptied, and confirmed the velocity report showed
   `completed_story_points: 3`, `1 / 2` tasks done — all matching the backend e2e test's
   own assertions exactly.
-- Independent security-auditor review: scheduled next (dispatched after this ADR is
-  committed, per the established D-013/D-014 procedure) — findings and fixes, if any,
-  will be recorded in `docs/audit/d-015-security-audit.md` before this branch merges.
+- Independent security-auditor review: initial verdict **BLOCK** — two Medium findings,
+  both reproduced against a live Postgres (not theoretical): (1) the dependency-cycle
+  check was a pure app-layer check-then-insert with no database backstop, so two
+  concurrent `create_dependency` calls could each individually pass the cycle check and
+  jointly close a cycle (reproduced 14/15 trials via `asyncio.gather`); (2)
+  `list_all_dependency_edges` silently routed its limit through the unrelated
+  pagination clamp (`MAX_LIST_LIMIT = 500`), truncating the graph fed to the cycle
+  check for any tenant past 500 edges (reproduced with a 600-edge chain). Both fixed on
+  this branch before merge: (1) a tenant-serializing `pg_advisory_xact_lock` (the same
+  shape D-009's `append_history` already uses) now guards `create_dependency`; (2) the
+  edge loader now fetches `limit + 1` rows with a deterministic `ORDER BY` and
+  `create_dependency` fails closed (`422 too_many_dependency_edges`) rather than run
+  the BFS against a possibly-incomplete graph. Full findings, reproduction detail, and
+  fix verification in `docs/audit/d-015-security-audit.md`.
 
 ## 6. Alternatives considered
 

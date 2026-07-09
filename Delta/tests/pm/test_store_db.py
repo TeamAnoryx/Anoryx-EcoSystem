@@ -241,3 +241,49 @@ async def test_cross_tenant_isolation_sprints_invisible_to_other_tenant(
 
     assert fetched is None
     assert listed == []
+
+
+@db_required
+async def test_list_all_dependency_edges_reports_truncation_not_silently_clamped(
+    tenant_id, project_id
+) -> None:
+    # Security-audit finding: this function used to route its limit through
+    # `_clamp_limit`/`MAX_LIST_LIMIT` (500) — a pagination bound unrelated to (and far
+    # smaller than) the cycle-check's own edge budget — silently truncating the graph
+    # fed to the cycle-freedom check for any tenant past 500 edges. It must now return
+    # `limit + 1` rows when more than `limit` edges exist, so the caller can detect
+    # truncation instead of silently seeing a partial (and thus falsely "acyclic")
+    # graph. A small `limit` keeps this test fast while exercising the real contract.
+    async with get_tenant_session(tenant_id) as session:
+        tasks_ = [
+            await store.create_task(
+                session,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                sprint_id=None,
+                title=f"T{i}",
+                story_points=None,
+                assignee=None,
+                now=_NOW,
+            )
+            for i in range(4)
+        ]
+        await session.commit()
+
+    async with get_tenant_session(tenant_id) as session:
+        for a, b in zip(tasks_, tasks_[1:], strict=False):
+            await store.create_dependency(
+                session,
+                tenant_id=tenant_id,
+                blocking_task_id=a.task_id,
+                blocked_task_id=b.task_id,
+                now=_NOW,
+            )
+        await session.commit()
+
+    async with get_tenant_session(tenant_id) as session:
+        edges = await store.list_all_dependency_edges(session, limit=2)
+
+    # 3 edges exist (T0->T1, T1->T2, T2->T3); a `limit=2` request must surface that
+    # more edges exist by returning `limit + 1 == 3` rows, not silently clamping to 2.
+    assert len(edges) == 3

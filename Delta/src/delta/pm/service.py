@@ -11,10 +11,12 @@ from __future__ import annotations
 from collections import deque
 from datetime import datetime, timezone
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import store
 from .schemas import (
+    MAX_DEPENDENCY_EDGES_CONSIDERED,
     BottleneckReportView,
     BottleneckRow,
     SprintCreateRequest,
@@ -44,6 +46,13 @@ class SelfDependencyError(ValueError):
 
 class DependencyCycleError(ValueError):
     """Adding this edge would create a cycle in the dependency graph."""
+
+
+class TooManyDependencyEdgesError(ValueError):
+    """The tenant's dependency graph is at or past the bound the cycle-freedom check
+    considers — fail closed rather than run the check against a possibly-truncated
+    edge set (a security-audit finding: silently truncating let a >500-edge graph
+    accept a cycle-closing edge the check never saw)."""
 
 
 def _now() -> datetime:
@@ -220,7 +229,22 @@ async def create_dependency(
     if blocked is None:
         raise TaskNotFoundError(req.blocked_task_id)
 
-    edges = await store.list_all_dependency_edges(session)
+    # Serialize concurrent dependency-graph mutations for this tenant: without this,
+    # two concurrent check-then-insert calls can each see a cycle-free graph and both
+    # commit, jointly closing a cycle neither individually created (a security-audit
+    # finding, reproduced under asyncio.gather). Held for the rest of this transaction
+    # — released automatically at commit/rollback, same shape as D-009's
+    # `append_history` tenant-serializing lock.
+    await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:t))"), {"t": req.tenant_id})
+
+    edges = await store.list_all_dependency_edges(session, limit=MAX_DEPENDENCY_EDGES_CONSIDERED)
+    if len(edges) > MAX_DEPENDENCY_EDGES_CONSIDERED:
+        # More edges exist than the cycle check is willing to load — fail closed
+        # rather than run the BFS against a silently truncated graph (a security-audit
+        # finding: an earlier version accepted a cycle-closing edge past this bound).
+        raise TooManyDependencyEdgesError(
+            f"tenant has more than {MAX_DEPENDENCY_EDGES_CONSIDERED} dependency edges"
+        )
     if _would_create_cycle(
         edges, new_blocking=req.blocking_task_id, new_blocked=req.blocked_task_id
     ):
