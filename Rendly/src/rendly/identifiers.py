@@ -30,6 +30,10 @@ are intentionally not defined here.
 ``ChannelId``: they identify records of a pure-domain seam (``event.py``) that,
 like R-002 before R-004, has no persistence yet — the id shape is fixed now so a
 future persistence layer has nothing to reconcile.
+
+``OpportunityId`` (R-021) follows the same shape for the same reason: it
+identifies records of another pure-domain, no-persistence-yet seam
+(``opportunity.py``).
 """
 
 from __future__ import annotations
@@ -52,3 +56,4 @@ UserId = UuidStr
 ChannelId = UuidStr
 EventId = UuidStr
 SessionId = UuidStr
+OpportunityId = UuidStr
