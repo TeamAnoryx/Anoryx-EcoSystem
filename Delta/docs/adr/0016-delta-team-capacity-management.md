@@ -133,9 +133,19 @@ utilization report, and an advisory (never automatic) rebalancing suggestion.
   through instead of `/v1/admin/pm/tasks` whenever it needs a task's current team —
   covered by `test_list_tasks_for_capacity_reflects_team_assignment` and an assertion
   in the HTTP e2e flow test.
-- Independent security-auditor review: dispatched next (per the established
-  D-013/D-014/D-015 procedure) — findings and fixes, if any, will be recorded in
-  `docs/audit/d-016-security-audit.md` before this branch merges.
+- Independent security-auditor review: verdict **CLEAN** — no High, Critical, Medium,
+  or Low findings. The reviewer explicitly re-checked whether either of D-015's two
+  audit-confirmed bug classes (a TOCTOU race with no DB backstop; a query helper
+  silently routed through the wrong, smaller limit constant) recur here and
+  disproved both by reproduction/trace: this feature has no check-then-write path
+  guarding a cross-row invariant (every write is a single unconditional INSERT/
+  UPDATE, so a 10-way concurrent race against `assign_task_team` produced 10 clean
+  successes with no invariant to violate), and every `store.py` list helper routes
+  through its own correctly-scoped limit constant. Cross-tenant task-team assignment
+  was proven structurally impossible even when bypassing the service-layer check
+  entirely (a raw cross-tenant `store.assign_task_team` call was rejected by the
+  `fk_task_team` composite FK itself). Full findings in
+  `docs/audit/d-016-security-audit.md`.
 
 ## 6. Alternatives considered
 
