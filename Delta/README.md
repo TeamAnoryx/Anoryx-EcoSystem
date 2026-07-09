@@ -261,6 +261,43 @@ real-time sync** (that's D-019's explicitly-dependent future task). See
   overlaps D-018's separate scope). Asset lifecycle is forward-only (active → retired → disposed)
   by design — enforced at the query layer like D-013's deal stages, not a closed DB vocabulary.
 
+## D-015 — Project Management: Sprints, Tasks, Dependency Mapping (🏦 post-investment vision tier)
+
+D-015 is the third task built past Delta's committed MVP into the vision tier, continuing
+directly from D-014 per explicit instruction to keep going. A deliberately bounded slice of the
+roadmap's "sprint-velocity tracking, dependency mapping, execution-bottleneck prediction —
+real-time": sprints, tasks, a real dependency graph with cycle rejection, a sprint-velocity
+report, and a deterministic blocking-fan-out bottleneck heuristic. **No real-time push updates,
+no external issue-tracker integration, no trained/validated ML prediction.** See
+[`docs/adr/0015-delta-pm-sprints-dependencies.md`](docs/adr/0015-delta-pm-sprints-dependencies.md).
+
+- **Backend:** `src/delta/pm/` — `schemas.py` (sprint/task/dependency DTOs, `reject_non_integer`
+  on `story_points` applied proactively from the start), `store.py` (SQLAlchemy Core persistence —
+  the velocity and bottleneck reports are each ONE bounded aggregate SQL query, never a per-row
+  Python loop), `service.py` (orchestration — `_would_create_cycle` is a bounded BFS over the
+  tenant's dependency edges, run before every new edge is inserted; a genuinely novel piece of
+  logic with no precedent in D-007→D-014).
+- **New tables** (migration 0009): `sprints`, `tasks`, `task_dependencies` — every FK is a
+  composite `(entity_id, tenant_id)` pair, same fail-closed RLS predicate as every prior Delta
+  migration. `task_dependencies` is INSERT/SELECT-only at the grant layer (an edge, once created,
+  is never edited — mirrors D-013's `interactions` append-only pattern).
+- **New endpoints:** `GET/POST /v1/admin/pm/sprints`, `POST .../sprints/{id}/status`,
+  `GET/POST .../tasks`, `POST .../tasks/{id}/status`, `POST .../dependencies`,
+  `GET .../tasks/{id}/dependencies`, `GET .../velocity`, `GET .../bottlenecks` — all on the same
+  D-007 admin app, same `require_admin` auth.
+- **Frontend:** `/pm` — sprint list with a status select, task list with a status select, a
+  task-dependency linker, a sprint-velocity table, and a bottleneck-report table, via Server
+  Actions.
+- **Honesty boundary:** `method: "blocking_fanout_v1"` is always returned on the bottleneck
+  report — a deterministic, explainable ranking by direct blocking count, **not** a trained/
+  validated statistical or ML prediction model (same "no ecosystem precedent" reasoning as
+  D-011/D-012/D-013). Task status is deliberately reopenable (todo/in_progress/blocked/done) —
+  unlike D-013's deal stages or D-014's asset lifecycle, there is no forward-only invariant here.
+  Not wired into D-009's hash-chained audit log (task/sprint edits are business-process data, not
+  financial transactions — mirrors D-013's CRM boundary). No real-time push updates, no external
+  issue-tracker sync (Jira/Linear/GitHub Issues) — named as unclaimed future work, not
+  approximated.
+
 ## Layout
 
 ```
@@ -272,6 +309,7 @@ src/delta/forecasting/       D-011 current-rate budget-forecast projection + adv
 src/delta/chargeback/        D-012 departmental chargeback/showback + trailing-average anomaly detection
 src/delta/crm/                D-013 unified CRM (deal pipeline, stakeholders, interactions, relationship score)
 src/delta/erp/                D-014 asset register + vendor/purchase-order procurement
+src/delta/pm/                 D-015 sprints, tasks, dependency mapping, velocity + bottleneck reports
 frontend/         D-007/D-008 Next.js admin console (BFF-only, see frontend/README.md)
 contracts/        Delta-owned JSON Schemas (Draft 2020-12, additionalProperties:false)
 tests/            non-stubbed proofs of every invariant + the Budget round-trip

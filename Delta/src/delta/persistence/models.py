@@ -377,3 +377,53 @@ purchase_orders = sa.Table(
     sa.Column("decided_by", sa.String(128), nullable=True),
     sa.Column("decided_at", sa.DateTime(timezone=True), nullable=True),
 )
+
+# --- D-015 project management: sprints, tasks, dependency mapping (migration 0009) ---
+# A deliberately scoped vertical slice of the roadmap's "sprint-velocity tracking,
+# dependency mapping, execution-bottleneck prediction" — see
+# docs/adr/0015-delta-pm-sprints-dependencies.md §3 for what's deferred (real-time
+# updates, external issue-tracker integration, trained ML bottleneck prediction).
+sprints = sa.Table(
+    "sprints",
+    metadata,
+    sa.Column("sprint_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("project_id", sa.String(64), nullable=False),
+    sa.Column("name", sa.String(256), nullable=False),
+    sa.Column("start_date", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("end_date", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("status", sa.String(16), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# `sprint_id` is nullable — an unassigned task lives in the backlog. `story_points` is
+# the velocity unit; `completed_at` is set exactly when `status` becomes 'done'.
+tasks = sa.Table(
+    "tasks",
+    metadata,
+    sa.Column("task_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("project_id", sa.String(64), nullable=False),
+    sa.Column("sprint_id", sa.String(64), nullable=True),
+    sa.Column("title", sa.String(256), nullable=False),
+    sa.Column("status", sa.String(16), nullable=False),
+    sa.Column("story_points", sa.Integer, nullable=True),
+    sa.Column("assignee", sa.String(128), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+)
+
+# A directed edge: `blocking_task_id` must complete before `blocked_task_id` can
+# proceed. Cycle-freedom is enforced at the service layer (a graph traversal before
+# insert), not by the database — see delta.pm.service._would_create_cycle.
+task_dependencies = sa.Table(
+    "task_dependencies",
+    metadata,
+    sa.Column("dependency_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("blocking_task_id", sa.String(64), nullable=False),
+    sa.Column("blocked_task_id", sa.String(64), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)

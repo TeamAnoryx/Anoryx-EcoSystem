@@ -1,9 +1,10 @@
 """Delta admin app factory — the operator admin API (D-007 allocations, D-008
-dashboards, D-011 forecasting, D-012 chargeback/anomaly, D-013 unified CRM, D-014 ERP).
+dashboards, D-011 forecasting, D-012 chargeback/anomaly, D-013 unified CRM, D-014 ERP,
+D-015 project management).
 
 Exposes ``/v1/admin/*`` (allocations, decisions, history, dashboards, forecast,
-chargeback, crm, erp) plus a ``/health`` probe. One app/port for the whole admin
-console (D-008/D-011/D-012/D-013/D-014 add routes to the D-007 app rather than
+chargeback, crm, erp, pm) plus a ``/health`` probe. One app/port for the whole admin
+console (D-008/D-011/D-012/D-013/D-014/D-015 add routes to the D-007 app rather than
 standing up a second process — same operators, same auth, same trust boundary).
 Settings (the break-glass bearer token) are resolved fail-loud at construction,
 mirroring ``delta.ingest.app.create_app``. No public OpenAPI schema — this is an
@@ -20,6 +21,7 @@ from ..crm.router import router as crm_router
 from ..dashboards.router import router as dashboards_router
 from ..erp.router import router as erp_router
 from ..forecasting.router import router as forecasting_router
+from ..pm.router import router as pm_router
 from .config import load_settings
 from .router import router as allocations_router
 
@@ -51,4 +53,5 @@ def create_app() -> FastAPI:
     app.include_router(chargeback_router)
     app.include_router(crm_router)
     app.include_router(erp_router)
+    app.include_router(pm_router)
     return app
