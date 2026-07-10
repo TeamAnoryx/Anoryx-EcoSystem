@@ -67,6 +67,11 @@ AccessTokenId = UuidStr
 InvoiceId = UuidStr
 InvoicePaymentId = UuidStr
 
+# D-019 corporate ERP/procurement/cloud-cost sync connectors.
+ExternalSystemId = UuidStr
+SyncRunId = UuidStr
+SyncLineItemId = UuidStr
+
 # Internal Sentinel component slug (NOT the end-user model name).
 AgentId = Annotated[str, StringConstraints(pattern=_AGENT_ID_PATTERN, max_length=_ID_MAX_LENGTH)]
 

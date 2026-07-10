@@ -517,3 +517,66 @@ invoice_payments = sa.Table(
     sa.Column("note", sa.String(1024), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
+
+# --- D-019 corporate ERP/procurement/cloud-cost sync connectors (migration 0013) ---
+# A registered external system this tenant wants to reconcile against. `vendor_label`
+# is an operator-typed free string ("NetSuite", "SAP", "Coupa", "Ariba", "AWS", ...) —
+# NOT a live API integration; see docs/adr/0019-delta-erp-integrations.md §3 for the
+# honesty boundary (this task builds the ingestion/reconciliation mechanism, not a
+# per-vendor OAuth/API client).
+external_systems = sa.Table(
+    "external_systems",
+    metadata,
+    sa.Column("system_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("name", sa.String(256), nullable=False),
+    sa.Column("system_type", sa.String(16), nullable=False),
+    sa.Column("vendor_label", sa.String(128), nullable=False),
+    sa.Column("status", sa.String(16), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# One row per sync ingestion against a registered external system. Fully synchronous
+# (no live external I/O in this task — the line items are supplied directly by the
+# caller), so there is no run-level failure state to track, only per-line-item match
+# outcomes (`sync_line_items.matched_status`); the five `records_*` counters are a
+# denormalized summary written once at insert time, never updated afterward.
+sync_runs = sa.Table(
+    "sync_runs",
+    metadata,
+    sa.Column("sync_run_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("system_id", sa.String(64), nullable=False),
+    sa.Column("triggered_by", sa.String(128), nullable=False),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("records_ingested", sa.Integer, nullable=False),
+    sa.Column("records_matched", sa.Integer, nullable=False),
+    sa.Column("records_mismatched", sa.Integer, nullable=False),
+    sa.Column("records_not_found", sa.Integer, nullable=False),
+    sa.Column("records_unreconciled", sa.Integer, nullable=False),
+    sa.Column("note", sa.String(1024), nullable=True),
+)
+
+# One row per external line item ingested in a sync run. `matched_entity_type`/
+# `matched_entity_id` point back at a D-014 purchase_order or D-018 invoice iff
+# `matched_status` is 'matched' or 'amount_mismatch' — 'not_found' means the caller
+# supplied a po_id/invoice_id that does not resolve under this tenant's RLS session;
+# 'unreconciled' means no Delta-side reference was supplied at all (the honest
+# default for cloud-cost line items, which have no internal counterpart to compare
+# against).
+sync_line_items = sa.Table(
+    "sync_line_items",
+    metadata,
+    sa.Column("line_item_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("sync_run_id", sa.String(64), nullable=False),
+    sa.Column("external_reference", sa.String(256), nullable=False),
+    sa.Column("amount_minor_units", sa.BigInteger, nullable=False),
+    sa.Column("currency", sa.String(3), nullable=False),
+    sa.Column("matched_status", sa.String(16), nullable=False),
+    sa.Column("matched_entity_type", sa.String(16), nullable=True),
+    sa.Column("matched_entity_id", sa.String(64), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
