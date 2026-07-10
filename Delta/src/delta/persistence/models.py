@@ -467,3 +467,53 @@ access_tokens = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
 )
+
+# --- D-018 automated invoicing + vendor payment reconciliation (migration 0012) ---
+# `amount_paid_minor_units` is a denormalized running total updated by a single
+# conditional UPDATE (see delta.invoicing.store.try_record_payment) — the same
+# race-guard shape as every prior conditional-decision write in this codebase, here
+# extended to a computed-condition guard (WHERE amount_paid + :new <= amount) so
+# concurrent payment recordings can never overpay a single invoice. `status` moves
+# forward only: submitted -> approved|disputed -> (approved) partially_paid -> paid.
+# `po_id` ties every invoice to a D-014 purchase order (must be 'approved' at
+# creation); `milestone_task_id` is the roadmap's "project milestones/delivery
+# metrics" tie-in — a nullable FK to a D-015 task, required to be 'done' at creation
+# when present (see docs/adr/0018-delta-invoicing-reconciliation.md).
+invoices = sa.Table(
+    "invoices",
+    metadata,
+    sa.Column("invoice_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("vendor_id", sa.String(64), nullable=False),
+    sa.Column("po_id", sa.String(64), nullable=False),
+    sa.Column("milestone_task_id", sa.String(64), nullable=True),
+    sa.Column("invoice_number", sa.String(128), nullable=False),
+    sa.Column("description", sa.String(512), nullable=False),
+    sa.Column("amount_minor_units", sa.BigInteger, nullable=False),
+    sa.Column("currency", sa.String(3), nullable=False),
+    sa.Column("amount_paid_minor_units", sa.BigInteger, nullable=False, server_default="0"),
+    sa.Column("status", sa.String(16), nullable=False),
+    sa.Column("submitted_by", sa.String(128), nullable=False),
+    sa.Column("submitted_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("decided_by", sa.String(128), nullable=True),
+    sa.Column("decided_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# One row per recorded vendor payment against an invoice. Append-only (no UPDATE/
+# DELETE grant) — the invoice's own `amount_paid_minor_units` running total is the
+# single mutable projection; this table is the immutable ledger of how it got there.
+invoice_payments = sa.Table(
+    "invoice_payments",
+    metadata,
+    sa.Column("payment_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("invoice_id", sa.String(64), nullable=False),
+    sa.Column("amount_minor_units", sa.BigInteger, nullable=False),
+    sa.Column("currency", sa.String(3), nullable=False),
+    sa.Column("paid_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("recorded_by", sa.String(128), nullable=False),
+    sa.Column("note", sa.String(1024), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)

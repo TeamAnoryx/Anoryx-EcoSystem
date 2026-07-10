@@ -681,7 +681,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] F-027 Provider Key Vaulting 🔮 (shipped PR #76 — pluggable env/Vault/KMS ProviderKeySource with TTL-cached runtime fetch + bounded-lag rotation; env backend byte-identical to prior behavior; OpenAI-key-auth + instant-push rotation deferred, see docs/followups/f-027-*.md)
 - [x] F-028 Custom Client-Defined PII Engine 🔮 (shipped — per-tenant client-defined regex PII: standalone ReDoS-safe engine, no spacy dependency, hot-reload + sentinel-pii CLI; runs after built-in PIIHook, emits existing pii_blocked event. Presidio ad-hoc "ML hooks" reading deferred, see docs/adr/0034 + docs/followups/f-028-presidio-adhoc-recognizers.md)
 - [x] F-029 HIPAA Compliance Module 🔮 (shipped — HIPAA Security Rule control map (§164.312/§164.308) on the F-011 engine; built-in PHI patterns reusing F-028's ReDoS-safe engine; BAA-ready evidence summary + sentinel-hipaa CLI. Contract-free/CLI-only — HTTP export deferred, see docs/adr/0035 + docs/followups/f-029-hipaa-http-export.md)
-- [ ] F-030 EU AI Act Compliance Module 🔮
+- [x] F-030 EU AI Act Compliance Module 🔮 (shipped — EU AI Act control map (Chapter III Sec 2, honest not_covered/not_applicable for process-only obligations) on the F-011 engine; Annex III / Art.5 risk-classification decision-support helper; Art.13 disclosure-template generator + sentinel-euaiact CLI. Contract-free/CLI-only — see docs/adr/0036 + docs/followups/f-030-eu-ai-act-http-export.md)
 - [ ] F-031 Production Due-Diligence Gate 🔮
 - [ ] F-032 Practical Zero-Knowledge Storage SDK 🔮
 - [ ] F-033 Multi-Layer Tokenization Architecture 🔮
@@ -726,7 +726,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-015 AI-driven project management ✅ (shipped PR #94 — bounded vertical slice: sprints, tasks, dependency graph, velocity + bottleneck heuristic, see docs/adr/0015-delta-pm-sprints-dependencies.md)
 - [x] D-016 Dynamic team / capacity management ✅ (shipped PR #96 — bounded vertical slice: teams, task assignment, utilization report, advisory rebalancing, see docs/adr/0016-delta-team-capacity-management.md)
 - [x] D-017 Strict RBAC operational dashboards ✅ (shipped PR #106 — bounded vertical slice: locally-issued role-tagged tokens gating D-008's dashboards, see docs/adr/0017-delta-rbac-dashboards.md)
-- [ ] D-018 Automated invoicing + vendor reconciliation — Heavy 🏦
+- [x] D-018 Automated invoicing + vendor reconciliation ✅ (shipped PR #111 — bounded vertical slice: PO-backed invoice/payment three-way match + per-vendor reconciliation report, see docs/adr/0018-delta-invoicing-reconciliation.md)
 - [ ] D-019 Corporate ERP integrations (NetSuite/SAP/Coupa/cloud) — Heavy 🏦
 - [ ] D-020 Executive financial dashboard — Tricky 🏦
 - [ ] D-021 B2C personal budget tracking 🏦
@@ -756,7 +756,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] R-017 AI profile optimization + career matching 🏦 ✅ (shipped PR #89, scoped to a deterministic career-trajectory stage-matching seam + a fixed profile-completeness checklist — no ML/generated text, no persistence, no REST; see ADR-0017)
 - [x] R-018 Hyper-personalized peer networking 🏦 ✅ (shipped PR TBD, scoped to a deterministic composition seam combining R-016's intent matcher + R-017's career-trajectory matcher into one ranked peer suggestion — no ML, no persistence, no REST/UI; see ADR-0018)
 - [x] R-019 Privacy-controlled DM portal 🏦 ✅ (shipped PR #105, scoped to a deterministic, fail-closed, per-field data-exposure grant seam ("granular data exposure") — no DM portal/transport, no persistence, no REST/UI; see ADR-0019)
-- [ ] R-020 Localized tech-event discovery 🏦
+- [x] R-020 Localized tech-event discovery 🏦 ✅ (shipped PR #113, scoped to a deterministic opaque-tag locality filter + topic-overlap ranking seam over R-013's Event/EventSession agenda, composing R-016's IntentProfile — no geolocation, no real event sourcing, no persistence, no REST/UI; see ADR-0020)
 - [x] R-021 Skill-based opportunity matching 🏦 ✅ (shipped PR #110, scoped to a deterministic set-intersection scorer between R-016's existing IntentProfile.offering tags and a new Opportunity.required_skills — no ML, no new opt-in type, no persistence, no REST/UI; see ADR-0021)
 - [ ] R-022 Mentorship matching by tech-stack 🏦
 - [ ] R-023 Consumer onboarding 🏦

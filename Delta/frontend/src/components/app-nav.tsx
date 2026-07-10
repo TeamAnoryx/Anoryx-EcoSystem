@@ -8,6 +8,7 @@ const LINKS: Array<[string, string]> = [
   ["Chargeback", "/chargeback"],
   ["CRM", "/crm"],
   ["ERP", "/erp"],
+  ["Invoicing", "/invoicing"],
   ["PM", "/pm"],
   ["Capacity", "/capacity"],
   ["Access", "/rbac"],

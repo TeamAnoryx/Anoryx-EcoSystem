@@ -585,3 +585,88 @@ export interface AccessTokenView {
 export interface AccessTokenIssuedView extends AccessTokenView {
   token: string;
 }
+
+/**
+ * D-018 automated invoicing + vendor payment reconciliation
+ * (Delta/src/delta/invoicing/schemas.py). An accounts-payable three-way match — a
+ * D-014 purchase order (commitment) -> invoice (billing claim, optionally proven by
+ * a D-015 task's 'done' status as the delivery-metric leg) -> recorded payments
+ * (settlement) — plus a computed per-vendor reconciliation report. Does NOT wire
+ * vendor payments into D-003's ledger (that ledger is scoped to AI-usage cost
+ * attribution, not accounts-payable); real external ERP/bank-feed sync is D-019's
+ * job. See docs/adr/0018-delta-invoicing-reconciliation.md.
+ */
+export type InvoiceStatus = "submitted" | "approved" | "disputed" | "partially_paid" | "paid";
+export type InvoiceDecisionAction = "approve" | "dispute";
+
+export interface InvoiceCreateRequest {
+  tenant_id: string;
+  vendor_id: string;
+  po_id: string;
+  milestone_task_id?: string | null;
+  invoice_number: string;
+  description: string;
+  amount_minor_units: number;
+  currency?: string;
+  submitted_by: string;
+}
+
+export interface InvoiceDecisionRequest {
+  tenant_id: string;
+  action: InvoiceDecisionAction;
+  actor: string;
+  note?: string | null;
+}
+
+export interface InvoiceView {
+  invoice_id: string;
+  tenant_id: string;
+  vendor_id: string;
+  po_id: string;
+  milestone_task_id: string | null;
+  invoice_number: string;
+  description: string;
+  amount_minor_units: number;
+  currency: string;
+  amount_paid_minor_units: number;
+  status: InvoiceStatus;
+  submitted_by: string;
+  submitted_at: string;
+  decided_by: string | null;
+  decided_at: string | null;
+}
+
+export interface PaymentRecordRequest {
+  tenant_id: string;
+  amount_minor_units: number;
+  currency?: string;
+  paid_at: string;
+  recorded_by: string;
+  note?: string | null;
+}
+
+export interface InvoicePaymentView {
+  payment_id: string;
+  tenant_id: string;
+  invoice_id: string;
+  amount_minor_units: number;
+  currency: string;
+  paid_at: string;
+  recorded_by: string;
+  note: string | null;
+}
+
+/** Defense-in-depth reconciliation flags: the create/pay guards already make
+ * `over_invoiced`/`over_paid` structurally impossible, so a `true` here would mean
+ * those guards were bypassed or a data-layer bug exists — see ADR-0018 §4. */
+export interface VendorReconciliationView {
+  vendor_id: string;
+  currency: string;
+  committed_minor_units: number;
+  invoiced_minor_units: number;
+  paid_minor_units: number;
+  outstanding_minor_units: number;
+  disputed_invoice_count: number;
+  over_invoiced: boolean;
+  over_paid: boolean;
+}

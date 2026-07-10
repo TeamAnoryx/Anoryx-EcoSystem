@@ -234,10 +234,10 @@ def _cmd_export(framework: str, t0: datetime, t1: datetime, tenant: str, out: st
 # Parser registration (called from policy.cli.main)
 # ---------------------------------------------------------------------------
 
-# CLI accepts every shipped framework (including HIPAA, F-029) — the CLI path is
-# contract-free, unlike the HTTP export route which stays SOC2+ISO27001 per
-# contracts/openapi.yaml.
-_FRAMEWORKS = ("SOC2", "ISO27001", "HIPAA")
+# CLI accepts every shipped framework (HIPAA F-029, EU_AI_ACT F-030) — the CLI
+# path is contract-free, unlike the HTTP export route which stays SOC2+ISO27001
+# per contracts/openapi.yaml.
+_FRAMEWORKS = ("SOC2", "ISO27001", "HIPAA", "EU_AI_ACT")
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
