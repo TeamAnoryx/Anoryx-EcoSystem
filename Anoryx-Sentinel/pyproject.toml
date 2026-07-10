@@ -161,6 +161,8 @@ sentinel-pii = "data_protection.custom_pii.cli:main"
 sentinel-hipaa = "compliance.hipaa.cli:main"
 # F-030 operator CLI (ADR-0036): EU AI Act risk classification + Art.13 disclosure.
 sentinel-euaiact = "compliance.eu_ai_act.cli:main"
+# F-031 operator CLI (ADR-0037): production due-diligence gate (pre-launch checklist).
+sentinel-preflight = "preflight.cli:main"
 
 [tool.ruff]
 target-version = "py312"
