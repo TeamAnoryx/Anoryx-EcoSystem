@@ -159,6 +159,8 @@ sentinel-keyvault = "gateway.keyvault.cli:main"
 sentinel-pii = "data_protection.custom_pii.cli:main"
 # F-029 operator CLI (ADR-0035): HIPAA PHI scan + BAA-readiness evidence summary.
 sentinel-hipaa = "compliance.hipaa.cli:main"
+# F-030 operator CLI (ADR-0036): EU AI Act risk classification + Art.13 disclosure.
+sentinel-euaiact = "compliance.eu_ai_act.cli:main"
 
 [tool.ruff]
 target-version = "py312"

@@ -1,0 +1,187 @@
+# EU AI Act (Regulation (EU) 2024/1689) — Sentinel control mapping (F-030, ADR-0036).
+#
+# Scope: the high-risk-AI-system obligations (Chapter III, Section 2) for which
+# Sentinel — an application-layer AI gateway sitting in front of the AI system —
+# produces machine-verifiable evidence in its append-only hash-chained audit log.
+#
+# Honesty rule (R8), identical to soc2/iso27001/hipaa:
+#   sentinel_controls: []  => Sentinel produces NO evidence => reported not_covered.
+#   status_override: not_applicable => the obligation is outside a gateway's boundary
+#                             (a provider's conformity-assessment process, a deployer's
+#                             human-oversight staffing, etc.).
+#
+# CRITICAL FRAMING (mandatory): this mapping is evidence for EU-AI-Act audit
+# PREPARATION and deployer/provider due diligence. It is NOT a conformity
+# assessment, NOT a CE marking, and does NOT by itself discharge any Article
+# obligation. Most EU AI Act obligations are PROCESS/GOVERNANCE duties of the
+# provider or deployer; Sentinel supplies technical evidence for the subset it
+# can (logging, input/output controls, robustness), notably the Article 12
+# record-keeping obligation. Whether an AI system is "high-risk" (Annex III) or
+# uses a "prohibited practice" (Article 5) is the operator's legal determination
+# — see the classification helper (src/compliance/eu_ai_act/classification.py),
+# which is decision-SUPPORT, not legal advice.
+#
+# All evidence_event_types are EXISTING members of VALID_EVENT_TYPES — no new
+# contract event types, so this file requires no contracts/ change.
+
+framework: EU_AI_ACT
+framework_version: "2024-1689-ChapterIII-Sec2"
+
+controls:
+  # ── Article 12 — Record-keeping (the obligation Sentinel most directly evidences) ──
+
+  - control_id: "Art.12"
+    title: "Record-keeping — automatic logging of events over the system's lifetime"
+    sentinel_controls: [audit_log_chain, tamper_evident_logging]
+    evidence_event_types:
+      - usage
+      - policy_decision_allow
+      - policy_decision_deny
+      - injection_detected
+      - pii_blocked
+      - secret_leaked
+    rationale: >
+      Article 12 requires high-risk AI systems to technically allow the automatic
+      recording of events ('logs') over their lifetime. Sentinel's append-only,
+      hash-chained audit log (F-003) records every request and control event with
+      tamper-evident integrity — direct technical evidence for the record-keeping
+      obligation, including traceability of each interaction.
+
+  - control_id: "Art.19"
+    title: "Automatically generated logs — retention by the provider/deployer"
+    sentinel_controls: [audit_log_chain]
+    evidence_event_types:
+      - usage
+    rationale: >
+      Sentinel generates and retains the automatically-generated logs referenced in
+      Article 12; retention duration and the provider/deployer's keeping of them
+      (Article 19 / Article 26(6)) is an operational policy Sentinel's store
+      supports but does not itself mandate.
+
+  # ── Article 15 — Accuracy, robustness and cybersecurity ─────────────────────
+
+  - control_id: "Art.15"
+    title: "Accuracy, robustness and cybersecurity — resilience against manipulation"
+    sentinel_controls: [injection_detection, secret_detection, rate_limiting, tenant_isolation]
+    evidence_event_types:
+      - injection_detected
+      - prompt_injection_detected_ml
+      - recursive_injection_attempt
+      - secret_leaked
+      - rate_limit_degraded
+      - rate_limit_recovered
+    rationale: >
+      Article 15(5) requires resilience against attempts to alter use or performance
+      by exploiting system vulnerabilities (e.g. data/model manipulation, adversarial
+      inputs). Sentinel's prompt-injection detection (rules + ML classifier, F-007),
+      secret-leak detection, rate limiting, and tenant isolation are technical
+      cybersecurity measures evidenced by their event streams.
+
+  # ── Article 10 — Data and data governance ───────────────────────────────────
+
+  - control_id: "Art.10"
+    title: "Data and data governance — handling of personal/special-category data"
+    sentinel_controls: [pii_protection, data_protection]
+    evidence_event_types:
+      - pii_blocked
+    rationale: >
+      Sentinel's PII masking/blocking (F-005) reduces exposure of personal data in
+      AI traffic, providing partial technical evidence toward data-governance
+      measures. The broader Article 10 obligations (training-data relevance, bias
+      examination, representativeness) concern the provider's dataset practices and
+      are outside a runtime gateway's boundary.
+
+  # ── Article 14 — Human oversight ────────────────────────────────────────────
+
+  - control_id: "Art.14"
+    title: "Human oversight — measures enabling effective human control"
+    sentinel_controls: [policy_enforcement, policy_intake]
+    evidence_event_types:
+      - policy_decision_allow
+      - policy_decision_deny
+      - policy_violated
+      - policy_intake_accepted
+    rationale: >
+      Sentinel enforces human-authored, signed policies (F-008) at the gateway and
+      records each decision, providing a technical control point through which humans
+      constrain the AI system's behaviour and an auditable record of interventions.
+      The design and staffing of the human-oversight function is a deployer process
+      control outside Sentinel's scope.
+
+  # ── Article 13 — Transparency and provision of information to deployers ──────
+
+  - control_id: "Art.13"
+    title: "Transparency to deployers — instructions for use and system information"
+    sentinel_controls: [transparency_disclosure]
+    evidence_event_types: []
+    rationale: >
+      Sentinel supports Article 13 by GENERATING a structured transparency
+      disclosure / instructions-for-use template (src/compliance/eu_ai_act/
+      disclosure.py) that documents the gateway's controls, characteristics, and
+      limitations. This is a documentation aid, not runtime event evidence — hence
+      no evidence_event_types; the disclosure is the artifact.
+
+  # ── Article 26 — Obligations of deployers of high-risk AI systems ────────────
+
+  - control_id: "Art.26"
+    title: "Deployer obligations — monitoring, log-keeping, human oversight assignment"
+    sentinel_controls: [audit_log_chain, policy_enforcement]
+    evidence_event_types:
+      - usage
+      - policy_violated
+      - injection_detected
+    rationale: >
+      Sentinel provides deployers with the monitoring signals and retained logs
+      (Article 26(5)-(6)) needed to fulfil their monitoring and record-keeping
+      duties. Assigning human oversight and acting on monitoring output are deployer
+      process controls.
+
+  # ── Article 9 — Risk management system (mostly process, partial evidence) ────
+
+  - control_id: "Art.9"
+    title: "Risk management system — continuous iterative risk process"
+    sentinel_controls: []
+    evidence_event_types: []
+    rationale: ""
+    # The Article 9 risk-management SYSTEM is a continuous provider process
+    # (identify/estimate/evaluate/mitigate risks across the lifecycle). Sentinel's
+    # detection events can FEED such a process but Sentinel does not itself
+    # constitute the risk-management system. Reported not_covered (no fabricated
+    # coverage); the operator runs the process.
+
+  # ── Article 50 — Transparency for certain AI systems (app-layer concern) ─────
+
+  - control_id: "Art.50"
+    title: "Transparency obligations — disclose AI interaction / mark synthetic content"
+    sentinel_controls: []
+    evidence_event_types: []
+    rationale: ""
+    # Disclosing to a natural person that they interact with an AI system, and
+    # marking AI-generated/synthetic content, are application-layer duties of the
+    # provider/deployer of the end system — not something an inspecting gateway
+    # performs. Sentinel provides no evidence here. Reported not_covered.
+
+  # ── Article 43 — Conformity assessment (provider process, out of scope) ──────
+
+  - control_id: "Art.43"
+    title: "Conformity assessment — procedure before placing on the market"
+    status_override: not_applicable
+    sentinel_controls: []
+    evidence_event_types: []
+    rationale: >
+      The conformity-assessment procedure (and any notified-body involvement) is a
+      pre-market provider process governed by Article 43 and Annex VI/VII. Sentinel
+      is a runtime component and performs no conformity assessment. Explicitly not
+      applicable.
+
+  # ── Article 17 — Quality management system (provider process, out of scope) ──
+
+  - control_id: "Art.17"
+    title: "Quality management system — provider's documented QMS"
+    status_override: not_applicable
+    sentinel_controls: []
+    evidence_event_types: []
+    rationale: >
+      The Article 17 quality-management system is a documented organisational process
+      of the provider. Sentinel is software within the system, not the QMS.
+      Explicitly not applicable.

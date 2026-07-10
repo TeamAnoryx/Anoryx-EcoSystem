@@ -9,7 +9,7 @@
   "properties": {
     "framework": {
       "type": "string",
-      "enum": ["SOC2", "ISO27001", "HIPAA"],
+      "enum": ["SOC2", "ISO27001", "HIPAA", "EU_AI_ACT"],
       "description": "Framework identifier — matches FRAMEWORKS constant."
     },
     "framework_version": {
