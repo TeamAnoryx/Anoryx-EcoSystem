@@ -125,8 +125,22 @@ the concrete, well-defined future work this framework exists to receive.
   (one referencing the real PO by ID, one with no reference) — confirmed the run
   came back with exactly one `matched` and one `unreconciled` line item against the
   live backend, both in the UI and via a direct follow-up API call.
-- Independent security-auditor review dispatched against this diff (see
-  `docs/audit/d-019-security-audit.md` for the full findings).
+- Independent security-auditor review: verdict **CLEAN** — no High or Critical
+  findings. The review specifically hunted for D-018's own audit-confirmed TOCTOU
+  bug class (a read-then-compare-then-insert with no row lock) and confirmed it does
+  NOT reproduce here, for a structural reason rather than luck: `run_sync` has no
+  shared running total or cross-submission ceiling to check-then-violate — each line
+  item's match is an independent, read-only ID lookup against PO/invoice data this
+  feature never mutates, so no row lock is needed and none is missing (Fork 4/5's
+  own reasoning, independently confirmed live under adversarial testing, not merely
+  assumed from the synchronous framing). Three Low findings, none requiring a code
+  change: a pre-existing test-harness order-dependency issue (also noted in D-018's
+  own audit, unrelated to this feature's product code), the same BFF
+  break-glass-implies-full-tenant-trust boundary already accepted in the D-017/D-018
+  audits, and a confirmation that the `SystemDisabledError` branch is currently
+  unreachable through the app (by design — Fork 5/§6 already named adding an UPDATE
+  grant for this as explicitly out of scope). Full findings in
+  `docs/audit/d-019-security-audit.md`.
 
 ## 6. Alternatives considered
 
