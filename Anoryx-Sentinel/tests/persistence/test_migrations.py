@@ -7,7 +7,7 @@ Migration chain: 0001 -> 0002 -> 0003 -> 0004 -> 0005 -> 0006 -> 0007 -> 0008
                  -> 0009 -> 0010 -> 0011 -> 0012 -> 0013 -> 0014 -> 0015
                  -> 0016 -> 0017 -> 0018 -> 0019 -> 0020 -> 0021 -> 0022 -> 0023
                  -> 0024 -> 0025 -> 0026 -> 0027 -> 0028 -> 0029 -> 0030 -> 0031
-                 -> 0032 -> 0033 -> 0034 (head)
+                 -> 0032 -> 0033 -> 0034 -> 0035 (head)
 """
 
 from __future__ import annotations
@@ -46,11 +46,11 @@ def _run_alembic(*args: str) -> subprocess.CompletedProcess:
 
 
 @pytest.mark.integration
-def test_current_head_is_0034() -> None:
-    """Alembic current should report head at revision 0034 (F-028 custom PII patterns)."""
+def test_current_head_is_0035() -> None:
+    """Alembic current should report head at revision 0035 (F-033 token vault)."""
     result = _run_alembic("current")
     assert result.returncode == 0, f"alembic current failed:\n{result.stderr}"
-    assert "0034" in result.stdout or "0034" in result.stderr
+    assert "0035" in result.stdout or "0035" in result.stderr
 
 
 @pytest.mark.integration
@@ -64,7 +64,7 @@ def test_migration_downgrade_and_reapply() -> None:
     assert result_up.returncode == 0, f"upgrade head after downgrade failed:\n{result_up.stderr}"
     # Confirm head is back.
     result_current = _run_alembic("current")
-    assert "0034" in result_current.stdout or "0034" in result_current.stderr
+    assert "0035" in result_current.stdout or "0035" in result_current.stderr
 
 
 @pytest.mark.integration
@@ -73,7 +73,7 @@ def test_incremental_downgrade() -> None:
 
     Always re-applies to head at the end to leave the DB in a valid state.
     """
-    num_revisions = 34  # 0001 through 0034
+    num_revisions = 35  # 0001 through 0035
 
     try:
         for _step in range(num_revisions):

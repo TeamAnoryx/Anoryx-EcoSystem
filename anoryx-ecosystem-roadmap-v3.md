@@ -684,8 +684,8 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] F-030 EU AI Act Compliance Module 🔮 (shipped — EU AI Act control map (Chapter III Sec 2, honest not_covered/not_applicable for process-only obligations) on the F-011 engine; Annex III / Art.5 risk-classification decision-support helper; Art.13 disclosure-template generator + sentinel-euaiact CLI. Contract-free/CLI-only — see docs/adr/0036 + docs/followups/f-030-eu-ai-act-http-export.md)
 - [x] F-031 Production Due-Diligence Gate 🔮 (shipped — sentinel-preflight pre-launch gate reusing F-027 keyvault, F-003 hash-chain verify, in-process Alembic head check, findings-doc scan, config sanity; non-zero exit blocks launch on any hard-fail. Correctly blocks on the real F-022 open High. See docs/adr/0037 + docs/followups/f-031-machine-readable-findings.md)
 - [x] F-032 Practical Zero-Knowledge Storage SDK 🔮 (shipped — client-side AES-256-GCM envelope + HKDF key derivation + HMAC blind-index equality search; server stores ciphertext only, keys never leave client (proven by tests). sentinel-zk CLI. Honest threat model: leaks equality/frequency via deterministic indexes, not homomorphic/ORAM/ZK-proof — see docs/adr/0038. Server store endpoint deferred, see docs/followups/f-032-ciphertext-store-endpoint.md)
-- [ ] F-033 Multi-Layer Tokenization Architecture 🔮
-- [ ] F-034 Internal Service Mesh Auth (mTLS) 🔮
+- [x] F-033 Multi-Layer Tokenization Architecture 🔮 (shipped — two-layer design: random format-preserving surrogate token (Luhn-valid card / NNN-NN-NNNN ssn / same-length digits / opaque generic) as layer 1, AES-256-GCM vault ciphertext in RLS-scoped tenant_token_vault (migration 0035, SELECT+INSERT-only) as layer 2; reversible per-tenant only (cross-tenant detokenize proven impossible by RLS test). sentinel-token CLI. Honest scope: random surrogate tokenization NOT hand-rolled FF3-1 FPE (R3) — true FF3-1 + deterministic mode deferred to docs/followups/f-033-ff3-1-fpe.md. See docs/adr/0039)
+- [x] F-034 Internal Service Mesh Auth (mTLS) 🔮 (shipped — app-layer mTLS toolkit: SPIFFE-style ComponentIdentity + internal EC-P256 mesh CA issuing short-lived (24h) URI-SAN leaves, verify_peer authentication + default-deny MeshAuthorizationPolicy, 2/3-TTL rotation classifier, mutual-TLS (CERT_REQUIRED both ways) SSLContext builders proven by a real client↔server handshake test. sentinel-mesh CLI. Honest scope: identity/issuance/verify/rotation toolkit, NOT a live Istio/Linkerd mesh or running cert-manager — CRD + live-path adoption deferred to docs/followups/f-034-cert-manager-wiring.md. See docs/adr/0040)
 - [ ] F-035 External Pen-Test Pass 🔮 (external)
 - [ ] F-036 Self-Hosted / Air-Gapped Deployment 🔮
 
@@ -772,7 +772,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 
 - [x] X-001 Sentinel ↔ Orchestrator wiring — Easy-Tricky (6-10h) (shipped PR #91)
 - [x] X-002 Orchestrator ↔ Delta wiring — Easy-Tricky (6-10h) (shipped PR #97)
-- [ ] X-003 Budget enforcement loop (killer feature) — Tricky (10-14h)
+- [ ] X-003 Budget enforcement loop (killer feature) — Tricky (10-14h) — BLOCKED: closing the loop needs a new Sentinel `POST /admin/policies/intake` endpoint (`contracts/openapi.yaml`, api-architect-only) that also reconciles ADR-0009 §11's "no HTTP intake" decision (R1); draft PR #98 opened for human/api-architect review, see `Anoryx-Sentinel/docs/followups/x-003-policy-intake-http-endpoint.md`
 - [ ] X-004 Rendly ↔ Sentinel safety — Easy-Tricky 🔮
 - [ ] X-005 Rendly ↔ Delta monetization — Tricky 🏦
 - [ ] X-006 End-to-end ecosystem demo — Tricky 🔮
