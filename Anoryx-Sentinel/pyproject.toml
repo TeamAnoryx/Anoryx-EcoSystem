@@ -163,6 +163,8 @@ sentinel-hipaa = "compliance.hipaa.cli:main"
 sentinel-euaiact = "compliance.eu_ai_act.cli:main"
 # F-031 operator CLI (ADR-0037): production due-diligence gate (pre-launch checklist).
 sentinel-preflight = "preflight.cli:main"
+# F-032 dev/operator CLI (ADR-0038): client-side ZK storage (keygen/encrypt/decrypt/query-tag).
+sentinel-zk = "zk_sdk.cli:main"
 
 [tool.ruff]
 target-version = "py312"
