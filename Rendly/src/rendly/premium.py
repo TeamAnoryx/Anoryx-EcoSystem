@@ -84,16 +84,23 @@ class PremiumFeature(StrEnum):
 
     EXTENDED_DISCOVERY_FEED = "extended_discovery_feed"
     UNLIMITED_MENTORSHIP_MATCHES = "unlimited_mentorship_matches"
+    # R-026: gates the boosted creator-revenue-share split in `creator.py`. Added
+    # here rather than restructured, exactly as this module's own docstring
+    # invited ("a future feature requiring a different minimum tier is a
+    # one-line addition here") — `creator.py` composes this via
+    # `has_feature_access`, it does not modify this module beyond this addition.
+    CREATOR_REVENUE_SHARE_BOOST = "creator_revenue_share_boost"
 
 
 # The minimum tier required to use each feature. Every `PremiumFeature` member
-# both currently require PREMIUM — there is no free-tier-gated feature yet — but
+# currently requires PREMIUM — there is no free-tier-gated feature yet — but
 # the mapping is deliberately keyed PER FEATURE rather than a single hard-coded
 # "every feature needs premium" check, so a future feature requiring a different
 # minimum tier is a one-line addition here, not a restructuring.
 _FEATURE_MIN_TIER: dict[PremiumFeature, PremiumTier] = {
     PremiumFeature.EXTENDED_DISCOVERY_FEED: PremiumTier.PREMIUM,
     PremiumFeature.UNLIMITED_MENTORSHIP_MATCHES: PremiumTier.PREMIUM,
+    PremiumFeature.CREATOR_REVENUE_SHARE_BOOST: PremiumTier.PREMIUM,
 }
 
 
