@@ -433,6 +433,37 @@ fuzzy. See [`docs/adr/0019-delta-erp-integrations.md`](docs/adr/0019-delta-erp-i
   sync (every sync is a single request-response call), no fuzzy matching, no system enable/disable
   API action (only a privileged session can flip `status`), no sync-request idempotency.
 
+## D-020 — Executive Financial Dashboard (🏦 post-investment vision tier)
+
+D-020 is the eighth and final task in the D-013→D-020 "Delta Enterprise OS" arc, continuing
+directly from D-019 per the standing instruction to complete all post-investment tasks. Unlike
+every task since D-018, this is a **pure read-only rollup**: zero new tables, zero migration, zero
+write path. The roadmap's own `Depends on: D-008, D-011, D-013` line — not a literal reading of
+"across the OS" — scopes the composition to exactly three modules: D-008 spend, D-011 budget
+forecasts, D-013 CRM pipeline. See
+[`docs/adr/0020-delta-executive-dashboard.md`](docs/adr/0020-delta-executive-dashboard.md).
+
+- **Backend:** `src/delta/executive/` — `service.py`'s `get_executive_summary` calls D-008's
+  `dashboards.service.get_summary` and D-011's `forecasting.service.forecast_all_budgets` directly
+  and composes their typed outputs (no re-derived burn-rate/forecast math — the correct DRY
+  boundary for a rollup that composes OTHER modules' already-tested business logic). The D-013
+  pipeline rollup (client count, open-deal count/value) has no existing service-level aggregate to
+  reuse, so `store.py` reads `clients`/`deals` directly, mirroring D-018/D-019's own
+  "query-the-shared-table" convention for a genuinely new, simple aggregate.
+- **No new tables.** No migration in this task — confirmed zero schema changes.
+- **New endpoint:** `GET /v1/admin/executive/summary?tenant_id=&start=&end=` — gated at
+  `require_admin` only (D-017's RBAC retrofit stays bounded to D-008's dashboards, per every prior
+  ADR in this arc).
+- **Frontend:** `/executive` — a tenant/window picker (mirrors D-008 dashboards' own preset-button
+  pattern) with three composed sections (Spend, Budget forecasts, Pipeline), each a set of stat
+  tiles reusing D-008's own `StatTile` component.
+- **A real bug caught mid-implementation:** the service originally read the wall clock internally
+  (`datetime.now()`), which made `total_current_period_spend_cents`/`budgets_at_critical` silently
+  read `0` in tests whenever a hardcoded seed timestamp landed after the actual moment the test ran
+  (forecasting's period window is `[period_start, now)`). Fixed by making `now` a required
+  parameter the router resolves once and passes in — the same pattern D-011's own
+  `forecast_all_budgets` already uses. See ADR-0020 §2 Fork 3.
+
 ## Layout
 
 ```
@@ -449,6 +480,7 @@ src/delta/capacity/           D-016 teams, task assignment, utilization + adviso
 src/delta/rbac/                D-017 locally-issued role-tagged access tokens gating dashboards
 src/delta/invoicing/          D-018 PO-backed invoice/payment three-way match + vendor reconciliation
 src/delta/integrations/       D-019 external-system sync ingestion + PO/invoice reconciliation matching
+src/delta/executive/          D-020 read-only rollup composing D-008/D-011/D-013 (no new tables)
 frontend/         D-007/D-008 Next.js admin console (BFF-only, see frontend/README.md)
 contracts/        Delta-owned JSON Schemas (Draft 2020-12, additionalProperties:false)
 tests/            non-stubbed proofs of every invariant + the Budget round-trip

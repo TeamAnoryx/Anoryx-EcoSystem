@@ -753,3 +753,29 @@ export interface SystemReconciliationView {
   unreconciled_count: number;
   mismatched_amount_minor_units: number;
 }
+
+/**
+ * D-020 executive financial dashboard (Delta/src/delta/executive/schemas.py).
+ * Read-only rollup composing D-008 spend, D-011 forecasts, and D-013 pipeline —
+ * no request/mutation shapes, only a view.
+ */
+export interface ExecutiveSummaryView {
+  tenant_id: string;
+  period_start: string;
+  period_end: string;
+  generated_at: string;
+  total_cost_cents: number;
+  request_count: number;
+  burn_rate_cents_per_hour: number;
+  budget_count: number;
+  total_current_period_spend_cents: number;
+  /** null when no forecast has enough data to project (D-011's own contract). */
+  total_projected_period_end_spend_cents: number | null;
+  budgets_at_critical: number;
+  budgets_at_warning: number;
+  budgets_insufficient_data: number;
+  client_count: number;
+  open_deal_count: number;
+  open_pipeline_value_minor_units: number;
+  pipeline_currency: string;
+}

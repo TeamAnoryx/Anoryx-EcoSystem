@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const LINKS: Array<[string, string]> = [
+  ["Executive", "/executive"],
   ["Dashboards", "/dashboards"],
   ["Chargeback", "/chargeback"],
   ["CRM", "/crm"],
