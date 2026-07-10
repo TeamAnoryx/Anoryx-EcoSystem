@@ -12,6 +12,10 @@ It is ITSELF a security product. Its own code is a target. Build accordingly.
 - src/data_protection/  — PII detection, masking, tokenization, custom PII engine
                            (src/data_protection/custom_pii/: F-028 per-tenant
                            client-defined regex PII, ReDoS-safe, see docs/adr/0034)
+- src/tokenization/     — F-033 multi-layer tokenization: random format-preserving
+                           surrogate token (layer 1) + AES-256-GCM vault ciphertext in
+                           RLS-scoped tenant_token_vault (layer 2), reversible per-tenant
+                           via sentinel-token. Honest surrogate-not-FF3-1 scope in ADR-0039
 - src/defense/          — prompt injection detection, secret leak detection
 - src/code_scan/        — LLM code output scanning (v2)
 - src/compliance/       — SOC 2 / ISO 27001 / HIPAA / EU AI Act readiness, evidence gen
