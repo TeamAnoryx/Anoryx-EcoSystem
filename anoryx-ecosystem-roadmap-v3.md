@@ -682,7 +682,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] F-028 Custom Client-Defined PII Engine 🔮 (shipped — per-tenant client-defined regex PII: standalone ReDoS-safe engine, no spacy dependency, hot-reload + sentinel-pii CLI; runs after built-in PIIHook, emits existing pii_blocked event. Presidio ad-hoc "ML hooks" reading deferred, see docs/adr/0034 + docs/followups/f-028-presidio-adhoc-recognizers.md)
 - [x] F-029 HIPAA Compliance Module 🔮 (shipped — HIPAA Security Rule control map (§164.312/§164.308) on the F-011 engine; built-in PHI patterns reusing F-028's ReDoS-safe engine; BAA-ready evidence summary + sentinel-hipaa CLI. Contract-free/CLI-only — HTTP export deferred, see docs/adr/0035 + docs/followups/f-029-hipaa-http-export.md)
 - [x] F-030 EU AI Act Compliance Module 🔮 (shipped — EU AI Act control map (Chapter III Sec 2, honest not_covered/not_applicable for process-only obligations) on the F-011 engine; Annex III / Art.5 risk-classification decision-support helper; Art.13 disclosure-template generator + sentinel-euaiact CLI. Contract-free/CLI-only — see docs/adr/0036 + docs/followups/f-030-eu-ai-act-http-export.md)
-- [ ] F-031 Production Due-Diligence Gate 🔮
+- [x] F-031 Production Due-Diligence Gate 🔮 (shipped — sentinel-preflight pre-launch gate reusing F-027 keyvault, F-003 hash-chain verify, in-process Alembic head check, findings-doc scan, config sanity; non-zero exit blocks launch on any hard-fail. Correctly blocks on the real F-022 open High. See docs/adr/0037 + docs/followups/f-031-machine-readable-findings.md)
 - [ ] F-032 Practical Zero-Knowledge Storage SDK 🔮
 - [ ] F-033 Multi-Layer Tokenization Architecture 🔮
 - [ ] F-034 Internal Service Mesh Auth (mTLS) 🔮
