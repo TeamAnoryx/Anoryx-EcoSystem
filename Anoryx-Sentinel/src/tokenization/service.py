@@ -18,6 +18,11 @@ from tokenization.formats import generate_surrogate
 _MAX_TOKEN_COLLISION_RETRIES = 5
 
 
+def _tenant_aad(tenant_id: str) -> bytes:
+    """AES-GCM associated data binding a vault ciphertext to its tenant."""
+    return f"tenant:{tenant_id}".encode()
+
+
 async def tokenize(
     tenant_id: str, value: str, *, token_type: str = "generic"  # noqa: S107 — a token-format name
 ) -> str:
@@ -33,7 +38,10 @@ async def tokenize(
         TenantTokenVaultRepository,
     )
 
-    ciphertext_b64 = encrypt(value)  # LAYER 2 (fail-closed if no vault key)
+    # LAYER 2 (fail-closed if no vault key). Bind tenant_id as AES-GCM associated
+    # data so a blob only decrypts under its own tenant (defence-in-depth
+    # complement to RLS — see crypto.encrypt).
+    ciphertext_b64 = encrypt(value, aad=_tenant_aad(tenant_id))
 
     async with get_tenant_session(tenant_id) as ts:
         repo = TenantTokenVaultRepository(ts)
@@ -62,4 +70,6 @@ async def detokenize(tenant_id: str, token: str) -> str:
         row = await TenantTokenVaultRepository(ts).get_by_token(tenant_id, token)
     if row is None:
         raise TokenNotFoundError("no vault entry for token in this tenant")
-    return decrypt(row.ciphertext_b64)  # LAYER 2 reverse (fail-closed)
+    # LAYER 2 reverse (fail-closed). Same tenant AAD as tokenize — a blob from
+    # another tenant/row would fail authentication here even absent RLS.
+    return decrypt(row.ciphertext_b64, aad=_tenant_aad(tenant_id))

@@ -114,6 +114,51 @@ def test_bundle_build_and_verify_signed(tmp_path, capsys):
     assert code == 0
     assert "2 artifact(s) verified" in out
 
+    # F-1: verifying a signed bundle without --pub (and without the explicit
+    # insecure opt-out) must refuse rather than silently skip the signature.
+    code, _, err = _run(capsys, "verify-bundle", "--root", str(root), "--in", str(manifest))
+    assert code == 1
+    assert "no --pub supplied" in err
+
+
+def test_verify_bundle_insecure_skip_is_explicit_and_warns(tmp_path, capsys):
+    """Digest-only verification requires the conscious --insecure-skip-signature flag."""
+    root = tmp_path / "bundle"
+    root.mkdir()
+    (root / "x.whl").write_bytes(b"aaa")
+    manifest = tmp_path / "manifest.json"
+    # Unsigned manifest (no --key).
+    _run(
+        capsys,
+        "build-manifest",
+        "--root",
+        str(root),
+        "--file",
+        "x.whl",
+        "--bundle-id",
+        "2026.07",
+        "--out",
+        str(manifest),
+    )
+
+    # Without --pub and without the opt-out: refused.
+    code, _, err = _run(capsys, "verify-bundle", "--root", str(root), "--in", str(manifest))
+    assert code == 1
+    assert "no --pub supplied" in err
+
+    # With the explicit opt-out: allowed but loudly warns it is NOT authenticated.
+    code, out, _ = _run(
+        capsys,
+        "verify-bundle",
+        "--root",
+        str(root),
+        "--in",
+        str(manifest),
+        "--insecure-skip-signature",
+    )
+    assert code == 0
+    assert "WARNING" in out and "NOT verified" in out
+
 
 def test_check_mirror_rejects_public(tmp_path, capsys):
     cfg = {"internal_suffixes": [".internal"], "pip_index_url": "https://pypi.org/simple"}
