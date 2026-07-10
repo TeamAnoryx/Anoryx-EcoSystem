@@ -726,7 +726,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-015 AI-driven project management ✅ (shipped PR #94 — bounded vertical slice: sprints, tasks, dependency graph, velocity + bottleneck heuristic, see docs/adr/0015-delta-pm-sprints-dependencies.md)
 - [x] D-016 Dynamic team / capacity management ✅ (shipped PR #96 — bounded vertical slice: teams, task assignment, utilization report, advisory rebalancing, see docs/adr/0016-delta-team-capacity-management.md)
 - [x] D-017 Strict RBAC operational dashboards ✅ (shipped PR #106 — bounded vertical slice: locally-issued role-tagged tokens gating D-008's dashboards, see docs/adr/0017-delta-rbac-dashboards.md)
-- [x] D-018 Automated invoicing + vendor reconciliation ✅ (shipped PR TBD — bounded vertical slice: PO-backed invoice/payment three-way match + per-vendor reconciliation report, see docs/adr/0018-delta-invoicing-reconciliation.md)
+- [x] D-018 Automated invoicing + vendor reconciliation ✅ (shipped PR #111 — bounded vertical slice: PO-backed invoice/payment three-way match + per-vendor reconciliation report, see docs/adr/0018-delta-invoicing-reconciliation.md)
 - [ ] D-019 Corporate ERP integrations (NetSuite/SAP/Coupa/cloud) — Heavy 🏦
 - [ ] D-020 Executive financial dashboard — Tricky 🏦
 - [ ] D-021 B2C personal budget tracking 🏦
