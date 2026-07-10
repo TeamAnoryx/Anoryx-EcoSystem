@@ -401,6 +401,38 @@ ERP/bank-feed sync is D-019's own already-roadmapped job. See
   due-date/aging/dunning tracking, no automatic invoice generation from milestone completion (a
   task reaching `'done'` is a required PROOF when claimed, never a trigger), no multi-PO invoices.
 
+## D-019 — Corporate ERP/Procurement/Cloud-Cost Sync (🏦 post-investment vision tier)
+
+D-019 is the seventh task built past Delta's committed MVP into the vision tier, continuing
+directly from D-018 per the standing instruction to complete all post-investment tasks. The
+roadmap's title names SEVEN specific third-party systems — NetSuite, SAP, Coupa, Ariba, AWS, GCP,
+Azure — at "28h+ each." This task builds a **generic external-system registration + sync-ingestion
++ reconciliation-matching FRAMEWORK**, not seven live OAuth/API integrations (no real credentials
+for any of those systems exist in this environment). Each synced line item is matched against a
+D-014 purchase order or D-018 invoice by exact ID + amount/currency comparison — precise, not
+fuzzy. See [`docs/adr/0019-delta-erp-integrations.md`](docs/adr/0019-delta-erp-integrations.md).
+
+- **Backend:** `src/delta/integrations/` — `schemas.py` (system/sync DTOs; a line item may
+  reference at most one of `po_id`/`invoice_id`, or neither for the honest `'unreconciled'` default
+  a cloud-cost charge gets), `store.py`/`service.py` (fully synchronous ingestion — no live
+  external I/O, so no run-level failure/retry state; every write is INSERT-only, with
+  `delta_app` granted no UPDATE on any of the three new tables at all — the simplest possible write
+  pattern this session has shipped, since there is no shared running total to race on).
+- **New tables** (migration 0013): `external_systems`, `sync_runs`, `sync_line_items` — additive,
+  composite tenant-scoped FKs, no other table touched.
+- **New endpoints:** `POST/GET /v1/admin/integrations/systems`, `POST .../systems/{id}/sync`,
+  `GET .../systems/{id}/sync-runs`, `GET .../sync-runs/{id}/line-items`,
+  `GET .../systems/{id}/reconciliation` — gated at `require_admin` only.
+- **Frontend:** `/integrations` — a registered-systems table, a system-registration form, and a
+  per-system sync-run history with a manually-triggered sync form (each row simulates one line item
+  a real connector would report) plus a reconciliation summary.
+- **Honesty boundary:** zero network calls to NetSuite/SAP/Coupa/Ariba/AWS/GCP/Azure exist
+  anywhere in this diff. The named future work: a per-vendor connector authenticates to that
+  vendor's real API, normalizes its data into this task's `SyncLineItemInput` shape, and POSTs it
+  through the same ingestion endpoint this task built and tested end-to-end. No continuous/scheduled
+  sync (every sync is a single request-response call), no fuzzy matching, no system enable/disable
+  API action (only a privileged session can flip `status`), no sync-request idempotency.
+
 ## Layout
 
 ```
@@ -416,6 +448,7 @@ src/delta/pm/                 D-015 sprints, tasks, dependency mapping, velocity
 src/delta/capacity/           D-016 teams, task assignment, utilization + advisory rebalancing
 src/delta/rbac/                D-017 locally-issued role-tagged access tokens gating dashboards
 src/delta/invoicing/          D-018 PO-backed invoice/payment three-way match + vendor reconciliation
+src/delta/integrations/       D-019 external-system sync ingestion + PO/invoice reconciliation matching
 frontend/         D-007/D-008 Next.js admin console (BFF-only, see frontend/README.md)
 contracts/        Delta-owned JSON Schemas (Draft 2020-12, additionalProperties:false)
 tests/            non-stubbed proofs of every invariant + the Budget round-trip

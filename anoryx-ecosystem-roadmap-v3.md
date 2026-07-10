@@ -727,7 +727,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-016 Dynamic team / capacity management ✅ (shipped PR #96 — bounded vertical slice: teams, task assignment, utilization report, advisory rebalancing, see docs/adr/0016-delta-team-capacity-management.md)
 - [x] D-017 Strict RBAC operational dashboards ✅ (shipped PR #106 — bounded vertical slice: locally-issued role-tagged tokens gating D-008's dashboards, see docs/adr/0017-delta-rbac-dashboards.md)
 - [x] D-018 Automated invoicing + vendor reconciliation ✅ (shipped PR #111 — bounded vertical slice: PO-backed invoice/payment three-way match + per-vendor reconciliation report, see docs/adr/0018-delta-invoicing-reconciliation.md)
-- [ ] D-019 Corporate ERP integrations (NetSuite/SAP/Coupa/cloud) — Heavy 🏦
+- [x] D-019 Corporate ERP integrations (NetSuite/SAP/Coupa/cloud) ✅ (shipped PR #118 — bounded vertical slice: generic external-system sync-ingestion + PO/invoice reconciliation-matching framework, not live per-vendor OAuth/API integrations, see docs/adr/0019-delta-erp-integrations.md)
 - [ ] D-020 Executive financial dashboard — Tricky 🏦
 - [ ] D-021 B2C personal budget tracking 🏦
 - [ ] D-022 B2C subscription mgmt + charge alerts 🏦
@@ -760,7 +760,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] R-021 Skill-based opportunity matching 🏦 ✅ (shipped PR #110, scoped to a deterministic set-intersection scorer between R-016's existing IntentProfile.offering tags and a new Opportunity.required_skills — no ML, no new opt-in type, no persistence, no REST/UI; see ADR-0021)
 - [x] R-022 Mentorship matching by tech-stack 🏦 ✅ (shipped PR #117, scoped to a deterministic exact-stack + ordered-proficiency scorer over a new TechStackProficiency opt-in type — no ML, no fuzzy stack matching, no persistence, no REST/UI; see ADR-0022)
 - [x] R-023 Consumer onboarding 🏦 ✅ (shipped PR #120, scoped to a deterministic ordered-progression seam over R-017's existing optimization_gaps checklist — no real B2C identity/signup/auth model, no persistence, no REST/UI; see ADR-0023)
-- [ ] R-024 Discovery feed (B2C) 🏦
+- [x] R-024 Discovery feed (B2C) 🏦 ✅ (shipped PR #<n>, scoped to a deterministic cross-type composition seam merging R-018/R-020/R-021/R-022's already-ranked outputs into one feed — no candidate-pool sourcing, no eligibility filtering, no persistence, no REST/UI; see ADR-0024)
 - [ ] R-025 Premium features + monetization (B2C) 🏦
 - [ ] R-026 Creator economy features 🏦
 - [ ] R-027 B2B tenant + RBAC 🏦

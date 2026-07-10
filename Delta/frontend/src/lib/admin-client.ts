@@ -27,6 +27,8 @@ import type {
   DealCreateRequest,
   DealStageTransitionRequest,
   DealView,
+  ExternalSystemCreateRequest,
+  ExternalSystemView,
   GroupSpendView,
   InteractionCreateRequest,
   InteractionView,
@@ -55,6 +57,10 @@ import type {
   TaskDependencyView,
   TaskStatus,
   TaskStatusUpdateRequest,
+  SyncLineItemView,
+  SyncRunCreateRequest,
+  SyncRunView,
+  SystemReconciliationView,
   TaskTeamAssignRequest,
   TaskView,
   TeamCapacityUpdateRequest,
@@ -483,6 +489,40 @@ export const adminApi = {
     adminFetch<VendorReconciliationView>("/invoicing/reconciliation", {
       query: { tenant_id: tenantId, vendor_id: vendorId, currency },
     }),
+
+  // D-019 corporate ERP/procurement/cloud-cost sync connectors — a generic
+  // registration + sync-ingestion + reconciliation-matching framework, not live
+  // OAuth/API integrations with NetSuite/SAP/Coupa/Ariba/AWS/GCP/Azure.
+  listExternalSystems: (tenantId: string, limit?: number) =>
+    adminFetch<ExternalSystemView[]>("/integrations/systems", {
+      query: { tenant_id: tenantId, limit },
+    }),
+
+  createExternalSystem: (body: ExternalSystemCreateRequest) =>
+    adminFetch<ExternalSystemView>("/integrations/systems", { method: "POST", body }),
+
+  runSync: (systemId: string, body: SyncRunCreateRequest) =>
+    adminFetch<SyncRunView>(`/integrations/systems/${encodeURIComponent(systemId)}/sync`, {
+      method: "POST",
+      body,
+    }),
+
+  listSyncRuns: (tenantId: string, systemId: string, limit?: number) =>
+    adminFetch<SyncRunView[]>(`/integrations/systems/${encodeURIComponent(systemId)}/sync-runs`, {
+      query: { tenant_id: tenantId, limit },
+    }),
+
+  listSyncLineItems: (tenantId: string, syncRunId: string, limit?: number) =>
+    adminFetch<SyncLineItemView[]>(
+      `/integrations/sync-runs/${encodeURIComponent(syncRunId)}/line-items`,
+      { query: { tenant_id: tenantId, limit } },
+    ),
+
+  getSystemReconciliation: (tenantId: string, systemId: string) =>
+    adminFetch<SystemReconciliationView>(
+      `/integrations/systems/${encodeURIComponent(systemId)}/reconciliation`,
+      { query: { tenant_id: tenantId } },
+    ),
 };
 
 export type AdminApi = typeof adminApi;

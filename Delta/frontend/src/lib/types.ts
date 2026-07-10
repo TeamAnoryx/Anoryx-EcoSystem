@@ -670,3 +670,86 @@ export interface VendorReconciliationView {
   over_invoiced: boolean;
   over_paid: boolean;
 }
+
+/**
+ * D-019 corporate ERP/procurement/cloud-cost sync connectors
+ * (Delta/src/delta/integrations/schemas.py). A generic external-system
+ * registration + sync-ingestion + reconciliation-matching FRAMEWORK — NOT seven live
+ * OAuth/API integrations with NetSuite/SAP/Coupa/Ariba/AWS/GCP/Azure. Each ingested
+ * line item is matched against a D-014 purchase order or D-018 invoice by exact ID +
+ * amount/currency comparison. See docs/adr/0019-delta-erp-integrations.md.
+ */
+export type SystemType = "corporate_erp" | "procurement" | "cloud_cost";
+export type SystemStatus = "active" | "disabled";
+export type MatchedStatus = "matched" | "amount_mismatch" | "not_found" | "unreconciled";
+export type MatchedEntityType = "purchase_order" | "invoice";
+
+export interface ExternalSystemCreateRequest {
+  tenant_id: string;
+  name: string;
+  system_type: SystemType;
+  vendor_label: string;
+}
+
+export interface ExternalSystemView {
+  system_id: string;
+  tenant_id: string;
+  name: string;
+  system_type: SystemType;
+  vendor_label: string;
+  status: SystemStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SyncLineItemInput {
+  external_reference: string;
+  amount_minor_units: number;
+  currency: string;
+  po_id?: string | null;
+  invoice_id?: string | null;
+}
+
+export interface SyncRunCreateRequest {
+  tenant_id: string;
+  triggered_by: string;
+  note?: string | null;
+  line_items: SyncLineItemInput[];
+}
+
+export interface SyncRunView {
+  sync_run_id: string;
+  tenant_id: string;
+  system_id: string;
+  triggered_by: string;
+  started_at: string;
+  completed_at: string;
+  records_ingested: number;
+  records_matched: number;
+  records_mismatched: number;
+  records_not_found: number;
+  records_unreconciled: number;
+  note: string | null;
+}
+
+export interface SyncLineItemView {
+  line_item_id: string;
+  tenant_id: string;
+  sync_run_id: string;
+  external_reference: string;
+  amount_minor_units: number;
+  currency: string;
+  matched_status: MatchedStatus;
+  matched_entity_type: MatchedEntityType | null;
+  matched_entity_id: string | null;
+}
+
+export interface SystemReconciliationView {
+  system_id: string;
+  total_runs: number;
+  matched_count: number;
+  mismatched_count: number;
+  not_found_count: number;
+  unreconciled_count: number;
+  mismatched_amount_minor_units: number;
+}
