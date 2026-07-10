@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from rendly.enums import OrgRole
 from rendly.mentorship import (
     MAX_SUGGESTIONS,
+    MentorshipMatch,
     ProficiencyLevel,
     TechStackProficiency,
     bind_tech_stack_proficiency,
@@ -31,6 +32,21 @@ def _proficiency(
     profile: Profile, *, stack: str = "react", level: ProficiencyLevel = ProficiencyLevel.BEGINNER
 ) -> TechStackProficiency:
     return bind_tech_stack_proficiency(profile, stack=stack, level=level, opted_in_at=_NOW)
+
+
+def _match_with_score(
+    *, mentee_level: ProficiencyLevel, mentor_level: ProficiencyLevel, score: int
+) -> MentorshipMatch:
+    return MentorshipMatch(
+        mentee_user_id="11111111-1111-4111-8111-111111111111",
+        mentee_tenant_id=_TENANT,
+        mentor_user_id="22222222-2222-4222-8222-222222222222",
+        mentor_tenant_id=_TENANT,
+        stack="react",
+        mentee_level=mentee_level,
+        mentor_level=mentor_level,
+        score=score,
+    )
 
 
 # --- TechStackProficiency construction --------------------------------------------------
@@ -102,6 +118,37 @@ def test_suggest_mentorship_match_scores_proficiency_gap():
     assert match.mentee_level == ProficiencyLevel.BEGINNER
     assert match.mentor_level == ProficiencyLevel.EXPERT
     assert match.score == 3
+
+
+def test_suggest_mentorship_match_scores_a_single_adjacent_level_gap():
+    mentee = _profile("11111111-1111-4111-8111-111111111111")
+    mentor = _profile("22222222-2222-4222-8222-222222222222")
+    match = suggest_mentorship_match(
+        mentee,
+        _proficiency(mentee, stack="react", level=ProficiencyLevel.BEGINNER),
+        mentor,
+        _proficiency(mentor, stack="react", level=ProficiencyLevel.INTERMEDIATE),
+    )
+    assert match is not None
+    assert match.score == 1
+
+
+def test_mentorship_match_rejects_score_inconsistent_with_level_gap():
+    with pytest.raises(ValidationError):
+        _match_with_score(
+            mentee_level=ProficiencyLevel.BEGINNER,
+            mentor_level=ProficiencyLevel.EXPERT,
+            score=1,  # real gap is 3, not 1
+        )
+
+
+def test_mentorship_match_rejects_nonpositive_score():
+    with pytest.raises(ValidationError):
+        _match_with_score(
+            mentee_level=ProficiencyLevel.EXPERT,
+            mentor_level=ProficiencyLevel.BEGINNER,
+            score=-3,  # mentor ranks lower than mentee
+        )
 
 
 def test_suggest_mentorship_match_none_for_same_level():

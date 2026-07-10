@@ -38,7 +38,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator
+from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator, model_validator
 
 from .common import require_aware_utc
 from .identifiers import TenantId, UserId
@@ -126,8 +126,10 @@ class MentorshipMatch(BaseModel):
     """A single deterministic mentorship match. Immutable.
 
     ``score`` is the proficiency-rank gap (``mentor``'s rank minus ``mentee``'s
-    rank on :data:`_LEVEL_RANK`) — always a positive integer 1..3, never
-    computed independently of the two levels also carried on this record.
+    rank on :data:`_LEVEL_RANK`) — always a positive integer 1..3. A model
+    validator enforces ``score == _LEVEL_RANK[mentor_level] -
+    _LEVEL_RANK[mentee_level]`` structurally, so it can never disagree with the
+    two levels also carried on this record, even via direct construction.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -140,6 +142,16 @@ class MentorshipMatch(BaseModel):
     mentee_level: ProficiencyLevel
     mentor_level: ProficiencyLevel
     score: int
+
+    @model_validator(mode="after")
+    def _score_matches_rank_gap(self) -> "MentorshipMatch":
+        expected = _LEVEL_RANK[self.mentor_level] - _LEVEL_RANK[self.mentee_level]
+        if self.score != expected or expected <= 0:
+            raise ValueError(
+                "score must equal the mentor/mentee proficiency-rank gap, and the "
+                "mentor must strictly outrank the mentee"
+            )
+        return self
 
 
 def _require_bound(profile: Profile, proficiency: TechStackProficiency, *, label: str) -> None:
