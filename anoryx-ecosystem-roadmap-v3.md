@@ -757,7 +757,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] R-018 Hyper-personalized peer networking 🏦 ✅ (shipped PR TBD, scoped to a deterministic composition seam combining R-016's intent matcher + R-017's career-trajectory matcher into one ranked peer suggestion — no ML, no persistence, no REST/UI; see ADR-0018)
 - [x] R-019 Privacy-controlled DM portal 🏦 ✅ (shipped PR #105, scoped to a deterministic, fail-closed, per-field data-exposure grant seam ("granular data exposure") — no DM portal/transport, no persistence, no REST/UI; see ADR-0019)
 - [x] R-020 Localized tech-event discovery 🏦 ✅ (shipped PR TBD, scoped to a deterministic opaque-tag locality filter + topic-overlap ranking seam over R-013's Event/EventSession agenda, composing R-016's IntentProfile — no geolocation, no real event sourcing, no persistence, no REST/UI; see ADR-0020)
-- [x] R-021 Skill-based opportunity matching 🏦 ✅ (shipped PR TBD, scoped to a deterministic skill-overlap matching seam over a caller-supplied Opportunity posting (freelance/full-time), composing R-016's IntentProfile.offering tags — no job board, no application workflow, no resume parsing, no persistence, no REST/UI; see ADR-0021)
+- [x] R-021 Skill-based opportunity matching 🏦 ✅ (shipped PR #116, scoped to a deterministic skill-overlap matching seam over a caller-supplied Opportunity posting (freelance/full-time), composing R-016's IntentProfile.offering tags — no job board, no application workflow, no resume parsing, no persistence, no REST/UI; see ADR-0021)
 - [ ] R-022 Mentorship matching by tech-stack 🏦
 - [ ] R-023 Consumer onboarding 🏦
 - [ ] R-024 Discovery feed (B2C) 🏦
