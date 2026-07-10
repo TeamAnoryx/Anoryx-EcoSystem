@@ -622,3 +622,65 @@ def compute_rollback_row_hash(data: dict[str, Any]) -> str:
 def verify_rollback_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
     """Recompute and compare the rollback row_hash for a single row. True iff it matches."""
     return compute_rollback_row_hash(row_data) == stored_hash
+
+
+# =========================================================================== #
+# Cross-product safety-event audit chain (X-004) — ADDITIVE, parallel to every chain
+# above. Same canonicalization discipline over a distinct field set and a
+# domain-separated genesis so this chain can never be confused with any other. Records
+# every ingest ATTEMPT (a fresh accept AND an idempotent duplicate both get a chain link —
+# mirrors the identity chain's "every attempt" semantics, ADR-0010, NOT the automation
+# chain's "only the meaningful outcome" semantics).
+# =========================================================================== #
+
+# Domain-separated genesis constant, distinct from every other chain's genesis.
+SAFETY_GENESIS_HASH = hashlib.sha256(b"anoryx-orchestrator:safety-audit:genesis:v1").hexdigest()
+
+# Fields folded into the canonical hash content, in a fixed documented order.
+# prev_hash MUST be last to surface ordering issues clearly.
+SAFETY_CANONICAL_FIELDS = [
+    "tenant_id",
+    "source_product",
+    "category",
+    "outcome",
+    "idempotency_key",
+    "disposition",
+    # Chain field — last.
+    "prev_hash",
+]
+
+# Folded in ONLY when non-None (opt-in-when-present). Never add this to
+# SAFETY_CANONICAL_FIELDS — that would inject "target":null into every link and break
+# verification over historical data.
+_SAFETY_OPTIONAL_FIELDS = ("target",)
+
+
+def canonical_safety_json(data: dict[str, Any]) -> bytes:
+    """Serialize safety-event row data to canonical JSON: sorted keys, no whitespace, UTF-8.
+
+    Only SAFETY_CANONICAL_FIELDS are included (missing → None, to prevent omission
+    attacks). target is appended ONLY when not None (opt-in-when-present — a link with no
+    target hashes identically whether or not the key was ever present in the input dict).
+    """
+    filtered: dict[str, Any] = {k: data.get(k) for k in SAFETY_CANONICAL_FIELDS}
+    for field in _SAFETY_OPTIONAL_FIELDS:
+        if data.get(field) is not None:
+            filtered[field] = data[field]
+    return json.dumps(filtered, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+
+
+def compute_safety_row_hash(data: dict[str, Any]) -> str:
+    """Return the 64-char lowercase SHA-256 hex digest of the canonical JSON of *data*.
+
+    *data* MUST include 'prev_hash'.
+    """
+    if "prev_hash" not in data:
+        raise ValueError("row data must include 'prev_hash' to compute row_hash")
+    return hashlib.sha256(canonical_safety_json(data)).hexdigest()
+
+
+def verify_safety_row_hash(row_data: dict[str, Any], stored_hash: str) -> bool:
+    """Recompute and compare the safety row_hash for a single row. True iff it matches."""
+    return compute_safety_row_hash(row_data) == stored_hash

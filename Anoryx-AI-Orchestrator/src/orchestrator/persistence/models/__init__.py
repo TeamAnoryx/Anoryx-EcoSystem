@@ -29,6 +29,8 @@ from orchestrator.persistence.models.policy_distribution import PolicyDistributi
 from orchestrator.persistence.models.policy_distribution_target import PolicyDistributionTarget
 from orchestrator.persistence.models.query_service_token import QueryServiceToken
 from orchestrator.persistence.models.relay_audit_log import RelayAuditLog
+from orchestrator.persistence.models.safety_audit_log import SafetyAuditLog
+from orchestrator.persistence.models.safety_event import SafetyEvent
 from orchestrator.persistence.models.sentinel_registry import SentinelRegistry
 from orchestrator.persistence.models.sentinel_registry_audit_log import SentinelRegistryAuditLog
 from orchestrator.persistence.models.third_party_api_key import ThirdPartyApiKey
@@ -53,6 +55,9 @@ __all__ = [
     # O-010 cross-product identity correlation (ADR-0010).
     "IdentityEvent",
     "IdentityAuditLog",
+    # X-004 cross-product safety-event visibility.
+    "SafetyEvent",
+    "SafetyAuditLog",
     # O-012 agent messaging + shared state store (ADR-0012).
     "AgentMessage",
     "AgentMessagingAuditLog",

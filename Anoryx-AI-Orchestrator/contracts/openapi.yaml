@@ -197,6 +197,25 @@ tags:
       translates any of them (ADR-0010 honesty boundary). Idempotent by construction
       (source_product + idempotency_key); every ingest attempt — fresh accept or duplicate —
       is hash-chain audited.
+  - name: safety
+    description: |
+      X-004 cross-product safety/content-inspection outcome visibility: lets Sentinel, Delta,
+      and Rendly each push a normalized "a LOCAL safety inspection produced a non-pass outcome"
+      record after their OWN in-product inspection fires (e.g. Rendly's R-008 self-hosted
+      PII/injection/secret message inspector) into one durably audited, tenant-queryable
+      oversight log. This is a CORRELATION seam, NOT a shared detector: the Orchestrator does
+      NOT inspect, re-scan, translate, or federate any product's message content — it only
+      records that a (product-verified) non-pass outcome happened. Each product keeps its own
+      inspection engine and NEVER ships message content here; only bounded metadata crosses the
+      boundary (ADR-0017 honesty boundary; see also Rendly ADR-0026 for the Rendly-side design
+      rationale). Rendly's deliberate data-sovereignty decision to
+      NOT call Sentinel's detectors (ADR-0008 Fork A2) stands unchanged — this seam is oversight
+      visibility, not a detector dependency. SCOPE: this seam reports NON-PASS outcomes only
+      (v1: `block`), never routine passes, so it stays a genuine oversight signal and not noise.
+      Idempotent by construction (source_product + idempotency_key); every ingest attempt —
+      fresh accept or duplicate — is hash-chain audited. DEFERRED SCOPE: a cross-tenant,
+      operator-scoped "recent N across all tenants" admin view (the analogue of
+      `/v1/admin/identity/events/recent`) is intentionally NOT part of this slice.
 
   - name: messaging
     description: |
@@ -1366,6 +1385,123 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /v1/safety/events:
+    post:
+      operationId: ingestSafetyEvent
+      tags: [safety]
+      summary: Ingest one normalized cross-product safety-inspection outcome
+      description: |
+        Sentinel, Delta, or Rendly each push ONE normalized "a LOCAL safety inspection
+        produced a non-pass outcome" record after their OWN in-product content inspection
+        fires — e.g. Rendly's R-008 self-hosted PII/injection/secret message inspector.
+        `source_product` is SERVER-RESOLVED from the matched safety-source bearer — never
+        accepted from the body.
+
+        SCOPE: this seam reports NON-PASS outcomes ONLY (v1: `outcome: block`), never routine
+        passes. That keeps it a genuine oversight signal, not a firehose of every inspected
+        message. A future outcome value can be added additively without breaking this contract.
+
+        IDEMPOTENT: a retried push with the same (source_product, idempotency_key) is recorded
+        as `disposition: duplicate` (no second row, never an error). Every ingest ATTEMPT —
+        fresh accept or duplicate — is hash-chain audited.
+
+        HONESTY BOUNDARY (Orchestrator ADR-0017; Rendly ADR-0026): this seam does NOT inspect,
+        re-scan, translate, or federate any product's message content — it only durably
+        records that a (product-verified) non-pass outcome happened. NO message content ever
+        crosses this boundary; only bounded metadata does. `target` is an OPAQUE identifier in
+        the source product's OWN namespace (a channel/resource handle); no cross-product
+        resource-identity mapping is implied or performed. Rendly's data-sovereignty decision
+        to NOT call Sentinel's detectors (ADR-0008 Fork A2) is unchanged by this seam.
+
+        Auth: mTLS (peer = the source product) AND a safety-source bearer.
+      security:
+        - mutualTLS: []
+          safetySourceBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SafetyEventIngestRequest'
+            examples:
+              rendlyPiiBlock:
+                summary: Rendly records a local PII safety block
+                value:
+                  tenant_id: "2a4f8c1e-0012-4b3d-9abc-d1e2f3a4b5c6"
+                  category: pii
+                  outcome: block
+                  target: "room-7f3a"
+                  idempotency_key: "rendly-safety-7f3a-1781784000"
+                  occurred_at: "2026-07-08T12:00:00Z"
+      responses:
+        '202':
+          description: The event was durably recorded (fresh accept or idempotent duplicate).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SafetyEventIngestAccepted'
+              examples:
+                accepted:
+                  value:
+                    status: accepted
+                    disposition: accepted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          description: Request body exceeds the maximum allowed size.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    get:
+      operationId: querySafetyEvents
+      tags: [safety]
+      summary: Query this tenant's cross-product safety events (read-only metadata)
+      description: |
+        Cursor-paginated read of the caller's OWN tenant's safety-inspection outcomes across
+        Sentinel, Delta, and Rendly. Reuses the EXISTING O-006 per-tenant principal
+        (`query_service_tokens`) — the SAME credential that already gates `GET /v1/events` and
+        `GET /v1/identity/events` — rather than a new tenant-read trust root. Results are
+        RLS-scoped to the principal's tenant; there is no cross-tenant `tenant_id` filter
+        because the principal already fixes the tenant.
+
+        Auth: mTLS (peer = Delta) AND a per-tenant service token (bearer).
+      security:
+        - mutualTLS: []
+          serviceToken: []
+      parameters:
+        - name: source_product
+          in: query
+          required: false
+          description: Filter to one source product.
+          schema:
+            type: string
+            enum: [sentinel, delta, rendly]
+        - name: category
+          in: query
+          required: false
+          description: Filter to one finding category.
+          schema:
+            type: string
+            enum: [pii, injection, secret]
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: A cursor-paginated page of this tenant's safety events (ascending sequence order).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SafetyEventPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
   /v1/automation/rules:
     post:
       operationId: createAutomationRule
@@ -2137,6 +2273,19 @@ components:
         access events into the cross-product correlation log. source_product is
         SERVER-RESOLVED from the matched token — never accepted from the request body.
         DISTINCT from every other Orchestrator credential (operatorBearer, serviceToken,
+        hmacIngest, relaySourceBearer).
+
+    safetySourceBearer:
+      type: http
+      scheme: bearer
+      description: |
+        X-004 SAFETY SOURCE bearer token (env ORCH_SAFETY_SOURCE_TOKENS, keyed by
+        source_product: sentinel | delta | rendly) authorizing a caller to push
+        safety-inspection outcome events into the cross-product oversight log.
+        source_product is SERVER-RESOLVED from the matched token — never accepted from the
+        request body. Deliberately DISTINCT from identitySourceBearer (least privilege: a
+        token that may push safety outcomes cannot push identity/access events, and vice
+        versa) and from every other Orchestrator credential (operatorBearer, serviceToken,
         hmacIngest, relaySourceBearer).
 
     externalApiKey:
@@ -3262,6 +3411,116 @@ components:
           maxItems: 200
           items:
             $ref: '#/components/schemas/IdentityEvent'
+
+    SafetyEventIngestRequest:
+      type: object
+      description: |
+        One normalized "a local safety inspection produced a non-pass outcome" record
+        (X-004, Orchestrator ADR-0017 / Rendly ADR-0026). Metadata-ONLY: NO message content
+        ever crosses this boundary.
+        `target` is opaque in the SOURCE PRODUCT's own namespace — no cross-product
+        resource-identity mapping is implied. This seam reports NON-PASS outcomes only
+        (v1: `outcome: block`), never routine passes. `occurred_at` MUST carry an explicit
+        UTC offset. `source_product` is SERVER-RESOLVED from the authenticated mTLS peer /
+        safety-source bearer and MUST NOT be supplied in the body.
+      additionalProperties: false
+      required: [tenant_id, category, outcome, idempotency_key, occurred_at]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+          maxLength: 64
+        category:
+          type: string
+          enum: [pii, injection, secret]
+          description: The class of finding the local inspection produced.
+        outcome:
+          type: string
+          enum: [block]
+          description: |
+            The non-pass outcome recorded. v1 accepts ONLY `block` — routine passes are
+            deliberately out of scope so this stays an oversight signal, not noise.
+        target:
+          type: string
+          maxLength: 256
+          nullable: true
+          description: |
+            What channel/resource the inspection ran against, if applicable (opt-in — absent
+            when not meaningful). OPAQUE in the source product's OWN namespace.
+        idempotency_key:
+          type: string
+          maxLength: 128
+          description: Source-supplied dedup key, unique per source_product.
+        occurred_at:
+          type: string
+          format: date-time
+          description: When the SOURCE product recorded this (ISO-8601, explicit UTC offset required).
+
+    SafetyEventIngestAccepted:
+      type: object
+      required: [status, disposition]
+      properties:
+        status:
+          type: string
+          const: accepted
+        disposition:
+          type: string
+          enum: [accepted, duplicate]
+          description: "`duplicate` means an idempotent replay of an already-recorded (source_product, idempotency_key) — not an error."
+
+    SafetyEvent:
+      type: object
+      description: One correlated safety-inspection outcome record, as returned by the read seam.
+      required:
+        [
+          tenant_id,
+          source_product,
+          category,
+          outcome,
+          idempotency_key,
+          occurred_at,
+          received_at,
+        ]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        source_product:
+          type: string
+          enum: [sentinel, delta, rendly]
+        category:
+          type: string
+          enum: [pii, injection, secret]
+        outcome:
+          type: string
+          enum: [block]
+        target:
+          type: string
+          nullable: true
+        idempotency_key:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        received_at:
+          type: string
+          format: date-time
+          description: When the Orchestrator durably recorded this event.
+
+    SafetyEventPage:
+      type: object
+      description: A cursor-paginated page of a tenant's own safety events (ascending sequence order).
+      required: [data]
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/SafetyEvent'
+        next_cursor:
+          type: string
+          nullable: true
+          maxLength: 512
 
     AutomationRuleCreateRequest:
       type: object

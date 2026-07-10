@@ -2555,4 +2555,190 @@ async def count_ingest_events_in_window(
         {"since": since_str, "until": until_str},
     )
     return int(result.scalar_one())
+
+
+# --------------------------------------------------------------------------- #
+# Cross-product safety-event visibility (X-004) — data access (tenant session,
+# RLS-scoped) and its audit chain (privileged session, no RLS). Mirrors the O-010
+# identity-event block above exactly.
+# --------------------------------------------------------------------------- #
+
+_SAFETY_EVENT_COLUMNS = (
+    "tenant_id",
+    "source_product",
+    "category",
+    "outcome",
+    "target",
+    "idempotency_key",
+    "occurred_at",
+    "received_at",
+)
+
+
+async def insert_safety_event(session: AsyncSession, row: dict[str, Any]) -> bool:
+    """INSERT one safety_events row (tenant session, RLS-scoped). Caller commits.
+
+    Idempotent: ON CONFLICT (source_product, idempotency_key) DO NOTHING. Returns True iff a
+    NEW row was inserted, False iff the (source_product, idempotency_key) pair already
+    existed (an idempotent replay — never a second row, never an error).
+    """
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from orchestrator.persistence.models.safety_event import SafetyEvent
+
+    stmt = (
+        pg_insert(SafetyEvent)
+        .values(**row)
+        .on_conflict_do_nothing(constraint="uq_safe_source_idempotency")
+        .returning(SafetyEvent.sequence_number)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none() is not None
+
+
+async def list_safety_events(
+    session: AsyncSession,
+    *,
+    filters: dict[str, Any],
+    limit: int,
+    cursor: int | None,
+) -> tuple[list[dict[str, Any]], int | None]:
+    """Cursor-paginated read of safety_events (tenant session, RLS-scoped).
+
+    Runs on get_tenant_session so RLS scopes rows to the principal's tenant — no explicit
+    tenant predicate. Mirrors list_identity_events' cursor discipline exactly: `cursor` is
+    the exclusive lower bound on sequence_number; one extra row (limit+1) is fetched to
+    compute the next cursor without a second query. `filters` may carry source_product/
+    category. Returns (rows, next_cursor).
+    """
+    conditions: list[str] = []
+    params: dict[str, Any] = {}
+    if cursor is not None:
+        conditions.append("sequence_number > :cursor")
+        params["cursor"] = cursor
+    for column in ("source_product", "category"):
+        value = filters.get(column)
+        if value is not None:
+            conditions.append(f"{column} = :{column}")
+            params[column] = value
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    columns = ", ".join(_SAFETY_EVENT_COLUMNS)
+    params["lim"] = limit + 1
+    # avoid-sqlalchemy-text false positive: `columns`/`where` are built from the constant
+    # _SAFETY_EVENT_COLUMNS tuple + literal predicate fragments; every VALUE is bound.
+    # nosemgrep: avoid-sqlalchemy-text
+    statement = text(
+        f"SELECT {columns}, sequence_number FROM safety_events{where} "  # noqa: S608
+        "ORDER BY sequence_number ASC LIMIT :lim"
+    )
+    result = await session.execute(statement, params)
+    rows = result.mappings().all()
+    next_cursor: int | None = None
+    if len(rows) > limit:
+        next_cursor = rows[limit - 1]["sequence_number"]
+        rows = rows[:limit]
+    projected = [{column: row[column] for column in _SAFETY_EVENT_COLUMNS} for row in rows]
+    return projected, next_cursor
+
+
+# Distinct transaction-scoped advisory-lock key for the safety-chain append (a stable
+# bigint from a domain label, distinct from every other chain's key).
+_SAFETY_CHAIN_LOCK_KEY = int.from_bytes(
+    hashlib.sha256(b"anoryx-orchestrator:safety-audit-chain").digest()[:8],
+    "big",
+    signed=True,
+)
+
+
+async def safety_chain_tip_hash(session: AsyncSession) -> str:
+    """Return the most-recent safety_audit_log row_hash, or SAFETY_GENESIS_HASH."""
+    result = await session.execute(
+        text("SELECT row_hash FROM safety_audit_log ORDER BY sequence_number DESC LIMIT 1")
+    )
+    tip = result.scalar_one_or_none()
+    return tip if tip is not None else hash_chain.SAFETY_GENESIS_HASH
+
+
+async def append_safety_audit_link(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    source_product: str,
+    category: str,
+    outcome: str,
+    idempotency_key: str,
+    disposition: str,
+    target: str | None = None,
+) -> str:
+    """Append one hash-chained safety_audit_log link (privileged session).
+
+    Caller opens the privileged transaction (`async with session.begin()`). A
+    transaction-scoped advisory lock (own key) serialises concurrent appends so prev_hash
+    always references the true tip. Returns the new row_hash. `target` follows the
+    opt-in-when-present hash rule (hashed iff not None).
+    """
+    from orchestrator.persistence.models.safety_audit_log import SafetyAuditLog
+
+    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _SAFETY_CHAIN_LOCK_KEY})
+    prev_hash = await safety_chain_tip_hash(session)
+    row = {
+        "tenant_id": tenant_id,
+        "source_product": source_product,
+        "category": category,
+        "outcome": outcome,
+        "idempotency_key": idempotency_key,
+        "disposition": disposition,
+        "target": target,
+        "prev_hash": prev_hash,
+    }
+    row["row_hash"] = hash_chain.compute_safety_row_hash(row)
+    await session.execute(insert(SafetyAuditLog).values(**row))
+    return row["row_hash"]
+
+
+async def validate_safety_chain(session: AsyncSession) -> bool:
+    """Re-validate the full safety-event chain in order: each row_hash recomputes + links.
+
+    Returns True iff every link verifies. O(n) — privileged session (the chain is global).
+
+    FAIL-LOUD (mirrors validate_identity_chain, audit L-2): safety_audit_log carries no
+    RLS, but a non-BYPASSRLS role would only see its own tenant's rows (or none), so
+    assert the role bypasses RLS first (a privileged session) rather than risk a vacuous
+    pass over an empty/denied read.
+    """
+    from orchestrator.persistence.models.safety_audit_log import SafetyAuditLog
+
+    bypass = (
+        await session.execute(
+            text(
+                "SELECT bool_or(rolbypassrls OR rolsuper) FROM pg_roles "
+                "WHERE rolname = current_user"
+            )
+        )
+    ).scalar()
+    if not bypass:
+        raise RuntimeError(
+            "validate_safety_chain requires a BYPASSRLS/superuser privileged session; a "
+            "non-bypass role sees a denied/empty read and would falsely report integrity."
+        )
+    result = await session.execute(
+        select(SafetyAuditLog).order_by(SafetyAuditLog.sequence_number.asc())
+    )
+    expected_prev = hash_chain.SAFETY_GENESIS_HASH
+    for row in result.scalars():
+        if row.prev_hash != expected_prev:
+            return False
+        row_data = {
+            "tenant_id": row.tenant_id,
+            "source_product": row.source_product,
+            "category": row.category,
+            "outcome": row.outcome,
+            "idempotency_key": row.idempotency_key,
+            "disposition": row.disposition,
+            "target": row.target,
+            "prev_hash": row.prev_hash,
+        }
+        if not hash_chain.verify_safety_row_hash(row_data, row.row_hash):
+            return False
+        expected_prev = row.row_hash
     return True

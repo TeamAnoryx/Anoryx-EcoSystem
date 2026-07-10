@@ -1018,3 +1018,23 @@ def predictive_scaling_ready() -> None:
                 "unreachable"
             )
         pytest.skip("Orchestrator Postgres not reachable -- predictive-scaling e2e")
+
+
+# =========================================================================== #
+# X-004 cross-product safety-event visibility harness. APPENDED to the harness above (no
+# edits to it). Adds a safety gate mirroring identity_ready -- FAILS (not skips) under
+# ORCH_REQUIRE_SAFETY_E2E=1 so the non-stubbed e2e provably EXECUTES on CI.
+# =========================================================================== #
+
+
+@pytest.fixture
+def safety_ready() -> None:
+    """Gate the X-004 safety-event e2e. Skips when the Orchestrator Postgres is
+    unreachable -- UNLESS ORCH_REQUIRE_SAFETY_E2E=1, in which case an unreachable DB
+    FAILS the run (a silent skip can never masquerade as a green safety-visibility
+    gate)."""
+    require = os.environ.get("ORCH_REQUIRE_SAFETY_E2E") == "1"
+    if not _pg_reachable():
+        if require:
+            pytest.fail("ORCH_REQUIRE_SAFETY_E2E=1 but the Orchestrator Postgres is unreachable")
+        pytest.skip("Orchestrator Postgres not reachable -- safety-event e2e")

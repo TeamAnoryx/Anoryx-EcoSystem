@@ -836,3 +836,87 @@ def get_predictive_scaling_settings() -> PredictiveScalingSettings:
             minimum=1.0,
         ),
     )
+
+
+# =========================================================================== #
+# Cross-product safety-event visibility configuration (X-004) — ADDITIVE,
+# STANDALONE (mirrors IdentitySettings exactly — not nested in CoordinationSettings,
+# this seam has no registry/SSRF/health dependency). Resolved NON-FATALLY: absence is
+# not fatal — an unconfigured seam fail-closed-401s every ingest request (no configured
+# source can ever match).
+# =========================================================================== #
+
+#: The source_products the safety-event seam recognises. Every ecosystem product may
+#: report a local non-pass safety-inspection outcome here (mirrors
+#: KNOWN_IDENTITY_SOURCE_PRODUCTS — Sentinel's own detectors, Delta's, and Rendly's R-008
+#: self-hosted inspector are all legitimate sources).
+KNOWN_SAFETY_SOURCE_PRODUCTS: frozenset[str] = frozenset({"sentinel", "delta", "rendly"})
+
+#: Default request-body size cap (bytes) for one safety-event ingest.
+DEFAULT_SAFETY_MAX_BODY_BYTES: int = 8192
+
+
+@dataclass(frozen=True, slots=True)
+class SafetySettings:
+    """Resolved cross-product safety-event configuration (X-004).
+
+    source_tokens maps source_product ("sentinel" | "delta" | "rendly") -> its shared
+    bearer token; the router resolves source_product FROM the presented token
+    (server-resolved, never client-claimed), mirroring the identity seam's
+    source_product discipline (ADR-0010). Deliberately a DISTINCT credential from
+    identitySourceBearer (least privilege — a token that may push safety outcomes
+    cannot push identity/access events, and vice versa). Tokens are never logged.
+    """
+
+    source_tokens: dict[str, str]
+    max_body_bytes: int
+
+
+def _safety_source_tokens() -> dict[str, str]:
+    """Parse ORCH_SAFETY_SOURCE_TOKENS (a JSON object: source_product -> bearer token).
+
+    Unset/empty → {} (absence is not fatal; the seam is then fail-closed-401 for everyone).
+    A non-JSON value, a non-object, a non-string key/value, an empty token, or a key outside
+    KNOWN_SAFETY_SOURCE_PRODUCTS → ConfigError (misconfiguration is loud).
+    """
+    raw = os.environ.get("ORCH_SAFETY_SOURCE_TOKENS", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ConfigError(
+            "ORCH_SAFETY_SOURCE_TOKENS is not valid JSON. It must be a JSON object mapping "
+            "source_product -> bearer token."
+        ) from exc
+    if not isinstance(parsed, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) and v for k, v in parsed.items()
+    ):
+        raise ConfigError(
+            "ORCH_SAFETY_SOURCE_TOKENS must be a JSON object mapping a string source_product "
+            "to a non-empty string bearer token."
+        )
+    if not set(parsed) <= KNOWN_SAFETY_SOURCE_PRODUCTS:
+        raise ConfigError(
+            "ORCH_SAFETY_SOURCE_TOKENS keys must be drawn from "
+            f"{sorted(KNOWN_SAFETY_SOURCE_PRODUCTS)}."
+        )
+    return parsed
+
+
+def get_safety_settings() -> SafetySettings:
+    """Resolve safety-event settings from the environment (NON-FATAL on absence).
+
+    Env vars:
+      ORCH_SAFETY_SOURCE_TOKENS   JSON object {"sentinel"|"delta"|"rendly": bearer_token}
+                                 ({} if unset).
+      ORCH_SAFETY_MAX_BODY_BYTES  request-body size cap in bytes (default 8192, >= 1).
+
+    Tokens are never logged.
+    """
+    return SafetySettings(
+        source_tokens=_safety_source_tokens(),
+        max_body_bytes=_env_int(
+            "ORCH_SAFETY_MAX_BODY_BYTES", DEFAULT_SAFETY_MAX_BODY_BYTES, minimum=1
+        ),
+    )

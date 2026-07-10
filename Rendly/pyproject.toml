@@ -32,6 +32,12 @@ dependencies = [
   # it directly (anyio.CancelScope(shield=True) — the disconnect-triggered huddle archive
   # must survive Starlette's own cancellation of an already-disconnecting WebSocket's scope).
   "anyio>=4,<5",
+  # X-004 (ADR-0009): the SentinelMessageInspector's own detectors stay no-network (ADR-0008
+  # Fork A2, unchanged); this is ONLY for the best-effort, metadata-only, optional outbound
+  # notification to the Anoryx-AI-Orchestrator's cross-product safety-event oversight log
+  # (realtime/safety_event_emitter.py). Already a pinned dev dependency (FastAPI TestClient
+  # transport); promoted to core because the runtime image (".[server]") now needs it too.
+  "httpx>=0.27,<1",
 ]
 
 # The contract suite (R-001), domain suite (R-002), and auth suite (R-003) share one dev extra.
@@ -45,7 +51,8 @@ dev = [
   "pyyaml>=6,<7",
   "pytest>=8,<9",
   "pytest-cov",
-  "httpx>=0.27,<1",                # FastAPI TestClient transport for the R-003 auth e2e.
+  # httpx moved to core dependencies (X-004, safety_event_emitter.py) — still used here as the
+  # FastAPI TestClient transport for the R-003 auth e2e.
   "ruff>=0.5",
   "black>=24",
 ]
