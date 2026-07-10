@@ -682,8 +682,8 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] F-028 Custom Client-Defined PII Engine 🔮 (shipped — per-tenant client-defined regex PII: standalone ReDoS-safe engine, no spacy dependency, hot-reload + sentinel-pii CLI; runs after built-in PIIHook, emits existing pii_blocked event. Presidio ad-hoc "ML hooks" reading deferred, see docs/adr/0034 + docs/followups/f-028-presidio-adhoc-recognizers.md)
 - [x] F-029 HIPAA Compliance Module 🔮 (shipped — HIPAA Security Rule control map (§164.312/§164.308) on the F-011 engine; built-in PHI patterns reusing F-028's ReDoS-safe engine; BAA-ready evidence summary + sentinel-hipaa CLI. Contract-free/CLI-only — HTTP export deferred, see docs/adr/0035 + docs/followups/f-029-hipaa-http-export.md)
 - [x] F-030 EU AI Act Compliance Module 🔮 (shipped — EU AI Act control map (Chapter III Sec 2, honest not_covered/not_applicable for process-only obligations) on the F-011 engine; Annex III / Art.5 risk-classification decision-support helper; Art.13 disclosure-template generator + sentinel-euaiact CLI. Contract-free/CLI-only — see docs/adr/0036 + docs/followups/f-030-eu-ai-act-http-export.md)
-- [ ] F-031 Production Due-Diligence Gate 🔮
-- [ ] F-032 Practical Zero-Knowledge Storage SDK 🔮
+- [x] F-031 Production Due-Diligence Gate 🔮 (shipped — sentinel-preflight pre-launch gate reusing F-027 keyvault, F-003 hash-chain verify, in-process Alembic head check, findings-doc scan, config sanity; non-zero exit blocks launch on any hard-fail. Correctly blocks on the real F-022 open High. See docs/adr/0037 + docs/followups/f-031-machine-readable-findings.md)
+- [x] F-032 Practical Zero-Knowledge Storage SDK 🔮 (shipped — client-side AES-256-GCM envelope + HKDF key derivation + HMAC blind-index equality search; server stores ciphertext only, keys never leave client (proven by tests). sentinel-zk CLI. Honest threat model: leaks equality/frequency via deterministic indexes, not homomorphic/ORAM/ZK-proof — see docs/adr/0038. Server store endpoint deferred, see docs/followups/f-032-ciphertext-store-endpoint.md)
 - [ ] F-033 Multi-Layer Tokenization Architecture 🔮
 - [ ] F-034 Internal Service Mesh Auth (mTLS) 🔮
 - [ ] F-035 External Pen-Test Pass 🔮 (external)
@@ -727,7 +727,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-016 Dynamic team / capacity management ✅ (shipped PR #96 — bounded vertical slice: teams, task assignment, utilization report, advisory rebalancing, see docs/adr/0016-delta-team-capacity-management.md)
 - [x] D-017 Strict RBAC operational dashboards ✅ (shipped PR #106 — bounded vertical slice: locally-issued role-tagged tokens gating D-008's dashboards, see docs/adr/0017-delta-rbac-dashboards.md)
 - [x] D-018 Automated invoicing + vendor reconciliation ✅ (shipped PR #111 — bounded vertical slice: PO-backed invoice/payment three-way match + per-vendor reconciliation report, see docs/adr/0018-delta-invoicing-reconciliation.md)
-- [ ] D-019 Corporate ERP integrations (NetSuite/SAP/Coupa/cloud) — Heavy 🏦
+- [x] D-019 Corporate ERP integrations (NetSuite/SAP/Coupa/cloud) ✅ (shipped PR #118 — bounded vertical slice: generic external-system sync-ingestion + PO/invoice reconciliation-matching framework, not live per-vendor OAuth/API integrations, see docs/adr/0019-delta-erp-integrations.md)
 - [ ] D-020 Executive financial dashboard — Tricky 🏦
 - [ ] D-021 B2C personal budget tracking 🏦
 - [ ] D-022 B2C subscription mgmt + charge alerts 🏦

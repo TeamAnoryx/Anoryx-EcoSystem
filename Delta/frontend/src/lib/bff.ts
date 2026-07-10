@@ -30,6 +30,7 @@ export const ALLOWED_ROOTS = new Set([
   "capacity",
   "rbac",
   "invoicing",
+  "integrations",
 ]);
 
 export interface ProxyResult {
