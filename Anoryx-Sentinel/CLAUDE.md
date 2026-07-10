@@ -28,6 +28,10 @@ It is ITSELF a security product. Its own code is a target. Build accordingly.
                            default-deny authz allow-list, rotation + mutual-TLS
                            SSLContext builders. sentinel-mesh CLI. Toolkit not a live
                            mesh — cert-manager/live-path wiring in ADR-0040 + followup
+- src/airgap/           — F-036 air-gapped deploy: OFFLINE license validation (ES256
+                           reusing policy.crypto), signed install-bundle integrity,
+                           mirror-config internet-leak lint. sentinel-airgap CLI.
+                           Validation toolkit not the release pipeline — see ADR-0041
 - src/bulk/             — async bulk batch pipeline
 - src/persistence/      — Postgres schema, RBAC, audit log
 - src/dr/               — disaster recovery: Postgres backup/restore + hash-chain
