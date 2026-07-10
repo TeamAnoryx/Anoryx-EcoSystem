@@ -23,6 +23,11 @@ It is ITSELF a security product. Its own code is a target. Build accordingly.
                            src/compliance/eu_ai_act/: F-030 risk classification +
                            Art.13 disclosure. CLI-only — see docs/adr/0035, 0036)
 - src/orchestration/    — event bus emitter, policy intake, internal mTLS
+- src/service_mesh/     — F-034 internal mTLS mesh: SPIFFE-style component identity
+                           + internal CA issuing short-lived leaves, peer verify +
+                           default-deny authz allow-list, rotation + mutual-TLS
+                           SSLContext builders. sentinel-mesh CLI. Toolkit not a live
+                           mesh — cert-manager/live-path wiring in ADR-0040 + followup
 - src/bulk/             — async bulk batch pipeline
 - src/persistence/      — Postgres schema, RBAC, audit log
 - src/dr/               — disaster recovery: Postgres backup/restore + hash-chain
