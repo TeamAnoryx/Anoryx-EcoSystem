@@ -463,6 +463,13 @@ forecasts, D-013 CRM pipeline. See
   (forecasting's period window is `[period_start, now)`). Fixed by making `now` a required
   parameter the router resolves once and passes in — the same pattern D-011's own
   `forecast_all_budgets` already uses. See ADR-0020 §2 Fork 3.
+- **Two figure-honesty bugs caught by the independent security audit, both fixed before merge:** a
+  Medium finding that `forecast_all_budgets(..., limit=500)` was silently clamped to 100 budgets by
+  its callee, so a tenant with more budgets got an incomplete rollup presented as authoritative
+  (fixed with an honest `_MAX_FORECAST_BUDGETS=25` cap plus a new `budgets_truncated` signal), and a
+  Low finding that `open_deal_count` counted every currency while the paired value summed only one
+  (fixed by scoping both to the same currency predicate). See ADR-0020 §2 Fork 8 and
+  [`docs/audit/d-020-security-audit.md`](docs/audit/d-020-security-audit.md).
 
 ## Layout
 

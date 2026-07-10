@@ -73,6 +73,7 @@ async def test_get_summary_happy_path_over_http(
     body = resp.json()
     assert body["total_cost_cents"] == 850_00
     assert body["budget_count"] == 1
+    assert body["budgets_truncated"] is False
     assert body["total_current_period_spend_cents"] == 850_00
     assert body["client_count"] == 1
     assert body["open_deal_count"] == 1

@@ -182,7 +182,11 @@ async function ExecutiveSummaryForWindow({
       <section className="space-y-3">
         <h2 className="text-sm font-medium text-fg">Budget forecasts (D-011)</h2>
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <StatTile label="Budgets" value={formatCompactCount(summary!.budget_count)} />
+          <StatTile
+            label="Budgets"
+            value={formatCompactCount(summary!.budget_count)}
+            hint={summary!.budgets_truncated ? "capped — figures below may under-count" : undefined}
+          />
           <StatTile
             label="Current-period spend"
             value={formatMinorUnitsCompact(summary!.total_current_period_spend_cents, currency)}

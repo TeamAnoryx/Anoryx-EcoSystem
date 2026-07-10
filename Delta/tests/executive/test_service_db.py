@@ -46,6 +46,7 @@ async def test_executive_summary_composes_spend_forecast_and_pipeline(
     assert summary.total_cost_cents == 5_000
     assert summary.request_count == 1
     assert summary.budget_count == 1
+    assert summary.budgets_truncated is False
     assert summary.total_current_period_spend_cents == 5_000
     assert summary.client_count == 2
     assert summary.open_deal_count == 1  # the 'won' deal is excluded
@@ -64,6 +65,7 @@ async def test_executive_summary_zero_state_for_empty_tenant(tenant_id) -> None:
 
     assert summary.total_cost_cents == 0
     assert summary.budget_count == 0
+    assert summary.budgets_truncated is False
     assert summary.total_projected_period_end_spend_cents is None
     assert summary.client_count == 0
     assert summary.open_deal_count == 0
@@ -121,3 +123,25 @@ async def test_executive_summary_cross_tenant_isolated(
     assert summary.total_cost_cents == 0
     assert summary.budget_count == 0
     assert summary.client_count == 0
+
+
+@db_required
+async def test_executive_summary_signals_budgets_truncated_at_the_forecast_cap(
+    tenant_id, make_budget
+) -> None:
+    # _MAX_FORECAST_BUDGETS (service.py) is 25 — mirrors forecasting.router's own
+    # cost-conscious list cap. A tenant with at least that many budgets must see an
+    # honest truncation signal rather than a total that silently under-counts
+    # (security audit finding, ADR-0020 §2 Fork 8).
+    for _ in range(25):
+        await make_budget(tenant_id=tenant_id, cap_cents=100_000)
+
+    async with open_tenant_session(tenant_id) as session:
+        summary = await get_executive_summary(
+            session,
+            ExecutiveSummaryQuery(tenant_id=tenant_id, start=_NOW - timedelta(days=1), end=_NOW),
+            now=_NOW,
+        )
+
+    assert summary.budget_count == 25
+    assert summary.budgets_truncated is True

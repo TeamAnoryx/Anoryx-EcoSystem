@@ -47,6 +47,7 @@ in the entire D-013→D-020 arc (Risk: LOW per the roadmap itself).
 | **5 — `delta.executive` is gated by `require_admin` only, not retrofitted with D-017's RBAC** | `executive/router.py`'s router-level dependency is `Depends(require_admin)` — the same break-glass bearer every surface except D-008's dashboards uses. | Mirrors D-018 ADR §2 Fork 6 and D-019 ADR §2 Fork 6's identical reasoning: D-017's RBAC retrofit was deliberately bounded to D-008's dashboards; D-020 is the ninth surface to correctly stay out of that bounded scope. |
 | **6 — one summary endpoint, not a dashboard of sub-resources** | `GET /v1/admin/executive/summary?tenant_id=&start=&end=` returns one `ExecutiveSummaryView` with all composed figures. No separate `/executive/spend`, `/executive/forecasts`, `/executive/pipeline` sub-routes. | The whole point of an executive rollup is one screen, one number set, one request — splitting it into N sub-resources would just make the frontend re-implement the composition this service already does, for no benefit (the underlying D-008/D-011/D-013 endpoints already exist independently for anyone who needs the disaggregated view). |
 | **7 — mounted on the existing admin app, not a new process** | `GET /v1/admin/executive/summary` on the same D-007 admin app, alongside the other 11 mounted routers. | Same operators, same auth boundary, same trust boundary — mirrors D-008/.../D-019's own reasoning for not standing up a second process. |
+| **8 — an honest `budgets_truncated` flag + currency-consistent pipeline count (post-audit fix)** | The independent security-auditor review found two figure-honesty bugs: (a) `forecast_all_budgets` was called with `limit=500`, which `budget_engine.definitions.list_budgets` silently clamps to `MAX_LIST_LIMIT=100` — a tenant with more than 100 budgets got a silently-incomplete rollup presented as authoritative; (b) `open_deal_count` counted every currency while `open_pipeline_value_minor_units` summed only `DEFAULT_CURRENCY`, pairing a mismatched count and value under one currency label. Fixed by (a) replacing `limit=500` with an honest `_MAX_FORECAST_BUDGETS = 25` (matching `forecasting.router`'s own cost-conscious cap) plus a new `budgets_truncated: bool` field the frontend surfaces as a hint, and (b) scoping `open_deal_count`'s query to the same currency predicate as the value sum (still counting, not summing, NULL-currency leads). | Both findings are the same class of bug: an authoritative-looking figure that silently under-covers its data. This monorepo's honesty-language mandate ("audit-ready" not "compliant", "high-coverage detection" not "100% detection") applies just as directly to a dashboard total as to a marketing claim — a silently truncated number IS a compliance-washing-adjacent failure mode, just an accidental one. Naming the cap and signaling when it's hit is strictly better than either raising the cap unbounded (reintroducing the N+1-per-budget cost concern `forecasting.router` already solved once) or leaving the truncation silent. |
 
 ## 3. Honest deferrals (named, not half-built)
 
@@ -85,19 +86,23 @@ in the entire D-013→D-020 arc (Risk: LOW per the roadmap itself).
 | Auth bypass on the one new route | Router-level `dependencies=[Depends(require_admin)]` | `test_get_summary_missing_bearer_is_401` |
 | `end <= start` accepted as a valid (empty or inverted) window | `ExecutiveSummaryQuery`'s `model_validator` rejects `end <= start`, mirroring D-008's own `DashboardQuery` validation | `test_executive_summary_query_rejects_end_before_start`, `test_executive_summary_query_rejects_equal_start_end`, `test_get_summary_rejects_end_before_start_over_http` |
 | Naive (non-UTC-aware) `start`/`end` silently misinterpreted | `require_aware_utc` rejects a naive datetime at the schema layer, same helper every other Delta window-query schema uses | `test_executive_summary_query_rejects_naive_start` |
+| A tenant with more budgets than the forecast rollup's cap gets a silently-incomplete total presented as authoritative (security audit Medium, Fork 8a) | `_MAX_FORECAST_BUDGETS = 25` replaces the previously-misleading `limit=500`; `budgets_truncated: bool` signals the cap was hit | `test_executive_summary_signals_budgets_truncated_at_the_forecast_cap` |
+| `open_deal_count` spans every currency while `open_pipeline_value_minor_units` covers only one, pairing a mismatched count and value under one currency label (security audit Low, Fork 8b) | `open_deal_count`'s query scoped to the same currency predicate as the value sum | `test_pipeline_summary_scoped_to_currency`, `test_pipeline_summary_null_currency_deal_still_counted_with_other_currency_present` |
 
 ## 5. Verification
 
 - `black --check .` / `ruff check .` clean on the FULL repository (not just
   `src/delta/executive`).
-- New `tests/executive/` suite: 18 tests — 5 pure schema-validation tests
-  (`test_schemas.py`, no DB/I/O), 5 DB-backed store tests (`test_store_db.py`,
-  including terminal-deal exclusion, null-value handling, currency scoping, and
-  cross-tenant isolation), 4 DB-backed service tests (`test_service_db.py`,
-  covering the full composed rollup, the zero-state tenant, critical-budget
-  counting, and cross-tenant isolation), 4 non-stubbed HTTP e2e tests
-  (`test_router_e2e.py` — real ASGI app, real auth, real DB).
-- Full existing Delta suite green (895 passed, 15 skipped) — zero regressions.
+- New `tests/executive/` suite: 20 tests (post-audit-fix; 18 at first pass) — 5 pure
+  schema-validation tests (`test_schemas.py`, no DB/I/O), 7 DB-backed store tests
+  (`test_store_db.py`, including terminal-deal exclusion, null-value handling,
+  currency scoping consistent between count and value, and cross-tenant isolation), 5
+  DB-backed service tests (`test_service_db.py`, covering the full composed rollup,
+  the zero-state tenant, critical-budget counting, cross-tenant isolation, and the
+  `budgets_truncated` signal at the forecast cap), 4 non-stubbed HTTP e2e tests
+  (`test_router_e2e.py` — real ASGI app, real auth, real DB, asserting
+  `budgets_truncated` in the response body).
+- Full existing Delta suite green (897 passed, 15 skipped) — zero regressions.
 - No migration to apply (Fork 4) — verified zero new/modified tables via review of
   `persistence/models.py` (unchanged by this task).
 - Frontend: `tsc --noEmit` clean, `next lint` clean (0 warnings/errors on all new/
@@ -110,7 +115,9 @@ in the entire D-013→D-020 arc (Risk: LOW per the roadmap itself).
   Pipeline) rendered with the expected client count (1), open deal count (1), and
   pipeline value ($5.0K) — cross-checked against a direct follow-up call to
   `GET /v1/admin/executive/summary` returning the identical figures.
-- Independent security-auditor review: pending, findings will be recorded in
+- Independent security-auditor review: no High/Critical findings. One Medium (the
+  silent budget-forecast truncation, Fork 8a) and one Low (the currency-inconsistent
+  pipeline count, Fork 8b) finding, both fixed before merge — full details in
   `docs/audit/d-020-security-audit.md`.
 
 ## 6. Alternatives considered

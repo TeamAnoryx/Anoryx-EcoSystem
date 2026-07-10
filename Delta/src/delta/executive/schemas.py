@@ -51,8 +51,13 @@ class ExecutiveSummaryView(BaseModel):
 
     # D-011 — per-budget forecast rollup. `total_projected_period_end_spend_cents` is
     # `None` iff every budget has `insufficient_data` (mirrors the per-budget field's
-    # own honesty convention — never silently substituted with 0).
+    # own honesty convention — never silently substituted with 0). `forecast_all_budgets`
+    # is bounded (mirrors `forecasting.router`'s own list cap); `budgets_truncated` is
+    # `True` iff `budget_count` hit that cap, so a tenant with more budgets than the cap
+    # sees an honest signal instead of a total that silently under-counts (security
+    # audit finding, ADR-0020 §2 Fork 8).
     budget_count: int
+    budgets_truncated: bool
     total_current_period_spend_cents: int
     total_projected_period_end_spend_cents: float | None
     budgets_at_critical: int

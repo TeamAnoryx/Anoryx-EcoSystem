@@ -46,6 +46,27 @@ async def test_pipeline_summary_scoped_to_currency(tenant_id) -> None:
         summary = await store.get_pipeline_summary(session, currency="USD")
 
     assert summary.open_pipeline_value_minor_units == 50_000  # the EUR deal excluded
+    # open_deal_count and the value sum describe the SAME deal set — the EUR deal is
+    # excluded from both, not counted-but-unsummed (security audit finding).
+    assert summary.open_deal_count == 1
+
+
+@db_required
+async def test_pipeline_summary_null_currency_deal_still_counted_with_other_currency_present(
+    tenant_id,
+) -> None:
+    await seed_client_and_deal(tenant_id=tenant_id, value_minor_units=None, stage="lead")
+    await seed_client_and_deal(
+        tenant_id=tenant_id, value_minor_units=999_999, stage="qualified", currency="EUR"
+    )
+
+    async with open_tenant_session(tenant_id) as session:
+        summary = await store.get_pipeline_summary(session, currency="USD")
+
+    # the null-value/null-currency lead still counts (D-013's own pairing discipline);
+    # the EUR deal does not.
+    assert summary.open_deal_count == 1
+    assert summary.open_pipeline_value_minor_units == 0
 
 
 @db_required

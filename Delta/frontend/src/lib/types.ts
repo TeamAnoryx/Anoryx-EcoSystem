@@ -768,6 +768,8 @@ export interface ExecutiveSummaryView {
   request_count: number;
   burn_rate_cents_per_hour: number;
   budget_count: number;
+  /** true iff budget_count hit the forecast rollup's cap — figures below may under-count. */
+  budgets_truncated: boolean;
   total_current_period_spend_cents: number;
   /** null when no forecast has enough data to project (D-011's own contract). */
   total_projected_period_end_spend_cents: number | null;

@@ -28,6 +28,13 @@ from ..money import DEFAULT_CURRENCY
 from . import store
 from .schemas import ExecutiveSummaryQuery, ExecutiveSummaryView
 
+# forecast_all_budgets fans out several DB round-trips per budget — mirrors
+# forecasting.router's own _MAX_LIST_FORECAST_BUDGETS cost-conscious cap rather than
+# the higher generic definitions.list_budgets default (which the callee would silently
+# clamp to anyway). `budgets_truncated` (below) is the honest signal for a tenant with
+# more budgets than this cap (security audit finding, ADR-0020 §2 Fork 8).
+_MAX_FORECAST_BUDGETS = 25
+
 
 async def get_executive_summary(
     session: AsyncSession, query: ExecutiveSummaryQuery, *, now: datetime
@@ -44,7 +51,7 @@ async def get_executive_summary(
         ),
     )
 
-    forecasts = await forecast_all_budgets(session, now=now, limit=500)
+    forecasts = await forecast_all_budgets(session, now=now, limit=_MAX_FORECAST_BUDGETS)
     total_current_period_spend = sum(f.current_period_spend_cents for f in forecasts)
     projected_values = [
         f.projected_period_end_spend_cents
@@ -74,6 +81,7 @@ async def get_executive_summary(
         request_count=spend.request_count,
         burn_rate_cents_per_hour=spend.burn_rate_cents_per_hour,
         budget_count=len(forecasts),
+        budgets_truncated=len(forecasts) >= _MAX_FORECAST_BUDGETS,
         total_current_period_spend_cents=total_current_period_spend,
         total_projected_period_end_spend_cents=total_projected,
         budgets_at_critical=budgets_at_critical,
