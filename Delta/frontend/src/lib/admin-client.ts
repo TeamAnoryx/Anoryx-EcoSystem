@@ -27,6 +27,7 @@ import type {
   DealCreateRequest,
   DealStageTransitionRequest,
   DealView,
+  ExecutiveSummaryView,
   ExternalSystemCreateRequest,
   ExternalSystemView,
   GroupSpendView,
@@ -523,6 +524,13 @@ export const adminApi = {
       `/integrations/systems/${encodeURIComponent(systemId)}/reconciliation`,
       { query: { tenant_id: tenantId } },
     ),
+
+  // D-020 executive financial dashboard — a pure read-only rollup composing D-008
+  // spend, D-011 forecasts, and D-013 pipeline via their own service functions.
+  getExecutiveSummary: (tenantId: string, start: string, end: string) =>
+    adminFetch<ExecutiveSummaryView>("/executive/summary", {
+      query: { tenant_id: tenantId, start, end },
+    }),
 };
 
 export type AdminApi = typeof adminApi;
