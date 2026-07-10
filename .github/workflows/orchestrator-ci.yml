@@ -15,18 +15,21 @@ name: Anoryx-AI-Orchestrator CI
 #                              Sentinel-shim over a genuine loopback socket).
 #                              CI on a fresh DB is the authority of record (local green can
 #                              mask drift).
-# Triggers on the Orchestrator tree AND on the Sentinel contracts it references by $ref.
+# Triggers on the Orchestrator tree, the Sentinel contracts it references by $ref, and Delta
+# (X-003's budget-enforcement e2e imports Delta's real, DB-free emit/sign functions).
 on:
   push:
     branches: [main]
     paths:
       - 'Anoryx-AI-Orchestrator/**'
       - 'Anoryx-Sentinel/contracts/**'
+      - 'Delta/**'
   pull_request:
     branches: [main]
     paths:
       - 'Anoryx-AI-Orchestrator/**'
       - 'Anoryx-Sentinel/contracts/**'
+      - 'Delta/**'
 
 jobs:
   orchestrator-contract:
@@ -71,15 +74,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - name: Install (Orchestrator + Sentinel, runtime + dev)
+      - name: Install (Orchestrator + Sentinel + Delta, runtime + dev)
         # Sentinel is installed so the O-004 distribution e2e can drive Sentinel's REAL
         # intake_policy() + enforcement on the real path (ADR-0004 Fork F / F1). Sentinel is
         # src-layout with top-level packages (policy, persistence, ...) — no collision with
         # the orchestrator.* namespace. The shim makes a genuine loopback HTTP call; nothing
-        # is stubbed on the distribution path.
+        # is stubbed on the distribution path. Delta is installed so the X-003 budget-
+        # enforcement e2e (ADR-0017) can import its real, DB-free `delta.budget_engine.emit`
+        # / `delta.policy.sign` functions — top-level `delta.*`, no collision either.
         run: |
           pip install -e ".[dev]"
           pip install -e "../Anoryx-Sentinel[dev]"
+          pip install -e "../Delta[dev]"
       - name: Create the sentinel_ci database (real Sentinel target for the e2e)
         # A second database on the same Postgres service. The integration conftest runs
         # Sentinel's `alembic upgrade head` into it and provisions the sentinel_app role
