@@ -761,7 +761,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] R-022 Mentorship matching by tech-stack 🏦 ✅ (shipped PR #117, scoped to a deterministic exact-stack + ordered-proficiency scorer over a new TechStackProficiency opt-in type — no ML, no fuzzy stack matching, no persistence, no REST/UI; see ADR-0022)
 - [x] R-023 Consumer onboarding 🏦 ✅ (shipped PR #120, scoped to a deterministic ordered-progression seam over R-017's existing optimization_gaps checklist — no real B2C identity/signup/auth model, no persistence, no REST/UI; see ADR-0023)
 - [x] R-024 Discovery feed (B2C) 🏦 ✅ (shipped PR #<n>, scoped to a deterministic cross-type composition seam merging R-018/R-020/R-021/R-022's already-ranked outputs into one feed — no candidate-pool sourcing, no eligibility filtering, no persistence, no REST/UI; see ADR-0024)
-- [ ] R-025 Premium features + monetization (B2C) 🏦
+- [x] R-025 Premium features + monetization (B2C) 🏦 ✅ (shipped PR #124, scoped to a deterministic, fail-closed feature-entitlement seam — two-tier gate model + two compositions over R-022/R-024's already-public limits; no payment processing, no Delta ledger wiring — that remains X-005, see ADR-0025)
 - [ ] R-026 Creator economy features 🏦
 - [ ] R-027 B2B tenant + RBAC 🏦
 - [ ] R-028 Intent-driven talent routing + skills inventory 🏦
