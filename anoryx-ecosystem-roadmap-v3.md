@@ -759,7 +759,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] R-020 Localized tech-event discovery 🏦 ✅ (shipped PR #113, scoped to a deterministic opaque-tag locality filter + topic-overlap ranking seam over R-013's Event/EventSession agenda, composing R-016's IntentProfile — no geolocation, no real event sourcing, no persistence, no REST/UI; see ADR-0020)
 - [x] R-021 Skill-based opportunity matching 🏦 ✅ (shipped PR #110, scoped to a deterministic set-intersection scorer between R-016's existing IntentProfile.offering tags and a new Opportunity.required_skills — no ML, no new opt-in type, no persistence, no REST/UI; see ADR-0021)
 - [x] R-022 Mentorship matching by tech-stack 🏦 ✅ (shipped PR #117, scoped to a deterministic exact-stack + ordered-proficiency scorer over a new TechStackProficiency opt-in type — no ML, no fuzzy stack matching, no persistence, no REST/UI; see ADR-0022)
-- [x] R-023 Consumer onboarding 🏦 ✅ (shipped PR #TBD, scoped to a deterministic ordered-progression seam over R-017's existing optimization_gaps checklist — no real B2C identity/signup/auth model, no persistence, no REST/UI; see ADR-0023)
+- [x] R-023 Consumer onboarding 🏦 ✅ (shipped PR #120, scoped to a deterministic ordered-progression seam over R-017's existing optimization_gaps checklist — no real B2C identity/signup/auth model, no persistence, no REST/UI; see ADR-0023)
 - [ ] R-024 Discovery feed (B2C) 🏦
 - [ ] R-025 Premium features + monetization (B2C) 🏦
 - [ ] R-026 Creator economy features 🏦
