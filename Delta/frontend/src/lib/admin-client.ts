@@ -30,6 +30,12 @@ import type {
   GroupSpendView,
   InteractionCreateRequest,
   InteractionView,
+  InvoiceCreateRequest,
+  InvoiceDecisionRequest,
+  InvoicePaymentView,
+  InvoiceStatus,
+  InvoiceView,
+  PaymentRecordRequest,
   PurchaseOrderCreateRequest,
   PurchaseOrderDecisionRequest,
   PurchaseOrderStatus,
@@ -58,6 +64,7 @@ import type {
   UtilizationReportView,
   VelocityReportView,
   VendorCreateRequest,
+  VendorReconciliationView,
   VendorView,
 } from "@/lib/types";
 
@@ -431,6 +438,50 @@ export const adminApi = {
     adminFetch<AccessTokenView>(`/rbac/tokens/${encodeURIComponent(tokenId)}/revoke`, {
       method: "POST",
       body,
+    }),
+
+  // D-018 automated invoicing + vendor payment reconciliation — a PO-backed
+  // three-way match (purchase order -> invoice -> payment), not external ERP/bank
+  // sync (that's D-019's job).
+  listInvoices: (
+    tenantId: string,
+    filters?: { vendorId?: string; poId?: string; status?: InvoiceStatus },
+    limit?: number,
+  ) =>
+    adminFetch<InvoiceView[]>("/invoicing/invoices", {
+      query: {
+        tenant_id: tenantId,
+        vendor_id: filters?.vendorId,
+        po_id: filters?.poId,
+        status: filters?.status,
+        limit,
+      },
+    }),
+
+  createInvoice: (body: InvoiceCreateRequest) =>
+    adminFetch<InvoiceView>("/invoicing/invoices", { method: "POST", body }),
+
+  decideInvoice: (invoiceId: string, body: InvoiceDecisionRequest) =>
+    adminFetch<InvoiceView>(`/invoicing/invoices/${encodeURIComponent(invoiceId)}/decision`, {
+      method: "POST",
+      body,
+    }),
+
+  recordInvoicePayment: (invoiceId: string, body: PaymentRecordRequest) =>
+    adminFetch<InvoicePaymentView>(`/invoicing/invoices/${encodeURIComponent(invoiceId)}/payments`, {
+      method: "POST",
+      body,
+    }),
+
+  listInvoicePayments: (tenantId: string, invoiceId: string, limit?: number) =>
+    adminFetch<InvoicePaymentView[]>(
+      `/invoicing/invoices/${encodeURIComponent(invoiceId)}/payments`,
+      { query: { tenant_id: tenantId, limit } },
+    ),
+
+  getVendorReconciliation: (tenantId: string, vendorId: string, currency?: string) =>
+    adminFetch<VendorReconciliationView>("/invoicing/reconciliation", {
+      query: { tenant_id: tenantId, vendor_id: vendorId, currency },
     }),
 };
 
