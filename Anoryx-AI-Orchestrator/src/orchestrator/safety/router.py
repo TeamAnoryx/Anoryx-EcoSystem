@@ -11,9 +11,9 @@ read).
 SCOPE: this seam reports NON-PASS outcomes ONLY (v1: `outcome: block`), never routine
 passes — a genuine oversight signal, not a firehose of every inspected message.
 
-HONESTY BOUNDARY (ADR — X-004): this seam does NOT inspect, re-scan, translate, or
-federate any product's message content — it only durably records that a
-(product-verified) non-pass outcome happened. NO message content ever crosses this
+HONESTY BOUNDARY (Orchestrator ADR-0017, Rendly ADR-0026): this seam does NOT inspect,
+re-scan, translate, or federate any product's message content — it only durably records
+that a (product-verified) non-pass outcome happened. NO message content ever crosses this
 boundary; only bounded metadata does (category/outcome/target/tenant/timestamps).
 `target` is an OPAQUE identifier in the source product's OWN namespace; no cross-product
 resource-identity mapping is implied or performed.

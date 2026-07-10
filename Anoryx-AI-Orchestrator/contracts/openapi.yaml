@@ -207,7 +207,8 @@ tags:
       NOT inspect, re-scan, translate, or federate any product's message content — it only
       records that a (product-verified) non-pass outcome happened. Each product keeps its own
       inspection engine and NEVER ships message content here; only bounded metadata crosses the
-      boundary (ADR — X-004 honesty boundary). Rendly's deliberate data-sovereignty decision to
+      boundary (ADR-0017 honesty boundary; see also Rendly ADR-0026 for the Rendly-side design
+      rationale). Rendly's deliberate data-sovereignty decision to
       NOT call Sentinel's detectors (ADR-0008 Fork A2) stands unchanged — this seam is oversight
       visibility, not a detector dependency. SCOPE: this seam reports NON-PASS outcomes only
       (v1: `block`), never routine passes, so it stays a genuine oversight signal and not noise.
@@ -1404,13 +1405,13 @@ paths:
         as `disposition: duplicate` (no second row, never an error). Every ingest ATTEMPT —
         fresh accept or duplicate — is hash-chain audited.
 
-        HONESTY BOUNDARY (ADR — X-004): this seam does NOT inspect, re-scan, translate, or
-        federate any product's message content — it only durably records that a
-        (product-verified) non-pass outcome happened. NO message content ever crosses this
-        boundary; only bounded metadata does. `target` is an OPAQUE identifier in the source
-        product's OWN namespace (a channel/resource handle); no cross-product resource-identity
-        mapping is implied or performed. Rendly's data-sovereignty decision to NOT call
-        Sentinel's detectors (ADR-0008 Fork A2) is unchanged by this seam.
+        HONESTY BOUNDARY (Orchestrator ADR-0017; Rendly ADR-0026): this seam does NOT inspect,
+        re-scan, translate, or federate any product's message content — it only durably
+        records that a (product-verified) non-pass outcome happened. NO message content ever
+        crosses this boundary; only bounded metadata does. `target` is an OPAQUE identifier in
+        the source product's OWN namespace (a channel/resource handle); no cross-product
+        resource-identity mapping is implied or performed. Rendly's data-sovereignty decision
+        to NOT call Sentinel's detectors (ADR-0008 Fork A2) is unchanged by this seam.
 
         Auth: mTLS (peer = the source product) AND a safety-source bearer.
       security:
@@ -3415,7 +3416,8 @@ components:
       type: object
       description: |
         One normalized "a local safety inspection produced a non-pass outcome" record
-        (X-004, ADR — X-004). Metadata-ONLY: NO message content ever crosses this boundary.
+        (X-004, Orchestrator ADR-0017 / Rendly ADR-0026). Metadata-ONLY: NO message content
+        ever crosses this boundary.
         `target` is opaque in the SOURCE PRODUCT's own namespace — no cross-product
         resource-identity mapping is implied. This seam reports NON-PASS outcomes only
         (v1: `outcome: block`), never routine passes. `occurred_at` MUST carry an explicit
