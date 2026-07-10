@@ -26,6 +26,9 @@ It is ITSELF a security product. Its own code is a target. Build accordingly.
 - src/preflight/        — F-031 production due-diligence gate: pre-launch checklist
                            (secrets vaulted, chain valid, migrations at head, no open
                            CRITICAL/HIGH, config sane) via sentinel-preflight (ADR-0037)
+- src/zk_sdk/           — F-032 practical zero-knowledge storage SDK: client-side
+                           AES-256-GCM + HMAC blind-index equality search; server sees
+                           ciphertext only (sentinel-zk, honest threat model in ADR-0038)
 - src/onboarding/       — guided sandbox-tenant provisioning (operator CLI,
                            no HTTP endpoints — see docs/adr/0031)
 - src/mcp_gateway/      — MCP/third-party integration governance: per-tenant
