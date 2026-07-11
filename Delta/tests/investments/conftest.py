@@ -1,11 +1,11 @@
-"""Fixtures for the D-025 bank-import DB suite. Mirrors
-``tests/subscriptions/conftest.py`` exactly (same db_required/ensure_schema_at_head/
-provision_app_role/_truncate/_reset_delta_engines/admin_token/app/client/auth_headers
-shape).
+"""Fixtures for the D-023 investments DB suite. Mirrors ``tests/micro_transactions/
+conftest.py`` exactly (same db_required/ensure_schema_at_head/provision_app_role/
+_truncate/_reset_delta_engines/admin_token/app/client/auth_headers shape).
 
-D-025 owns its three tables (migration 0018) and writes into D-021's
-``personal_transactions``/reads ``personal_accounts`` — all five are truncated
-between tests.
+D-023 owns its own table (migration 0017), plus D-021's ``personal_accounts`` (every
+holding is recorded against an existing `investment`-type account) —
+``delta.investments.store``/``delta.personal_finance.store`` (called directly, then
+committed) ARE the real, only application paths for writing these rows.
 """
 
 from __future__ import annotations
@@ -133,8 +133,7 @@ async def _truncate(provision_app_role: None) -> AsyncIterator[None]:
         async with engine.begin() as conn:
             await conn.execute(
                 text(
-                    "TRUNCATE delta.imported_statement_lines, delta.statement_imports, "
-                    "delta.bank_sources, delta.personal_transactions, "
+                    "TRUNCATE delta.investment_holdings, delta.personal_transactions, "
                     "delta.personal_accounts CASCADE"
                 )
             )

@@ -75,21 +75,35 @@ This is stated plainly so the env is not mistaken for enforcement.
 
 One region is `active` — the **sole writer** for the policy store and the audit
 log. `passive` regions run replicas of those two stores and a serve stack that can
-be **promoted on failover** (runbook, D-below). The intent is that passive regions
-serve residency-local **reads** while **writes route to the active region.**
+be **promoted on failover** (runbook, D-below). Writes route to the active region;
+a passive region serves **no governed traffic** until promoted (see the enforced
+posture below).
 
-> **Read-only passive is NOT enforced by this deployment layer (F-022 audit H1).**
-> `SENTINEL_REGION_ROLE` is context env only (`GatewaySettings` uses
-> `extra="ignore"`; no code reads it), and F-022 ships neither a DB-role `REVOKE`
-> nor an app-tier serve-path gate. Because the non-bypassable terminal audit
-> middleware appends to the **local** `events_audit_log` on every governed request
-> and `sequence_number` is a per-database `bigserial` that logical replication does
-> not carry, a passive region that serves governed traffic would fork the
-> hash chain and collide on the replicated sequence PK (halting replication).
-> Until app-tier role enforcement lands (a named deferral —
-> `docs/followups/f-022-passive-readonly-enforcement.md`), an operator **MUST NOT**
-> route governed/audit-generating traffic to a passive region. This is the honest
-> posture; the guarantee is operator-owned, not chart-enforced, today.
+> **UPDATE (F-022 audit H1 — RESOLVED, app-tier enforcement).** The passive
+> read-only posture is now **enforced fail-closed in the app tier**, not left to
+> the operator. `GatewaySettings` reads `SENTINEL_REGION_ROLE`
+> (`active` | `passive`; invalid → startup fails), and
+> `PassiveRegionGuardMiddleware` (the outermost middleware, `src/gateway/
+> middleware/region_guard.py`) refuses every governed / audit-generating request
+> on a `passive` region with **`503`** BEFORE the terminal-audit middleware runs —
+> so a passive region never appends to its local `events_audit_log` and the
+> tamper-evident hash chain cannot fork (nor collide on the replicated sequence
+> PK). Only the k8s liveness/readiness probes (the audit-exempt paths) stay served,
+> so the pod remains promotable on failover; promotion flips `SENTINEL_REGION_ROLE`
+> to `active` (config change + restart). Proven by
+> `tests/region/test_passive_no_audit_realdb.py` (real-DB row count unchanged) and
+> `tests/gateway/test_region_guard.py`.
+>
+> **Honest scope of the fix.** This makes "passive serves NO governed traffic"
+> true and enforced. It therefore **supersedes** the original D2 intent that
+> "passive regions serve residency-local reads" — a passive region does **not**
+> serve reads, because the terminal audit writes the chain on every governed
+> request (reads included), so any served read would reintroduce H1. Serving
+> passive reads safely would require a cross-region **global audit sequencer**
+> (out of scope for the MVP; still a named deferral in
+> `docs/followups/f-022-passive-readonly-enforcement.md`). The active/passive
+> failover posture is unchanged; only the "reads on passive" affordance is removed
+> in exchange for a real, enforced chain-fork guarantee.
 
 Automated **active-active multi-writer is explicitly NOT attempted.** Two writers
 concurrently extending an append-only, hash-chained log (`events_audit_log`)
@@ -187,14 +201,17 @@ call site); there is **no `src/` change**, so the existing test suite carries no
 risk; and the active/passive posture is stated honestly rather than overclaimed as
 active-active.
 
-**Known limitation (F-022 audit H1, tracked).** The passive-region read-only
-posture that makes chain-fork "impossible" is **not enforced** by F-022 — it is an
-operator responsibility until app-tier `SENTINEL_REGION_ROLE` enforcement ships
-(`docs/followups/f-022-passive-readonly-enforcement.md`). This is documented, not
-hidden: the ADR, the ConfigMap, `values.yaml`, and the runbook all state it, and
-the audit-of-record (`docs/audit/f-022-security-audit.md`) escalates it for human
-remediation. Multi-region should not be operated with a serving passive region
-until it lands.
+**F-022 audit H1 — RESOLVED (app-tier enforcement).** The passive-region
+chain-fork risk is now **enforced fail-closed** by `PassiveRegionGuardMiddleware`
+reading `SENTINEL_REGION_ROLE` (see the D2 UPDATE above): a passive region refuses
+all governed traffic with `503` before any audit write, so it cannot fork the
+chain. The residual, deliberately-accepted tradeoff is that a passive region
+serves **no** residency-local reads either (any served read would write the audit
+chain) — safely serving passive reads still needs a cross-region global audit
+sequencer, which remains a named deferral
+(`docs/followups/f-022-passive-readonly-enforcement.md`). Multi-region may now be
+operated with passive standbys (they simply 503 governed traffic until promoted);
+the L2 identifier-hardening item in that followup remains open and lower-priority.
 
 **Negative / costs.** Passive promotion is **manual** (runbook), so failover has
 an operator-in-the-loop RTO. Operators must themselves wire the GSLB, the

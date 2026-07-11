@@ -86,6 +86,9 @@ SubscriptionChargeId = UuidStr
 # D-024 real-time personal micro-transaction execution.
 MicroTransactionExecutionId = UuidStr
 
+# D-023 personal asset allocation + micro-investment recommendations.
+InvestmentHoldingId = UuidStr
+
 # D-025 privacy-first bank-statement import framework.
 BankSourceId = UuidStr
 StatementImportId = UuidStr

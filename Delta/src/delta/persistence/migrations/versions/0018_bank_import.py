@@ -1,8 +1,15 @@
 """Delta privacy-first bank-statement import framework (D-025).
 
-Revision ID: 0017
-Revises: 0016
+Revision ID: 0018
+Revises: 0017
 Create Date: 2026-07-11
+
+Renumbered from 0017 to 0018 (was originally authored against a main where 0017 was
+free): the parallel D-023 track's migration 0017_investment_holdings.py claimed that
+revision number first, off the same D-024-based main this migration also started
+from. Two independent, uncoordinated sessions computed the same "next" number. No
+content in this migration changed, only its revision id and down_revision (now
+chains after D-023's 0017 instead of directly after D-024's 0016).
 
 The roadmap's literal Phase-4 text for D-025 is "Privacy-first multi-bank financial
 data aggregation." No open-banking connection, bank OAuth credential, or aggregator
@@ -58,8 +65,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0017"
-down_revision: Union[str, None] = "0016"
+revision: str = "0018"
+down_revision: Union[str, None] = "0017"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

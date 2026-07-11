@@ -1,7 +1,7 @@
 """Bank-import persistence (D-025, ADR-0025).
 
 Tenant-scoped reads/writes against ``bank_sources``/``statement_imports``/
-``imported_statement_lines`` (migration 0017). Every function takes an already-open
+``imported_statement_lines`` (migration 0018). Every function takes an already-open
 :class:`AsyncSession` (from ``delta.persistence.database.get_tenant_session``) and
 does NOT commit — the caller (``service.py``) owns the transaction, exactly like
 every prior Delta store module.

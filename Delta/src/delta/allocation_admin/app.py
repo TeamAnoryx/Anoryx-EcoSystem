@@ -2,14 +2,15 @@
 dashboards, D-011 forecasting, D-012 chargeback/anomaly, D-013 unified CRM, D-014 ERP,
 D-015 project management, D-016 team capacity, D-017 RBAC, D-018 invoicing, D-019
 ERP/procurement/cloud-cost sync, D-020 executive dashboard, D-021 personal finance,
-D-022 subscriptions, D-024 micro-transaction execution, D-025 bank imports).
+D-022 subscriptions, D-023 investment allocation, D-024 micro-transaction execution,
+D-025 bank imports).
 
 Exposes ``/v1/admin/*`` (allocations, decisions, history, dashboards, forecast,
 chargeback, crm, erp, pm, capacity, rbac, invoicing, integrations, executive,
-personal-finance, subscriptions, micro-transactions, bank-imports) plus a ``/health``
-probe. One app/port for the whole admin console (D-008/.../D-025 add routes to the
-D-007 app rather than standing up a second process — same operators, same auth, same
-trust boundary).
+personal-finance, subscriptions, investments, micro-transactions, bank-imports) plus a
+``/health`` probe. One app/port for the whole admin console (D-008/.../D-025 add
+routes to the D-007 app rather than standing up a second process — same operators,
+same auth, same trust boundary).
 Settings (the break-glass bearer token) are resolved fail-loud at construction,
 mirroring ``delta.ingest.app.create_app``. No public OpenAPI schema — this is an
 internal operator surface, not a versioned external contract.
@@ -29,6 +30,7 @@ from ..erp.router import router as erp_router
 from ..executive.router import router as executive_router
 from ..forecasting.router import router as forecasting_router
 from ..integrations.router import router as integrations_router
+from ..investments.router import router as investments_router
 from ..invoicing.router import router as invoicing_router
 from ..micro_transactions.router import router as micro_transactions_router
 from ..personal_finance.router import router as personal_finance_router
@@ -74,6 +76,7 @@ def create_app() -> FastAPI:
     app.include_router(executive_router)
     app.include_router(personal_finance_router)
     app.include_router(subscriptions_router)
+    app.include_router(investments_router)
     app.include_router(micro_transactions_router)
     app.include_router(bank_import_router)
     return app
