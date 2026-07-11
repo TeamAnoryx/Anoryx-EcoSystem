@@ -48,9 +48,11 @@ BudgetCategory = Literal[
 ]
 BudgetPeriod = Literal["monthly"]
 # 'execution' rows are written only by D-024's micro-transaction execution engine
-# (delta.micro_transactions.service) — never by this package's own manual-entry
-# endpoint (migration 0016 widened the DB CHECK in lock-step; ADR-0024 Fork 3).
-TransactionSource = Literal["manual", "execution"]
+# (delta.micro_transactions.service) and 'import' rows only by D-025's bank-statement
+# import framework (delta.bank_import.service) — never by this package's own
+# manual-entry endpoint (migrations 0016/0017 widened the DB CHECK in lock-step;
+# ADR-0024 Fork 3 / ADR-0025 Fork 3).
+TransactionSource = Literal["manual", "execution", "import"]
 
 _NAME_MAX_LENGTH = 256
 _DESCRIPTION_MAX_LENGTH = 512

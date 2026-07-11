@@ -733,7 +733,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-022 B2C subscription mgmt + charge alerts ✅ (shipped PR #139 — bounded ENTERPRISE-tenant slice: subscription registry + append-only charge ledger + anomaly alerts reusing D-012's chargeback.anomaly unmodified; no B2C onboarding shell/bank-linking exists in this codebase, see docs/adr/0022-delta-subscription-anomaly-alerts.md)
 - [x] D-023 B2C asset allocation + micro-investment 🏦 ✅ (shipped PR #146 — deterministic advisory engine: self-reported asset-class holdings on D-021's `investment`-type accounts, fixed 3-profile target-weight rebalancing + surplus-derived contribution split; no live market data, no trade execution, no brokerage integration, see docs/adr/0023-delta-investment-allocation-recommendations.md)
 - [x] D-024 B2C real-time micro-transactions ✅ (shipped PR #143 — ledger-internal execution safety engine: idempotency-keyed, micro+daily capped, TOCTOU-safe, append-only, audit-chained over D-021's personal ledger; no payment rail exists in this codebase so no real money moves, see docs/adr/0024-delta-micro-transaction-execution.md)
-- [ ] D-025 B2C privacy-first multi-bank aggregation 🏦
+- [x] D-025 B2C privacy-first multi-bank aggregation ✅ (shipped PR #147 — normalized statement-import framework over D-021's ledger, D-019's caller-supplied-lines precedent; privacy-first structurally: no raw-payload retention, SHA-256-hashed bank references, PAN-shaped text refused at the schema layer; no live open-banking connection exists in this environment — the future connector's integration point is this feature's own input shape, see docs/adr/0025-delta-bank-import.md)
 
 ## Rendly — 30 tasks (10 secure-comms MVP + 20 vision) — 6 shipped
 
