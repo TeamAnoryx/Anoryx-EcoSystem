@@ -673,3 +673,29 @@ subscription_charges = sa.Table(
     sa.Column("note", sa.String(1024), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
+
+# --- D-024 real-time personal micro-transaction execution log (migration 0016) ---
+# One row per execution ATTEMPT, executed or rejected (a capped-out/replayed attempt
+# leaves a trace — that's a security feature, not noise). Append-only: no
+# UPDATE/DELETE grant. "Execution" here is atomic bookkeeping over Delta's OWN
+# D-021 personal ledger (execution row + personal_transactions row + D-009 audit
+# row, one transaction) — NOT real payment-rail money movement, which does not
+# exist anywhere in this codebase; see docs/adr/0024-delta-micro-transaction-execution.md.
+micro_transaction_executions = sa.Table(
+    "micro_transaction_executions",
+    metadata,
+    sa.Column("execution_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("account_id", sa.String(64), nullable=False),
+    sa.Column("idempotency_key", sa.String(128), nullable=False),
+    sa.Column("amount_minor_units", sa.BigInteger, nullable=False),
+    sa.Column("currency", sa.String(3), nullable=False),
+    sa.Column("category", sa.String(24), nullable=False),
+    sa.Column("merchant", sa.String(256), nullable=True),
+    sa.Column("description", sa.String(512), nullable=False),
+    sa.Column("status", sa.String(16), nullable=False),
+    sa.Column("rejection_reason", sa.String(64), nullable=True),
+    sa.Column("txn_id", sa.String(64), nullable=True),
+    sa.Column("requested_by", sa.String(128), nullable=False),
+    sa.Column("executed_at", sa.DateTime(timezone=True), nullable=False),
+)
