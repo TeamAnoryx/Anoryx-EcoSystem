@@ -55,3 +55,21 @@ def test_bad_key_length_fails_closed(monkeypatch):
     reset_key_cache_for_testing()
     with pytest.raises(TokenVaultKeyError):
         encrypt("x")
+
+
+def test_aad_round_trip():
+    ct = encrypt("4111111111111111", aad=b"tenant:acme")
+    assert decrypt(ct, aad=b"tenant:acme") == "4111111111111111"
+
+
+def test_wrong_aad_fails_closed():
+    """A blob bound to one tenant must not decrypt under another tenant's aad."""
+    ct = encrypt("secret", aad=b"tenant:acme")
+    with pytest.raises(TokenizationError):
+        decrypt(ct, aad=b"tenant:evil")
+
+
+def test_missing_aad_on_bound_blob_fails_closed():
+    ct = encrypt("secret", aad=b"tenant:acme")
+    with pytest.raises(TokenizationError):
+        decrypt(ct)  # no aad

@@ -59,16 +59,23 @@ def reset_key_cache_for_testing() -> None:
     _key, _key_loaded = None, False
 
 
-def encrypt(plaintext: str) -> str:
-    """Return base64(nonce ‖ ciphertext‖tag) for a plaintext string."""
+def encrypt(plaintext: str, *, aad: bytes | None = None) -> str:
+    """Return base64(nonce ‖ ciphertext‖tag) for a plaintext string.
+
+    `aad` (associated data) is authenticated but not encrypted; decrypt() must be
+    given the SAME aad or it fails closed. The token service binds the tenant_id
+    here so a ciphertext blob only decrypts in its own tenant's context (a
+    defence-in-depth complement to RLS — a blob lifted to another tenant/row will
+    not authenticate even if DB-layer isolation is ever weakened).
+    """
     key = _load_key()
     nonce = os.urandom(_NONCE_BYTES)
-    ct = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
+    ct = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), aad)
     return base64.b64encode(nonce + ct).decode("ascii")
 
 
-def decrypt(blob_b64: str) -> str:
-    """Reverse encrypt(). Raises on wrong key / tamper (fail-closed)."""
+def decrypt(blob_b64: str, *, aad: bytes | None = None) -> str:
+    """Reverse encrypt(). Raises on wrong key / tamper / aad mismatch (fail-closed)."""
     key = _load_key()
     try:
         blob = base64.b64decode(blob_b64)
@@ -78,8 +85,8 @@ def decrypt(blob_b64: str) -> str:
         raise TokenizationError("vault ciphertext too short")
     nonce, ct = blob[:_NONCE_BYTES], blob[_NONCE_BYTES:]
     try:
-        return AESGCM(key).decrypt(nonce, ct, None).decode("utf-8")
+        return AESGCM(key).decrypt(nonce, ct, aad).decode("utf-8")
     except InvalidTag as exc:
         raise TokenizationError(
-            "token-vault authentication failed (wrong key or tampered)"
+            "token-vault authentication failed (wrong key, tampered, or wrong tenant)"
         ) from exc
