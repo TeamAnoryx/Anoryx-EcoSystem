@@ -176,6 +176,40 @@ async def test_get_latest_budgets_returns_most_recent_per_category(tenant_id) ->
 
 
 @db_required
+async def test_get_latest_budgets_currency_scoped(tenant_id) -> None:
+    async with get_tenant_session(tenant_id) as session:
+        await store.create_budget(
+            session,
+            tenant_id=tenant_id,
+            category="dining",
+            cap_minor_units=10_000,
+            currency="EUR",
+            period="monthly",
+            now=_NOW,
+        )
+        await store.create_budget(
+            session,
+            tenant_id=tenant_id,
+            category="groceries",
+            cap_minor_units=50_000,
+            currency="USD",
+            period="monthly",
+            now=_NOW,
+        )
+        await session.commit()
+
+    async with get_tenant_session(tenant_id) as session:
+        usd_only = await store.get_latest_budgets(session, currency="USD")
+        all_currencies = await store.get_latest_budgets(session)
+
+    # A non-report-currency budget is excluded when scoped (security audit finding —
+    # it must never be silently scored as within-cap against a spend of 0)...
+    assert [b.category for b in usd_only] == ["groceries"]
+    # ...but the unscoped list endpoint still shows every budget with its own label.
+    assert {b.category for b in all_currencies} == {"dining", "groceries"}
+
+
+@db_required
 async def test_cross_tenant_isolation(tenant_id, other_tenant_id) -> None:
     await _seed_account(tenant_id)
 

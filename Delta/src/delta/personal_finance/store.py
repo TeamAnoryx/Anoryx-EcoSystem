@@ -254,23 +254,34 @@ async def create_budget(
     )
 
 
-async def get_latest_budgets(session: AsyncSession) -> list[BudgetRecord]:
+async def get_latest_budgets(
+    session: AsyncSession, *, currency: str | None = None
+) -> list[BudgetRecord]:
     """One row per category: the most recently created budget (a category's current
     cap) — mirrors the "insert-only, read the latest" convention every budget change
-    uses in this package (no UPDATE anywhere on ``personal_budgets``)."""
-    latest_per_category = (
-        select(
-            personal_budgets.c.category,
-            func.max(personal_budgets.c.created_at).label("latest_created_at"),
-        )
-        .group_by(personal_budgets.c.category)
-        .subquery()
+    uses in this package (no UPDATE anywhere on ``personal_budgets``).
+
+    ``currency`` scopes the result to one reporting currency. The health-score path
+    MUST pass it: comparing a non-report-currency cap against report-currency-scoped
+    spend would silently score an overspent category as within-cap (security audit
+    finding, ADR-0021 §2 Fork 9). ``None`` returns every currency (the plain
+    list-budgets endpoint, where each row carries its own currency label).
+    """
+    latest_filter = select(
+        personal_budgets.c.category,
+        func.max(personal_budgets.c.created_at).label("latest_created_at"),
     )
+    if currency is not None:
+        latest_filter = latest_filter.where(personal_budgets.c.currency == currency)
+    latest_per_category = latest_filter.group_by(personal_budgets.c.category).subquery()
+
     stmt = select(personal_budgets).join(
         latest_per_category,
         (personal_budgets.c.category == latest_per_category.c.category)
         & (personal_budgets.c.created_at == latest_per_category.c.latest_created_at),
     )
+    if currency is not None:
+        stmt = stmt.where(personal_budgets.c.currency == currency)
     rows = (await session.execute(stmt)).all()
     return [_budget_from_row(r) for r in rows]
 

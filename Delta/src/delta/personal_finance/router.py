@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from ..allocation_admin.auth import require_admin
 from ..identifiers import PersonalAccountId, TenantId
-from ..money import DEFAULT_CURRENCY
+from ..money import DEFAULT_CURRENCY, require_aware_utc
 from ..persistence.database import get_tenant_session
 from . import service
 from .schemas import DEFAULT_LIST_LIMIT as _DEFAULT_LIMIT
@@ -85,6 +85,18 @@ async def get_transactions(
     end: datetime | None = None,
     limit: int = _DEFAULT_LIMIT,
 ) -> list[TransactionView]:
+    # Mirror the health route's window validation: a naive datetime compared against
+    # a timestamptz column is either misread or 500s (security audit finding) — 422
+    # at the boundary instead.
+    try:
+        if start is not None:
+            require_aware_utc(start, "start")
+        if end is not None:
+            require_aware_utc(end, "end")
+        if start is not None and end is not None and end <= start:
+            raise ValueError("end must be after start")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     async with get_tenant_session(tenant_id) as session:
         return await service.list_transactions(
             session, account_id=account_id, category=category, start=start, end=end, limit=limit
