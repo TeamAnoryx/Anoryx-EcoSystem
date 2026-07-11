@@ -699,3 +699,49 @@ micro_transaction_executions = sa.Table(
     sa.Column("requested_by", sa.String(128), nullable=False),
     sa.Column("executed_at", sa.DateTime(timezone=True), nullable=False),
 )
+
+# --- D-025 privacy-first bank-statement import framework (migration 0017) ---
+# No open-banking connection or aggregator API exists anywhere in this codebase —
+# `institution_label` is an operator-typed free string (like D-019's vendor_label),
+# NOT a live integration; see docs/adr/0025-delta-bank-import.md. All three tables
+# are append-only (SELECT/INSERT grants only). Deliberately NO raw-payload column
+# anywhere in this feature (privacy-first data minimization), and the bank-side
+# transaction reference is stored only as a SHA-256 hash.
+bank_sources = sa.Table(
+    "bank_sources",
+    metadata,
+    sa.Column("source_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("account_id", sa.String(64), nullable=False),
+    sa.Column("institution_label", sa.String(128), nullable=False),
+    sa.Column("created_by", sa.String(128), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+statement_imports = sa.Table(
+    "statement_imports",
+    metadata,
+    sa.Column("import_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("source_id", sa.String(64), nullable=False),
+    sa.Column("imported_by", sa.String(128), nullable=False),
+    sa.Column("imported_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("records_supplied", sa.Integer, nullable=False),
+    sa.Column("records_imported", sa.Integer, nullable=False),
+    sa.Column("records_skipped_duplicate", sa.Integer, nullable=False),
+    sa.Column("records_rejected", sa.Integer, nullable=False),
+)
+
+imported_statement_lines = sa.Table(
+    "imported_statement_lines",
+    metadata,
+    sa.Column("line_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("import_id", sa.String(64), nullable=False),
+    sa.Column("source_id", sa.String(64), nullable=False),
+    sa.Column("external_reference_hash", sa.String(64), nullable=False),
+    sa.Column("status", sa.String(24), nullable=False),
+    sa.Column("rejected_reason", sa.String(64), nullable=True),
+    sa.Column("txn_id", sa.String(64), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)

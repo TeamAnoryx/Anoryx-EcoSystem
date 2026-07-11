@@ -2,14 +2,14 @@
 dashboards, D-011 forecasting, D-012 chargeback/anomaly, D-013 unified CRM, D-014 ERP,
 D-015 project management, D-016 team capacity, D-017 RBAC, D-018 invoicing, D-019
 ERP/procurement/cloud-cost sync, D-020 executive dashboard, D-021 personal finance,
-D-022 subscriptions, D-024 micro-transaction execution).
+D-022 subscriptions, D-024 micro-transaction execution, D-025 bank imports).
 
 Exposes ``/v1/admin/*`` (allocations, decisions, history, dashboards, forecast,
 chargeback, crm, erp, pm, capacity, rbac, invoicing, integrations, executive,
-personal-finance, subscriptions, micro-transactions) plus a ``/health`` probe. One
-app/port for the whole admin console (D-008/.../D-024 add routes to the D-007 app
-rather than standing up a second process — same operators, same auth, same trust
-boundary).
+personal-finance, subscriptions, micro-transactions, bank-imports) plus a ``/health``
+probe. One app/port for the whole admin console (D-008/.../D-025 add routes to the
+D-007 app rather than standing up a second process — same operators, same auth, same
+trust boundary).
 Settings (the break-glass bearer token) are resolved fail-loud at construction,
 mirroring ``delta.ingest.app.create_app``. No public OpenAPI schema — this is an
 internal operator surface, not a versioned external contract.
@@ -20,6 +20,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from ..bank_import.router import router as bank_import_router
 from ..capacity.router import router as capacity_router
 from ..chargeback.router import router as chargeback_router
 from ..crm.router import router as crm_router
@@ -74,4 +75,5 @@ def create_app() -> FastAPI:
     app.include_router(personal_finance_router)
     app.include_router(subscriptions_router)
     app.include_router(micro_transactions_router)
+    app.include_router(bank_import_router)
     return app
