@@ -781,3 +781,106 @@ export interface ExecutiveSummaryView {
   open_pipeline_value_minor_units: number;
   pipeline_currency: string;
 }
+
+/**
+ * D-021 personal-finance (B2C track, Delta/src/delta/personal_finance/schemas.py).
+ * A B2C consumer IS one tenant_id (ADR-0021 Fork 1) — no separate consumer-identity
+ * shape. New, structurally separate from D-003's AI-cost ledger (ADR-0021 Fork 2).
+ */
+export type PersonalAccountType = "checking" | "savings" | "credit_card" | "cash" | "investment";
+export type PersonalTransactionCategory =
+  | "groceries"
+  | "rent"
+  | "utilities"
+  | "dining"
+  | "transport"
+  | "entertainment"
+  | "subscriptions"
+  | "healthcare"
+  | "income"
+  | "transfer"
+  | "other";
+export type PersonalBudgetCategory = Exclude<PersonalTransactionCategory, "income" | "transfer">;
+
+export interface AccountCreateRequest {
+  tenant_id: string;
+  type: PersonalAccountType;
+  currency: string;
+  name: string;
+}
+
+export interface AccountView {
+  account_id: string;
+  tenant_id: string;
+  type: PersonalAccountType;
+  currency: string;
+  name: string;
+  created_at: string;
+}
+
+export interface TransactionCreateRequest {
+  tenant_id: string;
+  account_id: string;
+  category: PersonalTransactionCategory;
+  /** Negative = expense, positive = income. */
+  amount_minor_units: number;
+  currency: string;
+  description?: string;
+  merchant?: string | null;
+  occurred_at: string;
+}
+
+export interface TransactionView {
+  txn_id: string;
+  tenant_id: string;
+  account_id: string;
+  category: PersonalTransactionCategory;
+  amount_minor_units: number;
+  currency: string;
+  description: string;
+  merchant: string | null;
+  occurred_at: string;
+  created_at: string;
+  source: "manual";
+}
+
+export interface BudgetCreateRequest {
+  tenant_id: string;
+  category: PersonalBudgetCategory;
+  cap_minor_units: number;
+  currency: string;
+  period?: "monthly";
+}
+
+export interface BudgetView {
+  budget_id: string;
+  tenant_id: string;
+  category: PersonalBudgetCategory;
+  cap_minor_units: number;
+  currency: string;
+  period: "monthly";
+  created_at: string;
+}
+
+export interface BudgetStatusView {
+  category: PersonalBudgetCategory;
+  cap_minor_units: number;
+  spent_minor_units: number;
+  currency: string;
+  over_cap: boolean;
+}
+
+export interface FinancialHealthView {
+  tenant_id: string;
+  period_start: string;
+  period_end: string;
+  generated_at: string;
+  currency: string;
+  total_income_minor_units: number;
+  total_expense_minor_units: number;
+  /** null iff total_income_minor_units is 0 (never a divide-by-zero placeholder). */
+  savings_rate: number | null;
+  budgets: BudgetStatusView[];
+  /** A deterministic heuristic score (0-100), NOT machine learning / AI. */
+  health_score: number;
+}
