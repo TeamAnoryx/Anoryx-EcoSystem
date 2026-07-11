@@ -732,7 +732,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-021 B2C personal budget tracking ✅ (shipped PR #137 — a B2C consumer is one tenant_id, no new identity model; a new schema structurally separate from D-003's AI-cost ledger; deterministic financial-health score, not AI/ML, see docs/adr/0021-delta-personal-finance-budget-tracking.md)
 - [x] D-022 B2C subscription mgmt + charge alerts ✅ (shipped PR #139 — bounded ENTERPRISE-tenant slice: subscription registry + append-only charge ledger + anomaly alerts reusing D-012's chargeback.anomaly unmodified; no B2C onboarding shell/bank-linking exists in this codebase, see docs/adr/0022-delta-subscription-anomaly-alerts.md)
 - [ ] D-023 B2C asset allocation + micro-investment 🏦
-- [ ] D-024 B2C real-time micro-transactions 🏦
+- [x] D-024 B2C real-time micro-transactions ✅ (shipped PR #143 — ledger-internal execution safety engine: idempotency-keyed, micro+daily capped, TOCTOU-safe, append-only, audit-chained over D-021's personal ledger; no payment rail exists in this codebase so no real money moves, see docs/adr/0024-delta-micro-transaction-execution.md)
 - [ ] D-025 B2C privacy-first multi-bank aggregation 🏦
 
 ## Rendly — 30 tasks (10 secure-comms MVP + 20 vision) — 6 shipped
