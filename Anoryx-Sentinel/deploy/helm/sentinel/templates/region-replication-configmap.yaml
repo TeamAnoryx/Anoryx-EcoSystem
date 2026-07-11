@@ -8,14 +8,16 @@
 # The generated SQL is append-only safe: it only CREATEs a publication/subscription
 # — it never drops, deletes, or rewrites data.
 #
-# HONESTY BOUNDARY (F-022 audit H1): the passive region's read-only posture is NOT
-# enforced by this deployment layer. SENTINEL_REGION_ROLE is context env only
-# (GatewaySettings extra="ignore" — no code reads it), and neither a DB-role REVOKE
-# nor an app-tier serve-path gate ships in F-022. A passive region that serves
-# governed traffic would append to its LOCAL events_audit_log and fork the chain /
-# collide on the per-DB sequence_number. Until app-tier role enforcement lands (the
-# named deferral — see docs/followups/f-022-passive-readonly-enforcement.md), an
-# operator MUST NOT route governed/audit-generating traffic to a passive region.
+# PASSIVE WRITE-EXCLUSION (F-022 audit H1 — RESOLVED, app-tier). The passive
+# region's read-only posture is now ENFORCED fail-closed in the app tier:
+# GatewaySettings reads SENTINEL_REGION_ROLE and PassiveRegionGuardMiddleware (the
+# outermost middleware) returns 503 for every governed / audit-generating request
+# on a passive region BEFORE the terminal audit writes — so a passive region cannot
+# append to its LOCAL events_audit_log, fork the chain, or collide on the per-DB
+# sequence_number. Only k8s probes are served on passive (promotable on failover).
+# Tradeoff: passive serves NO residency-local reads (a read would still write the
+# chain); safely serving them needs a global audit sequencer (still deferred — see
+# docs/followups/f-022-passive-readonly-enforcement.md).
 #
 # Residency safety is ENFORCED here (not merely conventional): the guard below
 # fails the render if region.replication.tables is not a subset of the approved
