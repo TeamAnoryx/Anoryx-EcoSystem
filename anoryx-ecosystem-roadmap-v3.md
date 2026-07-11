@@ -729,7 +729,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-018 Automated invoicing + vendor reconciliation ✅ (shipped PR #111 — bounded vertical slice: PO-backed invoice/payment three-way match + per-vendor reconciliation report, see docs/adr/0018-delta-invoicing-reconciliation.md)
 - [x] D-019 Corporate ERP integrations (NetSuite/SAP/Coupa/cloud) ✅ (shipped PR #118 — bounded vertical slice: generic external-system sync-ingestion + PO/invoice reconciliation-matching framework, not live per-vendor OAuth/API integrations, see docs/adr/0019-delta-erp-integrations.md)
 - [x] D-020 Executive financial dashboard ✅ (shipped PR #126 — pure read-only rollup composing D-008 spend, D-011 forecasts, D-013 pipeline via their own service functions; zero new tables/migration, see docs/adr/0020-delta-executive-dashboard.md)
-- [x] D-021 B2C personal budget tracking ✅ (shipped PR TBD — a B2C consumer is one tenant_id, no new identity model; a new schema structurally separate from D-003's AI-cost ledger; deterministic financial-health score, not AI/ML, see docs/adr/0021-delta-personal-finance-budget-tracking.md)
+- [x] D-021 B2C personal budget tracking ✅ (shipped PR #137 — a B2C consumer is one tenant_id, no new identity model; a new schema structurally separate from D-003's AI-cost ledger; deterministic financial-health score, not AI/ML, see docs/adr/0021-delta-personal-finance-budget-tracking.md)
 - [ ] D-022 B2C subscription mgmt + charge alerts 🏦
 - [ ] D-023 B2C asset allocation + micro-investment 🏦
 - [ ] D-024 B2C real-time micro-transactions 🏦

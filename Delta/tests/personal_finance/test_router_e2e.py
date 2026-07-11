@@ -136,6 +136,37 @@ async def test_health_score_rejects_end_before_start_over_http(
 
 
 @db_required
+async def test_transactions_list_rejects_naive_start_over_http(
+    client: httpx.AsyncClient, auth_headers: dict, tenant_id: str
+) -> None:
+    # Security audit finding: a naive datetime compared against a timestamptz column
+    # is either misread or 500s — the boundary must 422 instead.
+    resp = await client.get(
+        "/v1/admin/personal-finance/transactions",
+        params={"tenant_id": tenant_id, "start": "2026-01-01T00:00:00"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
+
+@db_required
+async def test_transactions_list_rejects_end_before_start_over_http(
+    client: httpx.AsyncClient, auth_headers: dict, tenant_id: str
+) -> None:
+    now = datetime.now(timezone.utc)
+    resp = await client.get(
+        "/v1/admin/personal-finance/transactions",
+        params={
+            "tenant_id": tenant_id,
+            "start": now.isoformat(),
+            "end": (now - timedelta(days=1)).isoformat(),
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
+
+@db_required
 async def test_cross_tenant_accounts_isolated_over_http(
     client: httpx.AsyncClient, auth_headers: dict, tenant_id: str, other_tenant_id: str
 ) -> None:

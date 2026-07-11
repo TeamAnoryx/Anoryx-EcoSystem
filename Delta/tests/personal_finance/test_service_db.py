@@ -226,6 +226,50 @@ async def test_financial_health_flags_over_cap_budget(tenant_id) -> None:
 
 
 @db_required
+async def test_financial_health_excludes_non_report_currency_budget(tenant_id) -> None:
+    # Security audit finding: a budget capped in a different currency than the
+    # report's spend figures must be EXCLUDED from the adherence calculation — it
+    # must never be silently scored as within-cap against a USD-scoped spend of 0.
+    account_id = await _seed_account(tenant_id)
+
+    async with get_tenant_session(tenant_id) as session:
+        await create_transaction(
+            session,
+            TransactionCreateRequest(
+                tenant_id=tenant_id,
+                account_id=account_id,
+                category="dining",
+                amount_minor_units=-500_000,
+                currency="EUR",
+                occurred_at=_NOW - timedelta(days=1),
+            ),
+            now=_NOW,
+        )
+
+    async with get_tenant_session(tenant_id) as session:
+        await create_budget(
+            session,
+            BudgetCreateRequest(
+                tenant_id=tenant_id, category="dining", cap_minor_units=10_000, currency="EUR"
+            ),
+            now=_NOW,
+        )
+
+    async with get_tenant_session(tenant_id) as session:
+        health = await get_financial_health(
+            session,
+            FinancialHealthQuery(tenant_id=tenant_id, start=_NOW - timedelta(days=7), end=_NOW),
+            now=_NOW,
+            currency="USD",
+        )
+
+    # The massively-overspent EUR budget must not appear as a within-cap USD budget,
+    # and must not contribute a perfect 40/40 budget-adherence score.
+    assert health.budgets == []
+    assert health.health_score == 0
+
+
+@db_required
 async def test_financial_health_cross_tenant_isolated(tenant_id, other_tenant_id) -> None:
     account_id = await _seed_account(tenant_id)
 
