@@ -122,7 +122,20 @@ def _cmd_build_manifest(
     return 0
 
 
-def _cmd_verify_bundle(root: str, in_path: str, pub_path: str | None) -> int:
+def _cmd_verify_bundle(
+    root: str, in_path: str, pub_path: str | None, insecure_skip_signature: bool
+) -> int:
+    # Signature verification is the point of this command. Require a public key
+    # unless the operator CONSCIOUSLY opts into digest-only via
+    # --insecure-skip-signature (which gives NO authenticity guarantee).
+    if not pub_path and not insecure_skip_signature:
+        print(
+            "BUNDLE INVALID: no --pub supplied. Pass the release public key to verify the "
+            "manifest signature, or --insecure-skip-signature to check digests ONLY (no "
+            "authenticity guarantee).",
+            file=sys.stderr,
+        )
+        return 1
     try:
         with open(in_path, encoding="utf-8") as fh:
             manifest = json.load(fh)
@@ -134,8 +147,14 @@ def _cmd_verify_bundle(root: str, in_path: str, pub_path: str | None) -> int:
     except (AirgapError, PolicyKeyError, OSError, json.JSONDecodeError, ValueError) as exc:
         print(f"BUNDLE INVALID: {exc}", file=sys.stderr)
         return 1
-    signed = " + signature" if pub_path else ""
-    print(f"OK: {len(verified)} artifact(s) verified{signed}.")
+    if pub_path:
+        print(f"OK: {len(verified)} artifact(s) verified + signature.")
+    else:
+        print(
+            f"WARNING: {len(verified)} artifact(s) matched their digests, but the manifest "
+            "signature was NOT verified (--insecure-skip-signature). This does NOT prove the "
+            "bundle is authentic."
+        )
     return 0
 
 
@@ -178,10 +197,15 @@ def main(argv: list[str] | None = None) -> int:
     bm.add_argument("--key", default=None, help="Sign the manifest with this private key.")
     bm.add_argument("--out", required=True, dest="out_path")
 
-    vb = sub.add_parser("verify-bundle", help="Verify a bundle's artifacts (and signature).")
+    vb = sub.add_parser("verify-bundle", help="Verify a bundle's artifacts + manifest signature.")
     vb.add_argument("--root", required=True)
     vb.add_argument("--in", required=True, dest="in_path")
-    vb.add_argument("--pub", default=None, help="Also verify the manifest signature.")
+    vb.add_argument("--pub", default=None, help="Release public key — verifies the signature.")
+    vb.add_argument(
+        "--insecure-skip-signature",
+        action="store_true",
+        help="Check digests ONLY, without the signature (no authenticity guarantee).",
+    )
 
     cm = sub.add_parser("check-mirror", help="Lint a mirror config for public-internet hosts.")
     cm.add_argument("--in", required=True, dest="in_path")
@@ -198,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
             args.root, args.files_from, args.files, args.bundle_id, args.key, args.out_path
         )
     if args.cmd == "verify-bundle":
-        return _cmd_verify_bundle(args.root, args.in_path, args.pub)
+        return _cmd_verify_bundle(args.root, args.in_path, args.pub, args.insecure_skip_signature)
     if args.cmd == "check-mirror":
         return _cmd_check_mirror(args.in_path)
     p.error("unknown command")  # pragma: no cover

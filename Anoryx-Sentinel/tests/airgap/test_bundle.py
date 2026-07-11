@@ -66,6 +66,15 @@ def test_tampered_manifest_body_breaks_signature(tmp_path):
         verify_bundle(manifest, str(tmp_path), public_key=pub)
 
 
+def test_signed_manifest_without_key_rejected(tmp_path):
+    """F-1: a present signature must NOT be silently skipped when no key is given."""
+    files = _make_bundle(tmp_path)
+    priv, _ = generate_keypair()
+    manifest = sign_manifest(build_manifest(str(tmp_path), files, bundle_id="2026.07"), priv)
+    with pytest.raises(BundleError, match="signed but no verifying key"):
+        verify_bundle(manifest, str(tmp_path))  # public_key=None
+
+
 def test_unsigned_manifest_with_key_rejected(tmp_path):
     files = _make_bundle(tmp_path)
     _, pub = generate_keypair()

@@ -11,9 +11,13 @@ untampered. This module builds and verifies a signed manifest:
   ES256 compact-JWS scheme as licenses (over a SHA-256 of the canonical manifest),
   so the operator verifies one signature to trust every digest.
 - `verify_bundle(manifest, root, public_key=None)` — recompute every file's
-  SHA-256 and confirm it matches the manifest; if a public key + signature are
-  present, verify the signature first. Fail-closed on ANY mismatch, missing file,
-  or bad signature.
+  SHA-256 and confirm it matches the manifest; if a public key is given the
+  signature is verified first. A manifest is self-attesting, so digest-only
+  checking proves nothing about authenticity — `verify_bundle` therefore
+  REFUSES (raises) when a manifest carries a signature but no key is supplied,
+  never silently skipping it. Fail-closed on ANY mismatch, missing file, or bad
+  signature. (The CLI further requires the operator to pass the key or an
+  explicit --insecure-skip-signature opt-out for an unsigned manifest.)
 
 Digest-then-sign (not sign-each-file) keeps the trust root a single signature
 while still binding every artifact.
@@ -95,8 +99,17 @@ def verify_bundle(
     if not isinstance(artifacts, dict) or not artifacts:
         raise BundleError("manifest has no artifacts")
 
+    # A manifest is self-attesting: without a signature check, digest matching only
+    # proves the files match the (attacker-replaceable) manifest, not that the
+    # bundle is authentic. So NEVER silently skip a present signature, and refuse
+    # to "verify" an unsigned manifest unless the caller explicitly opts out.
+    token = manifest.get("signature")
+    if token and public_key is None:
+        raise BundleError(
+            "manifest is signed but no verifying key was supplied — pass the public key "
+            "(refusing to skip signature verification)"
+        )
     if public_key is not None:
-        token = manifest.get("signature")
         if not token:
             raise BundleError("manifest is unsigned but a verifying key was supplied")
         try:

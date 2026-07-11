@@ -33,9 +33,13 @@ center or autonomous failure-detection-triggered rollback — see ADR-0014's hon
 boundaries), predictive scaling (GET /v1/admin/traffic-forecast — O-015, ADR-0015: a
 read-only current-rate projection over the O-003 ingest stream, `method:
 "current_rate_projection_v1"`, NOT actual autoscaling and NOT a trained model — see
-ADR-0015's honesty boundaries), plus a health probe. The query/distribution seams derive
-a per-tenant principal (require_tenant_principal); a missing/invalid token -> a uniform
-401. mTLS termination is O-008.
+ADR-0015's honesty boundaries), the cross-product safety-event visibility seam (POST +
+GET /v1/safety/events — X-004: lets Sentinel, Delta, and Rendly each push a normalized "a
+LOCAL safety inspection produced a non-pass outcome" record, metadata-only, into one
+durably audited, tenant-queryable log — mirrors O-010's identity-event correlation seam
+exactly), plus a health probe. The query/distribution seams derive a per-tenant principal
+(require_tenant_principal); a missing/invalid token -> a uniform 401. mTLS termination is
+O-008.
 """
 
 from __future__ import annotations
@@ -58,6 +62,7 @@ from orchestrator.config import (
     get_ingest_settings,
     get_messaging_settings,
     get_predictive_scaling_settings,
+    get_safety_settings,
 )
 from orchestrator.coordination.router import router as coordination_router
 from orchestrator.distribution.router import router as distribution_router
@@ -69,6 +74,7 @@ from orchestrator.messaging.router import router as messaging_router
 from orchestrator.predictive_scaling.router import router as predictive_scaling_router
 from orchestrator.query.router import router as query_router
 from orchestrator.relay.router import router as relay_router
+from orchestrator.safety.router import router as safety_router
 from orchestrator.security import PrincipalAuthError
 
 
@@ -121,6 +127,10 @@ def create_app() -> FastAPI:
     # a pure read that takes no autoscaling action of any kind — there is nothing
     # autonomous to gate (ADR-0015).
     app.state.predictive_scaling_settings = get_predictive_scaling_settings()
+    # Cross-product safety-event visibility (X-004) settings resolve NON-FATALLY; the
+    # ingest seam's request boundary enforces a matching source token fail-closed, not
+    # construction (mirrors identity_settings above).
+    app.state.safety_settings = get_safety_settings()
 
     @app.exception_handler(Exception)
     async def _fail_safe_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -210,4 +220,5 @@ def create_app() -> FastAPI:
     app.include_router(external_gateway_router)
     app.include_router(command_center_router)
     app.include_router(predictive_scaling_router)
+    app.include_router(safety_router)
     return app
