@@ -102,6 +102,19 @@ async def acquire_account_link_lock(session: AsyncSession, *, account_id: str) -
     await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:a))"), {"a": account_id})
 
 
+async def acquire_link_lock(session: AsyncSession, *, link_id: str) -> None:
+    """Transaction-scoped advisory lock serializing revoke <-> sync for ONE link
+    (auto-released at commit/rollback). Held for the FULL duration of the caller's
+    transaction (a sync holds it across its entire ingest loop, not just a single
+    check), closing the race an independent security review found: without this,
+    a sync already in flight could keep writing ``personal_transactions`` rows after
+    a concurrent revoke had already committed, silently ingesting data against
+    consent that was already withdrawn. Revoking a link and syncing it now
+    serialize — whichever transaction commits first wins, and the loser's own
+    status re-check (post-lock) sees the up-to-date row."""
+    await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:l))"), {"l": link_id})
+
+
 async def get_active_link_for_account(
     session: AsyncSession, *, account_id: str
 ) -> LinkRecord | None:

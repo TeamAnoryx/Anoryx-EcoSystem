@@ -141,6 +141,10 @@ async def revoke_link(session: AsyncSession, *, link_id: str, req: LinkRevokeReq
     existing = await store.get_link(session, link_id=link_id)
     if existing is None or existing.tenant_id != req.tenant_id:
         raise LinkNotFoundError(link_id)
+    # Serializes against a concurrent in-flight sync_link on the SAME link (see
+    # store.acquire_link_lock's docstring) -- whichever transaction commits first
+    # wins; this call blocks until any in-flight sync on this link has committed.
+    await store.acquire_link_lock(session, link_id=link_id)
     now = _now()
     revoked = await store.try_revoke_link(session, link_id=link_id, now=now)
     if not revoked:
@@ -167,6 +171,18 @@ async def sync_link(
     link = await store.get_link(session, link_id=link_id)
     if link is None or link.tenant_id != req.tenant_id:
         raise LinkNotFoundError(link_id)
+
+    # Held for the FULL duration of this sync (through the final commit below), not
+    # just this check -- closes the race an independent security review found: a
+    # concurrent revoke_link cannot commit while a sync is in flight on the SAME
+    # link, and this call blocks until any such revoke that started first has
+    # already committed (see store.acquire_link_lock's docstring). The status is
+    # re-read AFTER acquiring the lock, not from the pre-lock `link` above, since a
+    # revoke could have committed in the window between that read and this lock.
+    await store.acquire_link_lock(session, link_id=link_id)
+    link = await store.get_link(session, link_id=link_id)
+    if link is None or link.tenant_id != req.tenant_id:
+        raise LinkNotFoundError(link_id)  # unreachable: a link is never deleted
     if link.status != "linked":
         raise LinkRevokedError(f"linked_institution {link_id} is '{link.status}', not 'linked'")
 

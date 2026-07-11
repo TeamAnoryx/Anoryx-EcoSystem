@@ -5,6 +5,7 @@ against a real Postgres (real RLS, real constraints), never stubbed.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 import pytest
@@ -327,6 +328,52 @@ async def test_sync_lands_in_d009_audit_chain(tenant_id) -> None:
             session, entity_type="aggregation_sync_run", entity_id=run.sync_run_id
         )
     assert {r.action for r in rows} == {"completed"}
+
+
+@db_required
+async def test_concurrent_revoke_and_sync_never_ingest_after_revocation(tenant_id) -> None:
+    """Regression test for the independent security-auditor's Medium finding: a
+    sync in flight must not keep writing ledger rows after a concurrent revoke has
+    already committed. `store.acquire_link_lock` (ADR-0025) serializes revoke_link
+    and sync_link on the same link -- whichever commits first wins the race, and
+    the loser either raises LinkRevokedError (0 rows written) or completes fully
+    BEFORE the revoke proceeds (exactly 1 row written). Never a partial/mixed
+    outcome. Repeated across several fresh links to make the race likely to
+    actually interleave under real concurrency."""
+    for i in range(10):
+        account_id = await _make_account(tenant_id)
+        async with get_tenant_session(tenant_id) as session:
+            link = await create_link(session, _link_request(tenant_id, account_id))
+
+        async def _sync(link_id: str = link.link_id, race_ref: str = f"race-{i}"):
+            async with get_tenant_session(tenant_id) as session:
+                try:
+                    return await sync_link(
+                        session,
+                        link_id=link_id,
+                        req=_sync_request(tenant_id, [_item(external_reference=race_ref)]),
+                    )
+                except LinkRevokedError:
+                    return None
+
+        async def _revoke(link_id: str = link.link_id):
+            async with get_tenant_session(tenant_id) as session:
+                return await revoke_link(
+                    session,
+                    link_id=link_id,
+                    req=LinkRevokeRequest(tenant_id=tenant_id, requested_by="Jane"),
+                )
+
+        sync_result, revoke_result = await asyncio.gather(_sync(), _revoke())
+
+        assert revoke_result.status == "revoked"  # revoke always eventually succeeds
+        async with get_tenant_session(tenant_id) as session:
+            txns = await list_transactions(session, account_id=account_id, limit=10)
+        if sync_result is None:
+            assert txns == []  # revoke won: sync must not have written anything
+        else:
+            assert len(txns) == 1  # sync won: it fully completed before the revoke
+            assert txns[0].source == "aggregated"
 
 
 @db_required

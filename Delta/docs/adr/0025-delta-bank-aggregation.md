@@ -70,6 +70,7 @@ that receiving half completely, end to end, against Delta's own real ledger.
 | **8 — an aggregated transaction writes into D-021's OWN `personal_transactions` ledger, `source='aggregated'`, exactly like D-024 exercised the same extension point for `'execution'`** | Migration 0018 widens `ck_personal_txn_source` a second time: `('manual', 'execution')` → `('manual', 'execution', 'aggregated')`. `personal_finance.schemas.TransactionSource` widens in lock-step. | An aggregated transaction that D-021's budgets/health score could not see would be a dishonest ledger — the exact reasoning ADR-0024 Fork 3 already established for execution rows, applied here for the second (and, per D-021's own naming, final) time this designed extension point is exercised. The alternative (a parallel, aggregation-only ledger) was rejected as the same kind of unreconciled data silo D-024 already rejected. |
 | **9 — an account-scoped advisory lock closes the active-link-creation TOCTOU race** | `store.create_link` takes `pg_advisory_xact_lock(hashtext(account_id))` before checking for an existing active link and inserting — same shape as D-024's per-account execution lock (Fork 5 there), scoped to the SAME lock-key space (an account cannot be executing a micro-transaction and being linked "simultaneously" in a way that races, by design — they share a lock key, which only serializes unrelated operations on the same account, never a correctness problem). | Without the lock, two concurrent link-creation requests for the same account could both pass the "no active link exists" check and both insert, racing the partial-unique-index's own guarantee into an unpredictable 500 instead of a clean, deterministic 409 for the loser. The DB constraint (Fork 1's sibling, `uq_linked_institution_active_account`) is still the ultimate backstop — `test_active_link_partial_unique_index_enforced_at_db_layer` proves this by bypassing the lock/check entirely via a raw privileged-session INSERT. |
 | **10 — mounted on the existing admin app, `require_admin` only** | `POST/GET /v1/admin/bank-aggregation/links`, `POST /links/{id}/revoke`, `POST /links/{id}/sync`, `GET /links/{id}/sync-runs` on the same D-007 admin app, alongside the other 15 mounted routers. | Same reasoning as every prior D-021+ task: an internal operator/testing surface until a real B2C onboarding shell (still unbuilt anywhere in this ecosystem) exists to front it with genuine end-user auth. |
+| **11 — a link-scoped advisory lock serializes revoke against an in-flight sync (post-audit fix)** | An independent security-auditor review found that `sync_link` read a link's status ONCE, before its ingest loop, with no lock held for the loop's duration — a concurrent `revoke_link` could commit WHILE a sync was still writing `personal_transactions` rows, so bank data could be ingested after consent was already withdrawn (the audit chain would show `revoked` followed by `aggregated` writes dated after it). Fixed by `store.acquire_link_lock(hashtext(link_id))`, taken in BOTH `revoke_link` (before its conditional UPDATE) and `sync_link` (before its ingest loop, held for the loop's full duration, with the link's status re-read AFTER the lock is acquired — the pre-lock read is insufficient, since a revoke could commit in the window between it and the lock). Whichever call acquires the lock first now fully commits before the other proceeds. | This is the same "the loser sees accurate state, not a stale read" TOCTOU discipline this codebase has applied since D-018's audit-confirmed invoice over-commitment finding, applied here to a consent-lifecycle race instead of a money-ceiling race — but the property it protects (a revoked link never receives new writes) is the single most load-bearing claim this feature's "privacy-first" name makes, so closing it before merge (rather than naming it as a residual deferral) was the right call. As a side effect, this same lock also fully serializes two overlapping/retried syncs on the SAME link, closing a related Low finding (a redelivered transaction's dedup check-then-insert racing a concurrent sync of the same link) for free — the two syncs now simply never overlap. |
 
 ## 3. Honest deferrals (named, not half-built)
 
@@ -122,6 +123,7 @@ that receiving half completely, end to end, against Delta's own real ledger.
 | Cross-tenant leak — one tenant's links/sync-runs/ingested-transactions visible to another | Every store function runs inside the caller's own `get_tenant_session(tenant_id)`; all three new tables have `ENABLE`+`FORCE ROW LEVEL SECURITY` with the strict `NULLIF` predicate, `delta_app` is NOBYPASSRLS | `test_cross_tenant_links_isolated`, `test_cross_tenant_link_list_isolated`, `test_cross_tenant_sync_against_other_tenants_link_is_404`, `test_cross_tenant_links_isolated_over_http` |
 | A link is created against an account that doesn't exist or belongs to another tenant | `create_link` explicitly re-fetches the account via D-021's `personal_finance.store.get_account` and checks tenant ownership before writing (404), mirroring D-021's own `create_transaction` pattern — RLS/FK alone would not distinguish "doesn't exist" from "exists, wrong tenant," but both must 404 identically with no side effects | `test_create_link_unknown_account_raises`, `test_create_link_cross_tenant_account_raises`, `test_link_unknown_account_404_over_http`, `test_cross_tenant_links_isolated_over_http` |
 | A sync is accepted against a 'revoked' link | `sync_link` checks `link.status != "linked"` before processing any line item — raises `LinkRevokedError` → 409, zero line items processed | `test_sync_against_revoked_link_raises`, and the router e2e's revoke-then-sync-blocked flow |
+| A sync IN FLIGHT keeps writing ledger rows after a CONCURRENT revoke already committed (security-audit Medium finding, Fork 11) | `store.acquire_link_lock` serializes `revoke_link` and `sync_link` on the same link; `sync_link` re-reads status AFTER acquiring the lock, not from its pre-lock read | `test_concurrent_revoke_and_sync_never_ingest_after_revocation` (real `asyncio.gather` concurrency, repeated across 10 fresh links; asserts the outcome is always exactly "0 rows written, revoked" or "1 row written, then revoked" — never a partial/mixed result) |
 | Currency-mismatched line item silently converted or corrupts the batch | Rejected per-item, counted, never converted; the rest of the batch still processes | `test_sync_currency_mismatch_is_rejected_not_written`, `test_sync_mixed_batch_counts_are_consistent` |
 | A sync run's summary counts drift from what was actually written/deduplicated/rejected | `records_received = records_written + records_deduplicated + records_rejected` is BOTH a DB CHECK constraint AND derived from ONE pass over ONE list in the service layer (not two independently-maintained tallies) | `test_sync_mixed_batch_counts_are_consistent`; the CHECK itself is exercised implicitly by every passing sync test (a violation would 500, not silently pass) |
 | An aggregated transaction is invisible to D-021's own budget/health-score reads | `source='aggregated'` lands in the SAME `personal_transactions` table every D-021 read already consumes — no parallel ledger | `test_sync_writes_ledger_row_visible_to_d021`, `test_full_link_and_sync_flow_over_http` (confirms over HTTP via D-021's own transactions endpoint) |
@@ -143,23 +145,33 @@ that receiving half completely, end to end, against Delta's own real ledger.
   runs for real in CI's `quality` job and is expected to pass (no new pattern this
   diff introduces differs from the parameterized-query / no-eval / no-raw-SQL shape
   every prior semgrep-clean Delta package already uses).
-- New `tests/bank_aggregation/` suite: 60 tests — 21 pure schema-validation tests
+- New `tests/bank_aggregation/` suite: 61 tests — 22 pure schema-validation tests
   (`test_schemas.py`, no DB/I/O, including the masked-last4 charset/length
-  boundaries and the float/bool money-injection guards), 17 DB-backed store tests
+  boundaries and the float/bool money-injection guards), 12 DB-backed store tests
   (`test_store_db.py`, including the DB-layer masked-last4 CHECK, the partial
   unique-index proof via a raw bypass insert, the dedup-backstop proof, and the
-  three grant-shape assertions), 15 DB-backed service tests (`test_service_db.py`,
+  three grant-shape assertions), 20 DB-backed service tests (`test_service_db.py`,
   covering the full link/revoke/sync lifecycle, dedup, currency-mismatch handling,
-  cross-tenant isolation, and D-009 audit-chain wiring), 7 non-stubbed HTTP e2e
-  tests (`test_router_e2e.py` — real ASGI app, real auth, real DB, driving the full
-  flow: create account → link → sync → verify in D-021's own ledger → replay-dedup →
-  revoke → blocked re-sync).
+  cross-tenant isolation, D-009 audit-chain wiring, and the post-audit
+  revoke-vs-sync concurrency regression test — real `asyncio.gather`, repeated
+  across 10 fresh links), 7 non-stubbed HTTP e2e tests (`test_router_e2e.py` — real
+  ASGI app, real auth, real DB, driving the full flow: create account → link →
+  sync → verify in D-021's own ledger → replay-dedup → revoke → blocked re-sync).
+- Independent security-auditor review: verdict **CLEAN** of High/Critical findings.
+  One Medium finding (Fork 11: a sync in flight could keep writing after a
+  concurrent revoke committed) fixed before merge with a new regression test. Two
+  Low findings: (a) the same fix incidentally closed a related dedup check-then-
+  insert race between two overlapping syncs on the same link — no separate fix
+  needed; (b) the per-line-item ingest loop issues up to 3 sequential DB round
+  trips per item (bounded by the 500-item batch cap, admin-only, not an exploitable
+  DoS) — named as accepted residual scope, not fixed, mirroring D-019's own
+  identical "batch a future optimization, not required now" precedent.
 - Full existing Delta suite green on a fresh Postgres — zero regressions (verified
   locally against a from-scratch `delta_dev` database provisioned identically to
   CI's `ledger-db`/`migration-roundtrip` jobs: `delta`/`delta_app` roles, SCRAM
   password provisioning, `DELTA_PROVISION_APP_ROLE=1`, `pip install -e
   "../Rendly[dev]"` for the X-005 cross-repo lane exactly as CI's `ledger-db` job
-  does): 1122 passed, 15 skipped, 0 failed.
+  does): 1123 passed, 15 skipped, 0 failed.
 - Migration 0018 applied cleanly against a live local Postgres: `alembic upgrade
   head` from 0017, a full `downgrade base` → `upgrade head` round trip, and a true
   `DROP SCHEMA delta CASCADE` → `upgrade head` fresh rebuild — all clean.
