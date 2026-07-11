@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -45,6 +45,25 @@ class GatewaySettings(BaseSettings):
     max_concurrent_streams_per_tenant: int = 20
     # CORS: default-deny. Explicit allowlist only. Never "*" with credentials.
     cors_allowed_origins: list[str] = []
+
+    # --- F-022 multi-region posture (ADR-0028 D2; H1 remediation) ---
+    # This region's role. A "passive" region is a replication standby: it MUST NOT
+    # serve governed / audit-generating traffic, because every governed request
+    # appends to its LOCAL events_audit_log whose sequence_number is a per-DB
+    # bigserial that logical replication does not carry — a local write forks the
+    # tamper-evident hash chain (F-022 audit H1). Enforced fail-closed by
+    # gateway/middleware/region_guard.py. Default "active" so single-region and
+    # unset deployments serve normally; an invalid value fails startup (fail-loud)
+    # rather than risk an unenforced posture.
+    region_role: str = Field(default="active", validation_alias="SENTINEL_REGION_ROLE")
+
+    @field_validator("region_role")
+    @classmethod
+    def _validate_region_role(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in ("active", "passive"):
+            raise ValueError("SENTINEL_REGION_ROLE must be 'active' or 'passive'")
+        return normalized
 
     # --- F-009 Redis-backed rate limiting (ADR-0011) ---
     # redis_url keeps its default so γ (fallback to in-process) works without

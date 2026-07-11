@@ -216,16 +216,21 @@ zero change to the single-region default (byte-identical when off, gated at the 
 site); no `src/` change.
 
 **Does not (and you must account for):** automatic active-active multi-writer;
-automatic failover; a provisioned global load balancer; app-tier residency
-enforcement; **and — importantly — passive-region write-exclusion.** A passive
-region's read-only posture is NOT enforced by this chart (audit finding **H1**):
-`SENTINEL_REGION_ROLE` is context env only, and there is no DB-role `REVOKE` or
-app-tier serve gate. Because the terminal audit middleware writes to the **local**
-`events_audit_log` on every governed request, a passive region that serves governed
-traffic **forks the hash chain** and collides on the replicated `sequence_number`,
-halting replication. **Until app-tier role enforcement ships
-(`docs/followups/f-022-passive-readonly-enforcement.md`), do NOT route
-governed/audit-generating traffic to a passive region** — keep the passive
-`geoRouting` weight at 0 (as the example does) and treat passive strictly as a
-promote-on-failover standby. These are deferred by name in ADR-0028, not partially
+automatic failover; a provisioned global load balancer; and app-tier residency
+enforcement.
+
+**Passive-region write-exclusion IS now enforced (audit finding H1 — resolved).**
+The application refuses governed traffic on a passive region fail-closed: set
+`SENTINEL_REGION_ROLE=passive` and the outermost `PassiveRegionGuardMiddleware`
+returns `503` for every governed / audit-generating request **before** the
+terminal audit writes anything — so a passive region cannot append to its local
+`events_audit_log`, cannot fork the hash chain, and cannot collide on the
+replicated `sequence_number`. Only k8s liveness/readiness probes are served on
+passive (so the pod stays promotable); promotion is a config change to
+`SENTINEL_REGION_ROLE=active` + restart. You should still keep the passive
+`geoRouting` weight at 0 (governed requests routed there will simply 503).
+**Deliberate tradeoff:** a passive region serves **no residency-local reads**
+either — safely serving passive reads needs a cross-region global audit sequencer
+(still deferred; see `docs/followups/f-022-passive-readonly-enforcement.md`).
+Automatic failover and active-active remain deferred by name in ADR-0028, not partially
 built.
