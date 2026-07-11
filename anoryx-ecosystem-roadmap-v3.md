@@ -766,7 +766,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] R-027 B2B tenant + RBAC 🏦 ✅ (shipped PR #133, scoped to a fixed OrgRole -> PlatformPermission resolution seam over the existing Tenant/Profile types — no tenant-definable custom roles, no persistence, no REST/UI, no B2B onboarding; see ADR-0027)
 - [x] R-028 Intent-driven talent routing + skills inventory 🏦 ✅ (shipped PR #135, scoped to a permission-gated, intra-tenant composition seam over R-016's IntentProfile.offering + R-021's opportunity scorer + R-027's PlatformPermission — no persisted skills catalog, no job-board workflow, no new permission, no persistence, no REST/UI; see ADR-0028)
 - [x] R-029 Project/sprint workspaces + B2B analytics 🏦 ✅ (shipped PR #138, scoped to a sprint-scheduling + permission-gated reporting seam reusing R-006's Channel as the workspace container + R-027's VIEW_TENANT_AUDIT_LOG permission — no new persisted Workspace entity, no task/issue tracking, no BI analytics engine, no new permission, no persistence, no REST/UI; see ADR-0029)
-- [ ] R-030 Public embedding API + developer portal 🏦
+- [x] R-030 Public embedding API + developer portal 🏦 (shipped PR #<n>, scoped to a permission-gated, time-bounded `EmbedGrant` + public-safe `EmbedManifest` projection seam over R-013's Event/EventSession agenda — no developer portal, no REST/wire surface, no persisted API-key system, no embedding of Channel content; see ADR-0030)
 
 ## Cross-product — 6 tasks
 
