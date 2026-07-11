@@ -184,7 +184,10 @@ async def get_financial_health(
     )
     savings_rate = (total_income - total_expense) / total_income if total_income > 0 else None
 
-    latest_budgets = await store.get_latest_budgets(session)
+    # Currency-scoped: a budget capped in a different currency than this report's
+    # spend figures is EXCLUDED from the adherence calculation, never silently scored
+    # as within-cap against a spend of 0 (security audit finding, ADR-0021 §2 Fork 9).
+    latest_budgets = await store.get_latest_budgets(session, currency=currency)
     category_spend = {
         row.category: row.spent_minor_units
         for row in await store.get_category_spend(
