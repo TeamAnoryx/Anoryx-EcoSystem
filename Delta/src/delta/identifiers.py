@@ -83,6 +83,9 @@ PersonalBudgetId = UuidStr
 SubscriptionId = UuidStr
 SubscriptionChargeId = UuidStr
 
+# D-024 real-time personal micro-transaction execution.
+MicroTransactionExecutionId = UuidStr
+
 # Internal Sentinel component slug (NOT the end-user model name).
 AgentId = Annotated[str, StringConstraints(pattern=_AGENT_ID_PATTERN, max_length=_ID_MAX_LENGTH)]
 
