@@ -673,3 +673,28 @@ subscription_charges = sa.Table(
     sa.Column("note", sa.String(1024), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
+
+# --- D-023 personal asset-allocation recommendation history (migration 0016) ---
+# Append-only (mirrors `subscription_charges` above): a DETERMINISTIC, rules-based
+# target-allocation percentage split for one of three fixed risk tiers, plus a
+# recommended one-time micro-investment amount, computed against a `personal_accounts`
+# row of type "investment". No ML, no live market data — see
+# docs/adr/0023-delta-asset-allocation-recommendations.md.
+personal_allocation_recommendations = sa.Table(
+    "personal_allocation_recommendations",
+    metadata,
+    sa.Column("recommendation_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("account_id", sa.String(64), nullable=False),
+    sa.Column("risk_tier", sa.String(16), nullable=False),
+    sa.Column("cash_pct", sa.SmallInteger, nullable=False),
+    sa.Column("bonds_pct", sa.SmallInteger, nullable=False),
+    sa.Column("equities_pct", sa.SmallInteger, nullable=False),
+    sa.Column("period_start", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("period_end", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("surplus_minor_units", sa.BigInteger, nullable=False),
+    sa.Column("recommended_micro_investment_minor_units", sa.BigInteger, nullable=False),
+    sa.Column("currency", sa.String(3), nullable=False),
+    sa.Column("method", sa.String(32), nullable=False),
+    sa.Column("computed_at", sa.DateTime(timezone=True), nullable=False),
+)

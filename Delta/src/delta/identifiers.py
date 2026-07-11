@@ -83,6 +83,11 @@ PersonalBudgetId = UuidStr
 SubscriptionId = UuidStr
 SubscriptionChargeId = UuidStr
 
+# D-023 personal asset-allocation + micro-investment recommendations. Reuses D-021's
+# PersonalAccountId (the recommendation is always against an existing personal_accounts
+# row of type "investment") — no new account-level identifier needed.
+AllocationRecommendationId = UuidStr
+
 # Internal Sentinel component slug (NOT the end-user model name).
 AgentId = Annotated[str, StringConstraints(pattern=_AGENT_ID_PATTERN, max_length=_ID_MAX_LENGTH)]
 
