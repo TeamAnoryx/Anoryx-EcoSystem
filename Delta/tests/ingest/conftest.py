@@ -46,6 +46,9 @@ _DELTA_ROOT = Path(__file__).resolve().parents[2]  # .../Delta
 # A deterministic, test-only HMAC secret (never a real credential). Set into the env when
 # DELTA_INGEST_HMAC_SECRET is unset so create_app() and the dispatcher signer agree.
 _DEFAULT_TEST_SECRET = "delta-ingest-test-secret"  # noqa: S105 - test-only fake
+# A DISTINCT test-only secret for the X-005 revenue seam (never the usage secret) so tests
+# can prove each seam authenticates only its own key.
+_DEFAULT_TEST_REVENUE_SECRET = "delta-revenue-ingest-test-secret"  # noqa: S105 - test-only fake
 
 
 # --------------------------------------------------------------------------- helpers
@@ -204,8 +207,20 @@ def hmac_secret() -> bytes:
     return raw.encode("utf-8")
 
 
+@pytest.fixture(scope="session", autouse=True)
+def revenue_hmac_secret() -> bytes:
+    """The X-005 revenue-seam HMAC secret bytes; sets DELTA_REVENUE_INGEST_HMAC_SECRET if
+    unset (a DISTINCT test value from the usage secret). create_app() is fail-loud without
+    it, so this autouse fixture guarantees it is present before the app is built."""
+    raw = os.environ.get("DELTA_REVENUE_INGEST_HMAC_SECRET")
+    if not raw:
+        raw = _DEFAULT_TEST_REVENUE_SECRET
+        os.environ["DELTA_REVENUE_INGEST_HMAC_SECRET"] = raw
+    return raw.encode("utf-8")
+
+
 @pytest.fixture
-def app(hmac_secret: bytes, monkeypatch: pytest.MonkeyPatch):
+def app(hmac_secret: bytes, revenue_hmac_secret: bytes, monkeypatch: pytest.MonkeyPatch):
     """The real Delta ingest app (POST /v1/ingest/usage + /health).
 
     These tests exercise ONLY the D-004 consume/posting/DLQ path — never the D-005
@@ -264,6 +279,29 @@ def sign(hmac_secret: bytes) -> SignFn:
     return _sign
 
 
+@pytest.fixture
+def sign_revenue(revenue_hmac_secret: bytes) -> SignFn:
+    """Return a signer producing the HMAC headers for the X-005 revenue seam.
+
+    Identical convention to :func:`sign` (``hmac_sha256(secret, f"{ts}".encode + b"." +
+    body)``) but keyed by the REVENUE secret by default; pass ``secret`` to forge or to
+    sign with the wrong (e.g. usage) key.
+    """
+
+    def _sign(body: bytes, secret: bytes | None = None, ts: int | None = None) -> dict[str, str]:
+        used = revenue_hmac_secret if secret is None else secret
+        stamp = int(time.time()) if ts is None else int(ts)
+        signed = f"{stamp}".encode("ascii") + b"." + body
+        digest = hmac.new(used, signed, hashlib.sha256).hexdigest()
+        return {
+            "X-Orchestrator-Timestamp": str(stamp),
+            "X-Orchestrator-Signature": f"sha256={digest}",
+            "Content-Type": "application/json",
+        }
+
+    return _sign
+
+
 # --------------------------------------------------------------------------- tenants + event
 @pytest.fixture
 def tenant_id() -> str:
@@ -299,6 +337,37 @@ def usage_event() -> Callable[..., dict]:
             "tokens_out": 200,
             "latency_ms": 42,
             "cost_estimate_cents": cost,
+        }
+        payload.update(over)
+        return payload
+
+    return _make
+
+
+@pytest.fixture
+def revenue_event() -> Callable[..., dict]:
+    """Factory: a valid X-005 ``RevenueIngestRecord`` dict (delta-financial.schema.json).
+
+    ``event_type`` defaults to ``subscription_granted``; ``amount`` populates amount_cents (a
+    JSON integer); ``idem`` sets the idempotency_key (default a fresh one); ``**over``
+    overrides/injects any field. ``source_product`` is DELIBERATELY absent (server-resolved).
+    """
+
+    def _make(
+        tenant_id: str,
+        *,
+        event_type: str = "subscription_granted",
+        amount: object = 1999,
+        idem: str | None = None,
+        **over,
+    ) -> dict:
+        payload: dict[str, object] = {
+            "tenant_id": tenant_id,
+            "event_type": event_type,
+            "tier": "premium",
+            "amount_cents": amount,
+            "idempotency_key": idem or ("rev-" + uuid.uuid4().hex),
+            "occurred_at": "2026-06-26T12:00:00Z",
         }
         payload.update(over)
         return payload

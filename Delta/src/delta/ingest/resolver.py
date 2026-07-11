@@ -36,6 +36,13 @@ DELTA_ACCOUNT_NAMESPACE = uuid.UUID("d0e1f2a3-0004-4000-8000-000000000004")
 _EXPENSE_ROLE = "expense"
 _CONTRA_ROLE = "spend_clearing"
 
+# X-005 revenue posting roles. DELIBERATELY DISTINCT role strings from the usage
+# expense/contra roles above: because the account id hashes (tenant, currency, role), a
+# different role yields a different deterministic account id, so a revenue account can
+# NEVER collide with a usage account for the same (tenant, currency).
+_REVENUE_RECEIVABLE_ROLE = "subscription_receivable"
+_REVENUE_ACCOUNT_ROLE = "subscription_revenue"
+
 
 @dataclass(frozen=True)
 class ResolvedAccounts:
@@ -43,6 +50,14 @@ class ResolvedAccounts:
 
     expense_account_id: str
     contra_account_id: str
+
+
+@dataclass(frozen=True)
+class ResolvedRevenueAccounts:
+    """The two same-tenant accounts an X-005 subscription_granted's two-leg txn posts to."""
+
+    receivable_account_id: str
+    revenue_account_id: str
 
 
 def _account_id(tenant_id: str, currency: str, role: str) -> str:
@@ -113,5 +128,48 @@ async def ensure_accounts(session: AsyncSession, tenant_id: str, currency: str) 
         account_type=AccountType.LIABILITY,
         currency=currency,
         name=f"AI Spend Clearing ({currency})",
+    )
+    return resolved
+
+
+def resolve_revenue_account_ids(tenant_id: str, currency: str) -> ResolvedRevenueAccounts:
+    """Compute the deterministic (receivable, revenue) account ids — no DB access."""
+    return ResolvedRevenueAccounts(
+        receivable_account_id=_account_id(tenant_id, currency, _REVENUE_RECEIVABLE_ROLE),
+        revenue_account_id=_account_id(tenant_id, currency, _REVENUE_ACCOUNT_ROLE),
+    )
+
+
+async def ensure_revenue_accounts(
+    session: AsyncSession, tenant_id: str, currency: str
+) -> ResolvedRevenueAccounts:
+    """Ensure both X-005 revenue accounts exist in the caller's tenant session (no commit).
+
+    Same get-or-create (INSERT ... ON CONFLICT DO NOTHING), same caller-transaction
+    discipline as :func:`ensure_accounts`, so the composite same-tenant FK on
+    ledger_entries is satisfied atomically when the posting commits. The two accounts are:
+
+      * receivable — ``AccountType.ASSET`` (an amount owed to / collected by the tenant),
+      * revenue    — ``AccountType.REVENUE`` (recognized subscription income).
+
+    A subscription_granted DEBITs the receivable (increasing the asset) and CREDITs the
+    revenue account (increasing revenue), netting to zero (balanced by construction).
+    """
+    resolved = resolve_revenue_account_ids(tenant_id, currency)
+    await _ensure_account(
+        session,
+        account_id=resolved.receivable_account_id,
+        tenant_id=tenant_id,
+        account_type=AccountType.ASSET,
+        currency=currency,
+        name=f"Subscription Receivable ({currency})",
+    )
+    await _ensure_account(
+        session,
+        account_id=resolved.revenue_account_id,
+        tenant_id=tenant_id,
+        account_type=AccountType.REVENUE,
+        currency=currency,
+        name=f"Subscription Revenue ({currency})",
     )
     return resolved

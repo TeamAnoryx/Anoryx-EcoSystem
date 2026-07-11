@@ -23,12 +23,14 @@ _COMPOSE = _DELTA_ROOT / "docker-compose.yml"
 _SECRET_NAMES = (
     "postgres_password",
     "delta_ingest_hmac_secret",
+    "delta_revenue_ingest_hmac_secret",
     "orch_service_token",
     "delta_admin_token",
 )
 _FORBIDDEN_ENV = (
     "POSTGRES_PASSWORD",
     "DELTA_INGEST_HMAC_SECRET",
+    "DELTA_REVENUE_INGEST_HMAC_SECRET",
     "ORCH_SERVICE_TOKEN",
     "DELTA_ADMIN_TOKEN",
     "ANTHROPIC_API_KEY",
@@ -60,9 +62,15 @@ def test_app_services_use_file_secrets_not_env_passwords():
 def test_app_services_mount_their_required_secrets():
     c = _compose()
     ingest = c["services"]["delta-ingest"]
-    assert {"postgres_password", "delta_ingest_hmac_secret", "orch_service_token"}.issubset(
-        set(ingest["secrets"])
-    ), "delta-ingest must mount postgres_password, delta_ingest_hmac_secret, orch_service_token"
+    assert {
+        "postgres_password",
+        "delta_ingest_hmac_secret",
+        "delta_revenue_ingest_hmac_secret",
+        "orch_service_token",
+    }.issubset(set(ingest["secrets"])), (
+        "delta-ingest must mount postgres_password, delta_ingest_hmac_secret, "
+        "delta_revenue_ingest_hmac_secret, orch_service_token"
+    )
 
     admin = c["services"]["delta-admin"]
     assert {"postgres_password", "delta_admin_token"}.issubset(

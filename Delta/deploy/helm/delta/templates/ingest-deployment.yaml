@@ -44,8 +44,9 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           # The image's ENTRYPOINT (docker-entrypoint.sh) stays in place — it
           # assembles DATABASE_URL / APP_DATABASE_URL / DELTA_INGEST_HMAC_SECRET
-          # / ORCH_SERVICE_TOKEN from envSecret/pgEnv, then execs these args
-          # (its `exec "$@"` tail). No `command:` override here.
+          # / DELTA_REVENUE_INGEST_HMAC_SECRET / ORCH_SERVICE_TOKEN from
+          # envSecret/pgEnv, then execs these args (its `exec "$@"` tail). No
+          # `command:` override here.
           args:
             - uvicorn
             - delta.ingest.app:create_app

@@ -92,7 +92,8 @@ services:
   # Bearer-token seam (ORCH_SERVICE_TOKEN) when enabled. Reads file-based   #
   # Docker secrets at /run/secrets/* (the entrypoint shim assembles         #
   # DATABASE_URL / APP_DATABASE_URL / DELTA_INGEST_HMAC_SECRET /            #
-  # ORCH_SERVICE_TOKEN). Passwords/tokens are NEVER set as environment      #
+  # DELTA_REVENUE_INGEST_HMAC_SECRET / ORCH_SERVICE_TOKEN). Passwords/      #
+  # tokens are NEVER set as environment                                     #
   # variables here — only mounted as secret files (`docker inspect` env    #
   # must contain no secret value).                                         #
   #                                                                         #
@@ -127,6 +128,7 @@ services:
     secrets:
       - postgres_password
       - delta_ingest_hmac_secret
+      - delta_revenue_ingest_hmac_secret
       - orch_service_token
     ports:
       - "8000:8000"
@@ -196,6 +198,8 @@ secrets:
     file: ./deploy/secrets/postgres_password
   delta_ingest_hmac_secret:
     file: ./deploy/secrets/delta_ingest_hmac_secret
+  delta_revenue_ingest_hmac_secret:
+    file: ./deploy/secrets/delta_revenue_ingest_hmac_secret
   orch_service_token:
     file: ./deploy/secrets/orch_service_token
   delta_admin_token:

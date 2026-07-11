@@ -774,7 +774,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] X-002 Orchestrator ↔ Delta wiring — Easy-Tricky (6-10h) (shipped PR #97)
 - [ ] X-003 Budget enforcement loop (killer feature) — Tricky (10-14h) — DESIGNED, blocked on env-fix + human sign-off: the `POST /admin/policies/intake` endpoint is fully authored — ADR-0042 (reverses ADR-0009 §11 R1, with threat model, status Proposed) + the exact staged `contracts/openapi.yaml` additions (`Anoryx-Sentinel/docs/followups/x-003-openapi-additions.yaml`). Two remaining blockers, both human: (1) launch the api-architect agent with `ANORYX_ACTIVE_AGENT=api-architect` so the hook lets it write `contracts/` (the propagation gap that kept all HTTP surfaces CLI-only), (2) security sign-off on the ADR-0009 reversal. Then route + non-stubbed 3-hop e2e is a normal builder task. See `Anoryx-Sentinel/docs/followups/x-003-policy-intake-http-endpoint.md`
 - [x] X-004 Rendly ↔ Sentinel safety — Easy-Tricky 🔮 ✅ (scoped to a bounded metadata-only oversight-visibility seam Rendly → Orchestrator — NOT a direct Rendly-Sentinel wire, NOT a detector integration; R-008's data-sovereignty decision is unchanged — see Rendly ADR-0026, Orchestrator ADR-0017)
-- [ ] X-005 Rendly ↔ Delta monetization — Tricky 🏦
+- [x] X-005 Rendly ↔ Delta monetization — Tricky 🏦 ✅ (scoped to a real emitter → Delta revenue-ingest ledger seam: Rendly premium grant → Delta double-entry revenue recognition, integer-cents, idempotent — NOT a payment processor/checkout, NOT entitlement persistence, NOT reversal-on-revoke in v1 — see Rendly ADR-0028, Delta ADR-0021)
 - [ ] X-006 End-to-end ecosystem demo — Tricky 🔮
 
 ---

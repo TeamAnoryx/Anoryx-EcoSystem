@@ -28,6 +28,10 @@ printf '%s' "${POSTGRES_PASSWORD:-delta}" > deploy/secrets/postgres_password
 # 2. Ingest HMAC signing secret (DELTA_INGEST_HMAC_SECRET) — random, 32+ bytes.
 openssl rand -base64 48 > deploy/secrets/delta_ingest_hmac_secret
 
+# 2b. Revenue-ingest HMAC secret (DELTA_REVENUE_INGEST_HMAC_SECRET, X-005) —
+#     random, 32+ bytes. DEDICATED per source; MUST differ from the usage secret above.
+openssl rand -base64 48 > deploy/secrets/delta_revenue_ingest_hmac_secret
+
 # 3. Outbound Bearer token to the Orchestrator (ORCH_SERVICE_TOKEN) — random,
 #    32+ bytes. Only exercised when DELTA_BUDGET_ENGINE_ENABLED=1 or
 #    DELTA_KILL_SWITCH_ENABLED=1 (both default 0 in docker-compose.yml).
@@ -43,6 +47,7 @@ openssl rand -base64 48 > deploy/secrets/delta_admin_token
 |------|----------|-------|
 | `postgres_password` | Postgres password | Must equal the postgres service's `POSTGRES_PASSWORD`. |
 | `delta_ingest_hmac_secret` | Random ≥32 bytes | HMAC key `delta.ingest` uses to verify `POST /v1/ingest/usage` signatures (`DELTA_INGEST_HMAC_SECRET`). Fail-loud if unset — the ingest app refuses to start. |
+| `delta_revenue_ingest_hmac_secret` | Random ≥32 bytes | DEDICATED per-source HMAC key verifying `POST /v1/ingest/revenue` signatures (`DELTA_REVENUE_INGEST_HMAC_SECRET`, X-005); holding it identifies the caller as the source product (v1: rendly). MUST differ from `delta_ingest_hmac_secret`. Fail-loud if unset — the ingest app refuses to start. |
 | `orch_service_token` | Random ≥32 bytes | Bearer token authenticating the Delta -> Orchestrator O-004 distribution seam (`ORCH_SERVICE_TOKEN`). Only required when the budget engine or kill-switch publish path is enabled. |
 | `delta_admin_token` | Random ≥32 bytes | Break-glass bearer for the admin console (`DELTA_ADMIN_TOKEN`). Fail-loud if unset — the admin app refuses to start. |
 

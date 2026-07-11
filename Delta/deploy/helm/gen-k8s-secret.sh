@@ -5,8 +5,9 @@
 # Anoryx-Sentinel's deploy/helm/gen-k8s-secret.sh (ADR-0027 D3).
 #
 # Creates, from freshly generated dev values:
-#   Secret <release>-delta-env  (DELTA_INGEST_HMAC_SECRET, DELTA_ADMIN_TOKEN,
-#                                 ORCH_SERVICE_TOKEN)
+#   Secret <release>-delta-env  (DELTA_INGEST_HMAC_SECRET,
+#                                 DELTA_REVENUE_INGEST_HMAC_SECRET,
+#                                 DELTA_ADMIN_TOKEN, ORCH_SERVICE_TOKEN)
 #
 # The bundled-Postgres password is rendered by the chart itself (dev-grade
 # default), so it is NOT created here.
@@ -48,6 +49,7 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 # --- env Secret (apply = create-or-update; never errors on re-run) ------------ #
 kubectl create secret generic "$ENV_SECRET" -n "$NAMESPACE" \
     --from-literal=DELTA_INGEST_HMAC_SECRET="$(rand_hex 32)" \
+    --from-literal=DELTA_REVENUE_INGEST_HMAC_SECRET="$(rand_hex 32)" \
     --from-literal=DELTA_ADMIN_TOKEN="$(rand_hex 32)" \
     --from-literal=ORCH_SERVICE_TOKEN="$(rand_hex 32)" \
     --dry-run=client -o yaml | kubectl apply -n "$NAMESPACE" -f - >/dev/null
