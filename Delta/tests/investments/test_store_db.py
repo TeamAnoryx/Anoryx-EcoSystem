@@ -197,3 +197,136 @@ async def test_cross_tenant_isolation(tenant_id, other_tenant_id) -> None:
         holdings = await store.get_latest_holdings(session)
 
     assert holdings == []
+
+
+@db_required
+async def test_get_latest_holdings_unscoped_keeps_same_class_in_different_currencies(
+    tenant_id,
+) -> None:
+    # Security audit finding: grouping "latest per pair" by (account_id,
+    # asset_class) only — without currency — silently hid the older currency's row
+    # behind the newer one's MAX(created_at) when an account holds the SAME asset
+    # class in two currencies. currency must be part of the grouping key.
+    account_id = await _seed_investment_account(tenant_id)
+
+    async with get_tenant_session(tenant_id) as session:
+        await store.create_holding(
+            session,
+            tenant_id=tenant_id,
+            account_id=account_id,
+            asset_class="stocks",
+            value_minor_units=100_000,
+            currency="USD",
+            now=_NOW - timedelta(days=1),
+        )
+        await store.create_holding(
+            session,
+            tenant_id=tenant_id,
+            account_id=account_id,
+            asset_class="stocks",
+            value_minor_units=50_000,
+            currency="EUR",
+            now=_NOW,
+        )
+        await session.commit()
+
+    async with get_tenant_session(tenant_id) as session:
+        holdings = await store.get_latest_holdings(session)
+
+    assert {(h.currency, h.value_minor_units) for h in holdings} == {
+        ("USD", 100_000),
+        ("EUR", 50_000),
+    }
+
+
+@db_required
+async def test_get_total_value_by_asset_class_sums_across_accounts(tenant_id) -> None:
+    account_a = await _seed_investment_account(tenant_id, name="Brokerage A")
+    account_b = await _seed_investment_account(tenant_id, name="Brokerage B")
+
+    async with get_tenant_session(tenant_id) as session:
+        await store.create_holding(
+            session,
+            tenant_id=tenant_id,
+            account_id=account_a,
+            asset_class="stocks",
+            value_minor_units=100_000,
+            currency="USD",
+            now=_NOW,
+        )
+        await store.create_holding(
+            session,
+            tenant_id=tenant_id,
+            account_id=account_b,
+            asset_class="stocks",
+            value_minor_units=200_000,
+            currency="USD",
+            now=_NOW,
+        )
+        await store.create_holding(
+            session,
+            tenant_id=tenant_id,
+            account_id=account_a,
+            asset_class="bonds",
+            value_minor_units=50_000,
+            currency="USD",
+            now=_NOW,
+        )
+        # Excluded: different currency, and a superseded (non-latest) snapshot.
+        await store.create_holding(
+            session,
+            tenant_id=tenant_id,
+            account_id=account_a,
+            asset_class="crypto",
+            value_minor_units=999_999,
+            currency="EUR",
+            now=_NOW,
+        )
+        await store.create_holding(
+            session,
+            tenant_id=tenant_id,
+            account_id=account_a,
+            asset_class="stocks",
+            value_minor_units=1,
+            currency="USD",
+            now=_NOW - timedelta(days=1),
+        )
+        await session.commit()
+
+    async with get_tenant_session(tenant_id) as session:
+        totals = await store.get_total_value_by_asset_class(session, currency="USD")
+
+    assert totals == {"stocks": 300_000, "bonds": 50_000}
+
+
+@db_required
+async def test_get_total_value_by_asset_class_sums_only_the_latest_snapshot(tenant_id) -> None:
+    # get_total_value_by_asset_class is a genuine SQL aggregate with no .limit()
+    # clause of its own (security audit finding: the old code path computed the
+    # portfolio total via the LIST query, which IS capped at MAX_LIST_LIMIT and
+    # would silently truncate a large portfolio). This proves it still follows the
+    # same "one row per (account, asset_class, currency)" insert-only semantics as
+    # get_latest_holdings — many superseded snapshots never inflate the sum.
+    account_id = await _seed_investment_account(tenant_id)
+    count = 20
+
+    async with get_tenant_session(tenant_id) as session:
+        for i in range(count):
+            await store.create_holding(
+                session,
+                tenant_id=tenant_id,
+                account_id=account_id,
+                asset_class="other",
+                value_minor_units=1,
+                currency="USD",
+                now=_NOW - timedelta(seconds=count - i),
+            )
+        await session.commit()
+
+    async with get_tenant_session(tenant_id) as session:
+        # Only the LATEST "other" snapshot for this one account counts (insert-only
+        # semantics) — this proves the aggregate follows the same latest-per-pair
+        # rule as get_latest_holdings, not that N snapshots sum together.
+        totals = await store.get_total_value_by_asset_class(session, currency="USD")
+
+    assert totals == {"other": 1}

@@ -165,12 +165,11 @@ async def get_allocation_recommendation(
     now: datetime,
     currency: str,
 ) -> AllocationRecommendationView:
-    holdings = await store.get_latest_holdings(
-        session, currency=currency, limit=store.MAX_LIST_LIMIT
-    )
+    # A genuine SQL aggregate, unbounded by any list limit — the portfolio total
+    # must never be silently truncated by a display-endpoint row cap (security
+    # audit finding; see get_total_value_by_asset_class's own docstring).
     value_by_class: dict[str, int] = {ac: 0 for ac in ASSET_CLASSES}
-    for h in holdings:
-        value_by_class[h.asset_class] += h.value_minor_units
+    value_by_class.update(await store.get_total_value_by_asset_class(session, currency=currency))
     total_value = sum(value_by_class.values())
 
     target_weights = _TARGET_ALLOCATIONS[query.risk_profile]

@@ -118,6 +118,16 @@ rather than implied to be predictive intelligence.
 - Full existing Delta suite green — zero regressions.
 - Migration 0017 applied cleanly against a live local Postgres (`alembic upgrade
   head` / `downgrade base` / `upgrade head` round trip).
+- Independent security-auditor review: verdict **CLEAN** of High/Critical
+  findings. One Medium finding (the portfolio total was computed via a
+  list-endpoint query capped at 500 rows, silently truncating a large
+  portfolio's aggregate) and one Low (a currency-omitted grouping key hid a
+  same-account, same-class holding recorded in a second currency) — both fixed
+  before merge with three new regression tests. Two further Low findings
+  (hardcoded USD reporting currency; an unreachable-in-practice `created_at`
+  timestamp-tie edge case, both identical in shape to pre-existing D-021
+  precedent) are documented as residual scope, not fixed. Full detail:
+  `docs/audit/d-023-security-audit.md`.
 
 ## 6. Alternatives considered
 
