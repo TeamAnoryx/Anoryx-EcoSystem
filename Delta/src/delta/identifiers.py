@@ -72,6 +72,13 @@ ExternalSystemId = UuidStr
 SyncRunId = UuidStr
 SyncLineItemId = UuidStr
 
+# D-021 personal budget tracking (B2C track). A B2C consumer IS one tenant_id here —
+# no separate consumer-identity type (ADR-0021 Fork 1: reuse D-001's existing
+# multi-tenant scoping boundary rather than building a new identity model).
+PersonalAccountId = UuidStr
+PersonalTransactionId = UuidStr
+PersonalBudgetId = UuidStr
+
 # D-022 recurring-subscription registry + charge ledger.
 SubscriptionId = UuidStr
 SubscriptionChargeId = UuidStr

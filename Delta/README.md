@@ -471,6 +471,40 @@ forecasts, D-013 CRM pipeline. See
   (fixed by scoping both to the same currency predicate). See ADR-0020 §2 Fork 8 and
   [`docs/audit/d-020-security-audit.md`](docs/audit/d-020-security-audit.md).
 
+## D-021 — Personal Budget Tracking + Financial Health Score (🏦 B2C track, post-investment)
+
+D-021 is the first task in the D-021→D-025 B2C personal-finance track. The roadmap's own
+`Depends on: D-003 + the B2C onboarding shell` line names a dependency that does not exist
+anywhere in this ecosystem — verified directly before starting (no consumer identity/signup/
+auth model exists in Delta; Rendly's R-023 "Consumer onboarding" explicitly disclaims building
+one, see its own ADR-0023). This task resolves that gap the same way every D-013+ task resolved
+an unbuildable stated dependency: name the real gap, build the honest bounded slice on what DOES
+exist. See [`docs/adr/0021-delta-personal-finance-budget-tracking.md`](docs/adr/0021-delta-personal-finance-budget-tracking.md).
+
+- **Backend:** `src/delta/personal_finance/` — a B2C consumer IS one `tenant_id` (Fork 1, no new
+  identity model). A new, structurally separate schema from D-003's AI-cost ledger (Fork 2):
+  `personal_transactions` is single-entry (one signed amount, category-tagged), not D-003's
+  double-entry `ledger_entries` shape, which bakes in AI-cost-specific `team_id`/`project_id`/
+  `agent_id` columns that have no meaning for a grocery purchase.
+- **New tables** (migration 0014): `personal_accounts`, `personal_transactions`,
+  `personal_budgets` — additive, INSERT-only (no UPDATE/DELETE grant anywhere), no other table
+  touched.
+- **New endpoints:** `POST/GET /v1/admin/personal-finance/{accounts,transactions,budgets}`,
+  `GET .../health-score` — gated at `require_admin` only (an internal operator/testing console
+  until a real B2C onboarding shell exists to front it with genuine end-user auth).
+- **Frontend:** `/personal-finance` — account/transaction/budget forms plus a financial-health
+  panel (score, income/expenses, savings rate, per-category budget status).
+- **The health score is a disclosed deterministic heuristic, NOT AI/ML** — mirrors D-011's
+  "predictive" forecasting and D-015's "AI-driven" bottleneck detection, both plain arithmetic
+  under an AI-sounding roadmap name. Formula: 0-60 points from savings rate, 0-40 points from
+  budget adherence; a missing signal (no income, no budgets) scores 0, never silently reweighted
+  or assumed favorable (ADR-0021 §2 Forks 5-6).
+- **Two real bugs caught mid-implementation:** a `Decimal`-vs-`float` `TypeError` in the
+  health-score formula (Postgres `SUM()` returns `Decimal` via asyncpg; fixed by wrapping every
+  aggregate in `int(...)` at the store boundary, mirroring `dashboards.store`'s own convention),
+  and the same RLS session-reuse bug class hit repeatedly since D-018 (fixed by splitting
+  multi-commit test helpers into separate `get_tenant_session` blocks per commit).
+
 ## Layout
 
 ```
@@ -488,6 +522,7 @@ src/delta/rbac/                D-017 locally-issued role-tagged access tokens ga
 src/delta/invoicing/          D-018 PO-backed invoice/payment three-way match + vendor reconciliation
 src/delta/integrations/       D-019 external-system sync ingestion + PO/invoice reconciliation matching
 src/delta/executive/          D-020 read-only rollup composing D-008/D-011/D-013 (no new tables)
+src/delta/personal_finance/   D-021 B2C personal budget tracking + financial health score
 frontend/         D-007/D-008 Next.js admin console (BFF-only, see frontend/README.md)
 contracts/        Delta-owned JSON Schemas (Draft 2020-12, additionalProperties:false)
 tests/            non-stubbed proofs of every invariant + the Budget round-trip

@@ -1,20 +1,26 @@
 """Delta recurring-subscription registry + charge ledger (D-022).
 
-Revision ID: 0014
-Revises: 0013
+Revision ID: 0015
+Revises: 0014
 Create Date: 2026-07-11
 
 The roadmap's literal Phase-4 framing for D-021..D-025 is a B2C personal-finance
 track ("Depends on: D-003 + the B2C onboarding shell"). No B2C onboarding shell, no
 personal/individual account model, and no bank-linking of any kind exists anywhere in
 this codebase (D-025, the multi-bank aggregation task, is itself still unbuilt) — see
-docs/adr/0021-delta-subscription-anomaly-alerts.md Sec 1 for the full honesty
+docs/adr/0022-delta-subscription-anomaly-alerts.md Sec 1 for the full honesty
 boundary. This migration instead builds D-022's title ("Automated subscription
 management + anomalous-charge alerts") as an ENTERPRISE-tenant feature on Delta's
 existing tenant/vendor model: a recurring-subscription registry (optionally linked to
 a D-014 vendor) plus an append-only ledger of each billing occurrence, so
 ``delta.chargeback.anomaly.detect_anomalies`` (D-012, unmodified) can flag a charge
 that is an outlier against that subscription's own trailing history.
+
+This migration was originally authored as ``0014`` against a base where D-021
+("personal finance core," also filed as ``0014``) had not yet landed. Rebased onto
+main after D-021 merged first (PR #137) — this is now ``0015``, revising ``0014``,
+not a fresh sibling of it. The table/RLS/grant design below is unchanged from the
+original authoring.
 
 Two new tables:
 
@@ -35,7 +41,7 @@ DELETE on either. Same strict fail-closed NULLIF RLS predicate as every prior
 migration.
 
 DOWN: reverses every object in dependency order (charges before subscriptions).
-Retains the ``delta`` schema and never touches D-001..D-019 data.
+Retains the ``delta`` schema and never touches D-001..D-021 data.
 """
 
 from __future__ import annotations
@@ -45,8 +51,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0014"
-down_revision: Union[str, None] = "0013"
+revision: str = "0015"
+down_revision: Union[str, None] = "0014"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

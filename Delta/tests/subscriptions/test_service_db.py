@@ -148,7 +148,7 @@ async def test_record_charge_against_missing_subscription_raises(tenant_id) -> N
 
 @db_required
 async def test_record_charge_against_cancelled_subscription_still_succeeds(tenant_id) -> None:
-    # ADR-0021 Fork 4: a charge landing after cancellation is still a real, honest
+    # ADR-0022 Fork 4: a charge landing after cancellation is still a real, honest
     # financial fact and must be recordable.
     async with get_tenant_session(tenant_id) as session:
         sub = await create_subscription(

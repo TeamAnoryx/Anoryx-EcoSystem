@@ -1,5 +1,5 @@
-"""D-022 store-layer DB tests: the windowed recent-charges query (ADR-0021 Fork 3) and
-the append-only grant on ``subscription_charges`` (ADR-0021 Fork 5)."""
+"""D-022 store-layer DB tests: the windowed recent-charges query (ADR-0022 Fork 3) and
+the append-only grant on ``subscription_charges`` (ADR-0022 Fork 5)."""
 
 from __future__ import annotations
 

@@ -1,10 +1,10 @@
-"""Fixtures for the D-022 subscriptions DB suite. Mirrors ``tests/erp/conftest.py``
+"""Fixtures for the D-021 personal-finance DB suite. Mirrors ``tests/erp/conftest.py``
 exactly (same db_required/ensure_schema_at_head/provision_app_role/_truncate/
 _reset_delta_engines/admin_token/app/client/auth_headers shape).
 
-D-022 owns its own tables (migration 0015), plus D-014's ``vendors`` table for the
-optional vendor link — ``delta.subscriptions.store``/``delta.erp.store`` (called
-directly, then committed) ARE the real, only application paths for writing these rows.
+D-021 owns its own tables (migration 0014) — ``delta.personal_finance.store`` (called
+directly, then committed) IS the real, only application path for writing a
+personal_accounts/personal_transactions/personal_budgets row.
 """
 
 from __future__ import annotations
@@ -132,8 +132,8 @@ async def _truncate(provision_app_role: None) -> AsyncIterator[None]:
         async with engine.begin() as conn:
             await conn.execute(
                 text(
-                    "TRUNCATE delta.subscription_charges, delta.subscriptions, "
-                    "delta.vendors CASCADE"
+                    "TRUNCATE delta.personal_transactions, delta.personal_budgets, "
+                    "delta.personal_accounts CASCADE"
                 )
             )
     finally:

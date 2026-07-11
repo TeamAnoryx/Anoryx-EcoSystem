@@ -1,10 +1,10 @@
 """Subscription registry + charge-ledger + anomaly-report API DTOs (D-022,
-ADR-0021).
+ADR-0022).
 
 Mirrors D-014's ``erp.schemas`` (bounded free text, control-character rejection,
 value/currency pairing) and D-012's ``chargeback.schemas`` (the anomaly report shape,
 reused literal-for-literal where the underlying method is the same — see
-ADR-0021 Fork 1).
+ADR-0022 Fork 1).
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ DEFAULT_LIST_LIMIT = 100
 MAX_LIST_LIMIT = 500
 
 # How many of a subscription's most recent PRIOR charges to average as its trailing
-# baseline (ADR-0021 Fork 2). Bounded the same shape as D-012's `baseline_periods`.
+# baseline (ADR-0022 Fork 2). Bounded the same shape as D-012's `baseline_periods`.
 DEFAULT_BASELINE_WINDOW = 6
 MAX_BASELINE_WINDOW = 24
 
@@ -175,7 +175,7 @@ class SubscriptionAnomalyReportView(BaseModel):
 
     baseline_window: int
     anomalies: list[SubscriptionAnomalyRow]
-    # Same versioned method tag D-012 uses (ADR-0021 Fork 1) — the underlying math is
+    # Same versioned method tag D-012 uses (ADR-0022 Fork 1) — the underlying math is
     # identical (current value vs. a trailing average, ratio-thresholded); a future
     # different method gets a NEW literal, never a silent redefinition of this one.
     method: Literal["trailing_average_ratio_v1"] = "trailing_average_ratio_v1"

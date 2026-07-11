@@ -1,4 +1,4 @@
-"""Subscription registry + anomaly-report orchestration (D-022, ADR-0021).
+"""Subscription registry + anomaly-report orchestration (D-022, ADR-0022).
 
 DTO <-> store mapping + the vendor existence check the DB's FK constraint enforces
 structurally at the tenant level but that still needs a friendly 404. Mirrors
@@ -8,7 +8,7 @@ hash-chained audit log (``delta.persistence.audit_log.append_history``) in the S
 transaction as the store write — a recorded charge is a genuine financial event.
 
 Anomaly detection reuses D-012's ``chargeback.anomaly.detect_anomalies`` UNMODIFIED
-(ADR-0021 Fork 1/2) — see that function's own module docstring for the trailing-
+(ADR-0022 Fork 1/2) — see that function's own module docstring for the trailing-
 average-ratio method itself; this module's job is only to shape a per-subscription
 baseline into the inputs that pure function expects.
 """
@@ -99,7 +99,7 @@ async def create_subscription(
             raise VendorNotFoundError(req.vendor_id)
     # A subscription with an expected amount always carries a currency, and vice
     # versa — same pairing discipline as D-014's asset cost/currency fix, applied
-    # here from the start (also backed by a DB CHECK, migration 0014).
+    # here from the start (also backed by a DB CHECK, migration 0015).
     currency = (
         (req.currency or DEFAULT_CURRENCY) if req.expected_amount_minor_units is not None else None
     )
@@ -226,7 +226,7 @@ async def get_anomaly_report(
     # `baseline_periods=1` (dividing an already-computed average by 1 leaves it
     # unchanged; this is what lets one shared call to that unmodified pure function
     # evaluate every subscription's own, differently-sized baseline in one pass — see
-    # ADR-0021 Fork 2).
+    # ADR-0022 Fork 2).
     current_by_group: dict[str, int] = {}
     baseline_total_by_group: dict[str, float] = {}
     for subscription_id, charges in charges_by_sub.items():

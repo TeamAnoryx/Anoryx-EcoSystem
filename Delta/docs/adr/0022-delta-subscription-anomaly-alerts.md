@@ -1,4 +1,4 @@
-# ADR-0021 — Recurring-Subscription Registry + Trailing-Average Anomalous-Charge Alerts
+# ADR-0022 — Recurring-Subscription Registry + Trailing-Average Anomalous-Charge Alerts
 
 - **Status:** Accepted
 - **Date:** 2026-07-11
@@ -9,9 +9,9 @@
   (the `vendors` table a subscription may optionally link to)
 - **Builds on:** D-012's ADR §2 Fork 1 trailing-average-ratio method and D-011's
   `current_rate_projection_v1` honesty-tagging precedent — both reused, neither re-derived.
-- **Supersedes:** nothing. Adds a new `delta.subscriptions` package, one new migration (0014:
+- **Supersedes:** nothing. Adds a new `delta.subscriptions` package, one new migration (0015:
   `subscriptions`, `subscription_charges`), and one new router mount to
-  `allocation_admin/app.py`; does not alter any D-001…D-020 runtime behavior, contract, or
+  `allocation_admin/app.py`; does not alter any D-001…D-021 runtime behavior, contract, or
   persistence schema.
 
 ## 1. Context
@@ -84,17 +84,17 @@ rather than inventing a new one:
 
 | Vector | Mitigation | Verified by |
 |---|---|---|
-| Cross-tenant subscription/charge/anomaly leak | Every query runs on the caller's tenant-scoped (RLS) `AsyncSession`, opened via `get_tenant_session(tenant_id)` — the strict fail-closed NULLIF RLS predicate (migration 0014) confines every SELECT/INSERT/UPDATE to the caller's own tenant, including the windowed `list_recent_charges_by_subscription` query (Fork 3) | `test_subscription_cross_tenant_isolation`, `test_charge_cross_tenant_isolation`, `test_anomaly_report_cross_tenant_isolation`, `test_cross_tenant_over_http` |
-| A subscription belonging to another tenant, or a nonexistent `vendor_id`, silently accepted | `vendor_id`'s existence is checked via `store.get_vendor_status` before insert (404 `vendor_not_found` on failure); the composite `(vendor_id, tenant_id)` FK (migration 0014) makes a cross-tenant vendor link structurally impossible even if the app-layer check were bypassed | `test_create_subscription_missing_vendor_raises`, `test_vendor_fk_blocks_cross_tenant_link_at_db_level` |
+| Cross-tenant subscription/charge/anomaly leak | Every query runs on the caller's tenant-scoped (RLS) `AsyncSession`, opened via `get_tenant_session(tenant_id)` — the strict fail-closed NULLIF RLS predicate (migration 0015) confines every SELECT/INSERT/UPDATE to the caller's own tenant, including the windowed `list_recent_charges_by_subscription` query (Fork 3) | `test_subscription_cross_tenant_isolation`, `test_charge_cross_tenant_isolation`, `test_anomaly_report_cross_tenant_isolation`, `test_cross_tenant_over_http` |
+| A subscription belonging to another tenant, or a nonexistent `vendor_id`, silently accepted | `vendor_id`'s existence is checked via `store.get_vendor_status` before insert (404 `vendor_not_found` on failure); the composite `(vendor_id, tenant_id)` FK (migration 0015) makes a cross-tenant vendor link structurally impossible even if the app-layer check were bypassed | `test_create_subscription_missing_vendor_raises`, `test_vendor_fk_blocks_cross_tenant_link_at_db_level` |
 | Concurrent double-cancel | `try_cancel_subscription`'s conditional UPDATE only matches a row still `active` (same shape as D-014's `try_transition_asset_status`); a second concurrent cancel gets `rowcount == 0` → `SubscriptionAlreadyCancelledError`, never a silent no-op success | `test_cancel_already_cancelled_subscription_raises` |
 | N+1 query amplification computing the anomaly report | `get_anomaly_report` issues exactly 2 queries total (`list_subscriptions` + the single windowed `list_recent_charges_by_subscription`), regardless of how many subscriptions or charges exist, bounded by `_MAX_SUBSCRIPTIONS = 100` and `MAX_RECENT_CHARGES_WINDOW = 25` | code review — no loop over subscriptions issues a query; `test_anomaly_report_query_count_is_constant` |
 | `baseline_window` used to force an unbounded per-subscription scan | `SubscriptionAnomalyQuery.baseline_window` is capped `1..24` at the schema layer; `store.list_recent_charges_by_subscription` additionally clamps to `MAX_RECENT_CHARGES_WINDOW = 25` server-side even if a caller bypassed the schema layer | `test_baseline_window_out_of_range_rejected` |
 | Below-floor noise / flat charges flagged as anomalous | Reuses D-012's own already-verified `min_floor_cents`/`ratio_threshold` gates unmodified (Fork 1) | `test_flat_subscription_charges_not_flagged` (this task) plus D-012's own existing `test_below_floor_never_flagged_even_at_huge_ratio`/`test_flat_spend_is_not_flagged` (unmodified, still covering the shared function) |
 | Money handling: float/bool coercion into a monetary field | `expected_amount_minor_units`/`amount_minor_units` both pass through `money.reject_non_integer` (mirrors D-014's `AssetCreateRequest._cost_strict_integer`); DB `CHECK` constraints additionally reject negative amounts | `test_charge_amount_rejects_float`, `test_expected_amount_rejects_bool` |
-| A subscription's `expected_amount_minor_units`/`currency` pairing left inconsistent (D-013's Finding #1 class of bug) | `(expected_amount_minor_units IS NULL) = (currency IS NULL)` DB CHECK (migration 0014), plus the same app-layer default-currency-when-amount-given logic D-014's `create_asset` already uses | `test_create_subscription_currency_defaults_when_amount_given` |
+| A subscription's `expected_amount_minor_units`/`currency` pairing left inconsistent (D-013's Finding #1 class of bug) | `(expected_amount_minor_units IS NULL) = (currency IS NULL)` DB CHECK (migration 0015), plus the same app-layer default-currency-when-amount-given logic D-014's `create_asset` already uses | `test_create_subscription_currency_defaults_when_amount_given` |
 | Naive-datetime `charged_at` silently misinterpreted as UTC | `require_aware_utc` (D-008's own validator, reused unchanged) rejects any `charged_at` without an explicit timezone offset | `test_naive_charged_at_rejected` |
 | Control-character / log-injection payloads in `name`/`created_by`/`recorded_by`/`note` | Every free-text field passes through a local `_reject_control_chars` check (mirrors D-014's `erp.schemas` identical helper) | `test_name_rejects_control_characters` |
-| `subscription_charges` rewritten after the fact to erase a flagged spike | No UPDATE/DELETE grant to `delta_app` on `subscription_charges` (migration 0014, Fork 5) — enforced at the database ACL layer, not just application code | `test_subscription_charges_table_has_no_update_delete_grant` |
+| `subscription_charges` rewritten after the fact to erase a flagged spike | No UPDATE/DELETE grant to `delta_app` on `subscription_charges` (migration 0015, Fork 5) — enforced at the database ACL layer, not just application code | `test_subscription_charges_table_has_no_update_delete_grant` |
 
 ## 5. Verification
 

@@ -1,7 +1,7 @@
-"""Subscription registry + charge-ledger persistence (D-022, ADR-0021).
+"""Subscription registry + charge-ledger persistence (D-022, ADR-0022).
 
 Tenant-scoped reads/writes against ``subscriptions``/``subscription_charges``
-(migration 0014). Every function takes an already-open :class:`AsyncSession` (from
+(migration 0015). Every function takes an already-open :class:`AsyncSession` (from
 ``delta.persistence.database.get_tenant_session``) and does NOT commit — the caller
 (``service.py``) owns the transaction, exactly like ``erp.store``/``invoicing.store``.
 """
@@ -21,7 +21,7 @@ DEFAULT_LIST_LIMIT = 100
 MAX_LIST_LIMIT = 500
 
 # A subscription's own trailing baseline can never look back further than this many
-# prior charges in one windowed-query round trip (ADR-0021 Fork 2) — bounds the
+# prior charges in one windowed-query round trip (ADR-0022 Fork 2) — bounds the
 # per-subscription result set the same way `chargeback.schemas.MAX_BASELINE_PERIODS`
 # bounds D-012's calendar-window baseline.
 MAX_RECENT_CHARGES_WINDOW = 25
@@ -255,7 +255,7 @@ async def list_recent_charges_by_subscription(
     session: AsyncSession, *, subscription_ids: list[str], window_size: int
 ) -> dict[str, list[ChargeRecord]]:
     """The `window_size + 1` most recent charges for EACH of ``subscription_ids``, one
-    query total regardless of how many subscriptions are passed (ADR-0021 Fork 2 —
+    query total regardless of how many subscriptions are passed (ADR-0022 Fork 2 —
     mirrors D-012 Fork 2's "never N+1 per group" discipline, adapted with a SQL
     ``ROW_NUMBER() OVER (PARTITION BY subscription_id ...)`` window function instead
     of D-012's two-bulk-query shape, since here each group's own baseline window is
