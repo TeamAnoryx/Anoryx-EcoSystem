@@ -7,6 +7,8 @@ import type {
   AccessTokenIssuedView,
   AccessTokenRevokeRequest,
   AccessTokenView,
+  AccountCreateRequest as PersonalAccountCreateRequest,
+  AccountView as PersonalAccountView,
   AllocationCreateRequest,
   AllocationStatus,
   AllocationView,
@@ -16,6 +18,8 @@ import type {
   AssetStatusTransitionRequest,
   AssetView,
   BottleneckReportView,
+  BudgetCreateRequest as PersonalBudgetCreateRequest,
+  BudgetView as PersonalBudgetView,
   ChangeHistoryEntryView,
   ChargebackReportView,
   ClientCreateRequest,
@@ -30,6 +34,7 @@ import type {
   ExecutiveSummaryView,
   ExternalSystemCreateRequest,
   ExternalSystemView,
+  FinancialHealthView,
   GroupSpendView,
   InteractionCreateRequest,
   InteractionView,
@@ -68,6 +73,9 @@ import type {
   TeamCreateRequest,
   TeamView,
   TimeSeriesPointView,
+  TransactionCreateRequest as PersonalTransactionCreateRequest,
+  TransactionView as PersonalTransactionView,
+  PersonalTransactionCategory,
   UtilizationReportView,
   VelocityReportView,
   VendorCreateRequest,
@@ -529,6 +537,49 @@ export const adminApi = {
   // spend, D-011 forecasts, and D-013 pipeline via their own service functions.
   getExecutiveSummary: (tenantId: string, start: string, end: string) =>
     adminFetch<ExecutiveSummaryView>("/executive/summary", {
+      query: { tenant_id: tenantId, start, end },
+    }),
+
+  // D-021 personal-finance (B2C track) — a B2C consumer IS one tenant_id (ADR-0021
+  // Fork 1); structurally separate from D-003's AI-cost ledger (ADR-0021 Fork 2).
+  listPersonalAccounts: (tenantId: string, limit?: number) =>
+    adminFetch<PersonalAccountView[]>("/personal-finance/accounts", {
+      query: { tenant_id: tenantId, limit },
+    }),
+
+  createPersonalAccount: (body: PersonalAccountCreateRequest) =>
+    adminFetch<PersonalAccountView>("/personal-finance/accounts", { method: "POST", body }),
+
+  listPersonalTransactions: (
+    tenantId: string,
+    filters?: { accountId?: string; category?: PersonalTransactionCategory },
+    limit?: number,
+  ) =>
+    adminFetch<PersonalTransactionView[]>("/personal-finance/transactions", {
+      query: {
+        tenant_id: tenantId,
+        account_id: filters?.accountId,
+        category: filters?.category,
+        limit,
+      },
+    }),
+
+  createPersonalTransaction: (body: PersonalTransactionCreateRequest) =>
+    adminFetch<PersonalTransactionView>("/personal-finance/transactions", {
+      method: "POST",
+      body,
+    }),
+
+  listPersonalBudgets: (tenantId: string) =>
+    adminFetch<PersonalBudgetView[]>("/personal-finance/budgets", {
+      query: { tenant_id: tenantId },
+    }),
+
+  createPersonalBudget: (body: PersonalBudgetCreateRequest) =>
+    adminFetch<PersonalBudgetView>("/personal-finance/budgets", { method: "POST", body }),
+
+  getFinancialHealth: (tenantId: string, start: string, end: string) =>
+    adminFetch<FinancialHealthView>("/personal-finance/health-score", {
       query: { tenant_id: tenantId, start, end },
     }),
 };
