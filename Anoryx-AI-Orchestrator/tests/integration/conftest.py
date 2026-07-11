@@ -237,8 +237,10 @@ def reprovision_app_role(db_ready):
 # stands up a SEPARATE Sentinel database (DATABASE_URL / APP_DATABASE_URL, distinct
 # from the ORCH_* orchestrator DB) on the same Postgres host, runs Sentinel's own
 # `alembic upgrade head`, provisions the sentinel_app SCRAM password, and exposes a
-# real-loopback shim running Sentinel's REAL intake plus helpers that call Sentinel's
-# REAL enforcement. Gated on the Sentinel DB being configured + reachable, so the
+# real-loopback app serving Sentinel's REAL admin policy-intake route (X-003,
+# ADR-0042: POST /admin/policies/intake on the real admin_router, gated by the real
+# require_admin / reject_sso_global auth) plus helpers that call Sentinel's REAL
+# enforcement. Gated on the Sentinel DB being configured + reachable, so the
 # orchestrator-only integration tests still run when it is not.
 # =========================================================================== #
 
@@ -385,11 +387,13 @@ def sentinel_signing(tmp_path_factory):
 
 @pytest.fixture(scope="session")
 def sentinel_shim_server(sentinel_signing, _ensure_sentinel_db_ready):
-    """Run the TEST Sentinel intake shim on a REAL loopback uvicorn server; yield its base URL.
+    """Run the TEST Sentinel app on a REAL loopback uvicorn server; yield its base URL.
 
-    A genuine ephemeral TCP socket so the Orchestrator engine's outbound httpx call is
-    non-stubbed (real httpx → real socket → uvicorn → shim → Sentinel's real intake). The
-    shim runs in a daemon thread with its own event loop; the Sentinel privileged engine it
+    The app serves Sentinel's REAL admin policy-intake route (X-003, ADR-0042: POST
+    /admin/policies/intake on the real admin_router + real require_admin/reject_sso_global
+    auth). A genuine ephemeral TCP socket so the Orchestrator engine's outbound httpx call is
+    non-stubbed (real httpx → real socket → uvicorn → real route → Sentinel's real intake). The
+    app runs in a daemon thread with its own event loop; the Sentinel privileged engine it
     uses binds to THAT loop (the test never touches Sentinel's singletons — it uses raw
     asyncpg + a dedicated engine in the pytest loop). Yields None when the Sentinel DB is
     unconfigured so the fixture is harmless in that case.
