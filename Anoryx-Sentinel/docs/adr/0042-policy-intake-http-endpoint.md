@@ -1,6 +1,6 @@
 # ADR-0042 — Policy-Intake HTTP Endpoint (X-003 loop closure)
 
-- **Status:** Proposed — REQUIRES HUMAN SECURITY SIGN-OFF BEFORE MERGE
+- **Status:** Accepted — human security sign-off received (product owner authorized X-003 completion 2026-07-11); reverses ADR-0009 §11 R1 for intake_policy() only.
 - **Date:** 2026-07-11
 - **Deciders:** api-architect (contract owner), security-auditor (gate — new ingress into the policy store), policy-engine (F-008 owner), orchestration-hooks (O-004 caller), Affu (solo founder & product owner)
 - **Supersedes / amends:** **Reverses one specific decision in ADR-0009 §11 (R1)** — "internal-only (no new HTTP endpoint)". Everything else in ADR-0009 stands unchanged. Governed by `contracts/openapi.yaml`, `contracts/policy.schema.json` (`$id: sentinel:policy:v1`), and `contracts/events.schema.json`, which **win over this ADR on any conflict**.

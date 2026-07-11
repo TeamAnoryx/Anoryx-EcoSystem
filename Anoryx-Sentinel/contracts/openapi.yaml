@@ -1040,6 +1040,61 @@ paths:
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /admin/policies/intake:
+    post:
+      tags: [admin]
+      operationId: adminIntakePolicy
+      summary: Intake a signed policy over the wire (admin/operator)
+      description: |
+        Accepts a Delta/Orchestrator-signed policy record pushed DOWN into Sentinel
+        over the wire and hands it UNCHANGED to the existing fail-closed
+        `intake_policy()` pipeline (F-008, ADR-0009 §3; ADR-0042). This route is a
+        THIN ingress wrapper: it adds an authenticated HTTP entry point for the SAME
+        function `sentinel-cli policy push` already calls, and bypasses NONE of its
+        checks. Every record still runs the full pipeline — Draft 2020-12 schema
+        validation, ES256 compact-JWS signature verification, scope-resolve-and-
+        reject (the VERIFIED signature is the authoritative scope; the body IDs are a
+        cross-check only and can never widen scope), a full-record content-hash
+        integrity check, and intake-time replay/rollback rejection — and a
+        hash-chained audit event is emitted on EVERY path, including every rejection.
+        The body IDs are NOT trusted: an unsigned, forged, tampered, or replayed
+        record is rejected here exactly as on the CLI path (the route adds ingress,
+        not trust). The target tenant is resolved SERVER-SIDE from the verified
+        signature — there is NO tenant_id path parameter and the wildcard tenant is
+        rejected. Closes the X-003 budget-enforcement loop over the wire (Delta cap
+        breach → Orchestrator O-004 distribution → this route → enforcement on the
+        next request). This route REVERSES ADR-0009 §11's R1 "internal-only, no HTTP
+        endpoint" decision; see ADR-0042 for the reconciliation and threat model. As
+        a new ingress path into a zero-trust product's policy store, it still
+        warrants human security sign-off before merge.
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignedPolicyRecord"
+      responses:
+        "200":
+          description: |
+            The signed policy verified, its scope resolved from the signature, it was
+            version-fresh, and it was persisted + audited atomically
+            (IntakeResult.Accepted).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminPolicyIntakeAccepted"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/AdminUnauthorized" }
+        "403": { $ref: "#/components/responses/PolicyIntakeSignatureRejected" }
+        "409": { $ref: "#/components/responses/PolicyIntakeConflict" }
+        "422": { $ref: "#/components/responses/PolicyIntakeSchemaRejected" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /admin/tenants/{tenant_id}/models:
     get:
       tags: [admin]
@@ -2318,6 +2373,74 @@ components:
             error_code: invalid_model_transition
             message: "The requested model-approval transition is not allowed."
             request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    PolicyIntakeSchemaRejected:
+      description: |
+        The signed policy record failed Draft 2020-12 schema validation, or was
+        unparseable / oversized (IntakeResult.RejectedSchema). Transport auth passed,
+        but the policy shape violates contracts/policy.schema.json
+        (sentinel:policy:v1). No policy is persisted; a rejection audit event is still
+        emitted. The body never echoes record content or PII; correlate via request_id.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: policy_intake_schema_rejected
+            message: "The signed policy record failed schema validation."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    PolicyIntakeSignatureRejected:
+      description: |
+        The signed policy's signature could not be verified
+        (IntakeResult.RejectedSignature): the compact-JWS signature was absent,
+        malformed, wrong-algorithm, did not verify, or no verifying key is configured
+        (fail-closed). Distinct from 401 (transport auth): the admin bearer was valid
+        but the RECORD's signature was not. No policy is persisted; a rejection audit
+        event is still emitted. The body never echoes signature bytes, key material,
+        or record content; correlate via request_id.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error_code: policy_intake_signature_rejected
+            message: "The signed policy record signature could not be verified."
+            request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+    PolicyIntakeConflict:
+      description: |
+        The signed policy conflicts with Sentinel's authoritative state and was
+        rejected WITHOUT persistence. TWO distinct causes, distinguished by
+        error_code:
+          - `policy_intake_scope_mismatch` (IntakeResult.RejectedScopeMismatch): the
+            VERIFIED signature scope disagrees with the record body, the record claims
+            the forbidden wildcard tenant, or the body content hash does not match the
+            signed hash (post-signing tamper). Body IDs can never widen the
+            signature-resolved scope.
+          - `policy_intake_replay_rejected` (IntakeResult.RejectedReplay):
+            policy_version is not strictly greater than the stored version for this
+            policy_id (replay/rollback defense) — an older signed policy cannot roll
+            enforcement back.
+        No policy is persisted on either path; a rejection audit event is still
+        emitted. The body never echoes disputed IDs, signature bytes, or record
+        content (raw disputed IDs go only to request_id-keyed structured logs);
+        correlate via request_id.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            scopeMismatch:
+              value:
+                error_code: policy_intake_scope_mismatch
+                message: "The signed policy scope does not match the record body."
+                request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
+            replayRejected:
+              value:
+                error_code: policy_intake_replay_rejected
+                message: "The policy version is not newer than the stored version (replay/rollback)."
+                request_id: "req_01HZX9Q2K3T4V5W6X7Y8Z9A0B1"
     SsoUnavailable:
       description: |
         Uniform SSO-unavailable response for an SSO login/initiate route (F-014,
@@ -2421,6 +2544,10 @@ components:
             - not_found
             - internal_error
             - invalid_model_transition
+            - policy_intake_schema_rejected
+            - policy_intake_signature_rejected
+            - policy_intake_scope_mismatch
+            - policy_intake_replay_rejected
         message:
           type: string
           description: |
@@ -2439,6 +2566,10 @@ components:
             - "The requested resource was not found."
             - "An internal error occurred. The request was not processed."
             - "The requested model-approval transition is not allowed."
+            - "The signed policy record failed schema validation."
+            - "The signed policy record signature could not be verified."
+            - "The signed policy scope does not match the record body."
+            - "The policy version is not newer than the stored version (replay/rollback)."
         request_id:
           type: string
           description: Correlation id; matches the X-Request-Id response header.
@@ -3320,6 +3451,123 @@ components:
             judge is skipped when the regex score is below this value. Validated
             against the table's range/band CHECK constraints; unset leaves the
             stored value unchanged (NULL resolves to the default 0.0).
+
+    SignedPolicyRecord:
+      type: object
+      description: |
+        A Delta/Orchestrator-signed policy record — the SAME shape
+        `sentinel-cli policy push` feeds into `intake_policy()` and the SAME bytes
+        Orchestrator's O-004 distribution engine POSTs here (F-008, ADR-0009;
+        ADR-0042). NOT re-invented: the AUTHORITATIVE, closed shape is
+        contracts/policy.schema.json (`sentinel:policy:v1`) — a Draft 2020-12 `oneOf`
+        over the six closed policy variants (budget_limit, model_allowlist,
+        model_denylist, model_approval, code_scan, data_lock), each
+        additionalProperties:false with its own enforcement fields. This OpenAPI
+        schema documents the common SIGNED ENVELOPE (the eight signature-covered
+        fields + the compact-JWS `signature`) only; `additionalProperties: true` here
+        carries the per-variant enforcement fields, which `intake_policy()`
+        RE-VALIDATES against the full closed sentinel:policy:v1 schema — the endpoint
+        relaxes nothing (a record that fails that closed validation is rejected 422).
+        The body IDs are a cross-check ONLY: the authoritative scope is resolved
+        server-side from the verified signature and can never widen or impersonate a
+        scope the signature does not authorize.
+      required:
+        - policy_type
+        - tenant_id
+        - team_id
+        - project_id
+        - agent_id
+        - policy_id
+        - policy_version
+        - effective_from
+        - signature
+      additionalProperties: true
+      properties:
+        policy_type:
+          type: string
+          maxLength: 64
+          description: |
+            Variant discriminator; MUST be one of the six sentinel:policy:v1 types
+            (budget_limit, model_allowlist, model_denylist, model_approval, code_scan,
+            data_lock). Signature-covered; cross-checked against the body.
+        tenant_id:
+          type: string
+          format: uuid
+          maxLength: 64
+          description: |
+            Cross-check ONLY (never the wildcard — rejected as scope mismatch). The
+            authoritative tenant is resolved from the verified signature.
+        team_id:
+          type: string
+          format: uuid
+          maxLength: 64
+          description: Cross-check only; authoritative scope resolved from the signature.
+        project_id:
+          type: string
+          format: uuid
+          maxLength: 64
+          description: Cross-check only; authoritative scope resolved from the signature.
+        agent_id:
+          type: string
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+          maxLength: 64
+          description: Cross-check only; authoritative scope resolved from the signature.
+        policy_id:
+          type: string
+          format: uuid
+          maxLength: 64
+          description: Stable policy identifier; the monotonicity target key for replay defense.
+        policy_version:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+          description: |
+            Monotonic per policy_id. Rejected (409, policy_intake_replay_rejected) if
+            not strictly greater than the stored version for the same policy_id.
+        effective_from:
+          type: string
+          format: date-time
+          maxLength: 64
+          description: When this policy begins to apply (RFC 3339 / ISO 8601, UTC).
+        signature:
+          type: string
+          minLength: 16
+          maxLength: 4096
+          pattern: "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+          description: |
+            Compact-JWS (ES256) signature over the record, produced by
+            Delta/Orchestrator. Schema guards PRESENCE + FORMAT only; cryptographic
+            validity, the authoritative scope claims, and the full-record content hash
+            are verified at runtime inside intake_policy() (a well-formed but
+            invalid/forged signature is rejected 403, never accepted).
+
+    AdminPolicyIntakeAccepted:
+      type: object
+      description: |
+        Result of a successful policy intake (IntakeResult.Accepted): the signed
+        policy verified, its scope resolved from the signature, its version was
+        strictly newer than the stored version, and it was persisted + audited
+        atomically. Metadata only — never signature bytes, key material, or the
+        enforcement body. Built field-for-field from policy.results.Accepted.
+      required: [status, policy_id, policy_version, policy_type]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [accepted]
+          description: Fixed discriminator for the accepted outcome.
+        policy_id:
+          type: string
+          maxLength: 64
+          description: Identifier of the accepted policy (joins to contracts/policy.schema.json policy_id).
+        policy_version:
+          type: integer
+          minimum: 1
+          description: The stored version now in force for this policy_id.
+        policy_type:
+          type: string
+          maxLength: 64
+          description: The accepted policy's type (one of the sentinel:policy:v1 variants).
 
     AdminPolicyStatus:
       type: object
