@@ -37,6 +37,10 @@ identifies records of another pure-domain, no-persistence-yet seam
 
 ``SprintId`` (R-029) follows the same shape for the same reason: it identifies
 records of another pure-domain, no-persistence-yet seam (``workspace.py``).
+
+``EmbedGrantId`` (R-030) follows the same shape for the same reason: it
+identifies records of another pure-domain, no-persistence-yet seam
+(``public_embed.py``).
 """
 
 from __future__ import annotations
@@ -61,3 +65,4 @@ EventId = UuidStr
 SessionId = UuidStr
 OpportunityId = UuidStr
 SprintId = UuidStr
+EmbedGrantId = UuidStr
