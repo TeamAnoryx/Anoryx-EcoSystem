@@ -206,6 +206,44 @@ async def test_forged_signature_rejected(admin_app, admin_auth_headers, signing_
 
 
 # ---------------------------------------------------------------------------
+# 2b. Signature segment that decodes to invalid UTF-8 -> clean, audited 403
+#     (not an uncaught 500). Regression for the X-003 security-audit Low finding:
+#     crypto.verify_compact_jws decodes the JWS header BEFORE verifying, and a
+#     base64url segment decoding to non-UTF-8 raised UnicodeDecodeError, which the
+#     intake pipeline did not classify — so the new wire ingress returned 500 with
+#     no rejection audit event. intake_policy() now maps UnicodeDecodeError to
+#     RejectedSignature, so this route returns the contract's 403 + audits it.
+# ---------------------------------------------------------------------------
+
+
+async def test_non_utf8_signature_segment_rejected_as_signature(
+    admin_app, admin_auth_headers, signing_keypair
+):
+    """A record whose signature segments decode to non-UTF-8 bytes (the malformed
+    PLACEHOLDER_SIG, e.g. "aaaaaaaa" -> 0x69a69a...) is a malformed signature, not
+    an internal fault: the route must return 403 policy_intake_signature_rejected
+    (never 500) and persist nothing."""
+    tenant_id = str(uuid.uuid4())  # rejected before persist — no seed needed
+    record = _budget_record(tenant_id)  # default signature is the non-UTF-8 PLACEHOLDER_SIG
+    raw = json.dumps(record).encode("utf-8")
+
+    async with _client(admin_app) as client:
+        r = await client.post(
+            "/admin/policies/intake",
+            content=raw,
+            headers={**admin_auth_headers, "Content-Type": "application/json"},
+        )
+
+    assert r.status_code == 403, r.text
+    assert r.json()["error_code"] == "policy_intake_signature_rejected"
+    assert r.json()["message"] == "The signed policy record signature could not be verified."
+    assert set(r.json().keys()) == {"error_code", "message", "request_id"}
+
+    row = await _policy_row(tenant_id, record["policy_id"])
+    assert row is None, "a malformed-signature record must never be persisted"
+
+
+# ---------------------------------------------------------------------------
 # 3. Schema-invalid body -> 422.
 # ---------------------------------------------------------------------------
 
