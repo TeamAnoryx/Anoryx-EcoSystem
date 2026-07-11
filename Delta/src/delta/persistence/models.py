@@ -719,3 +719,59 @@ investment_holdings = sa.Table(
     sa.Column("currency", sa.String(3), nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
+
+# --- D-025 privacy-first multi-bank financial data aggregation (migration 0018) ---
+# A consent-scoped, GENERIC ingestion framework — mirrors D-019's own "generic
+# ingestion endpoint, not vendor connectors" precedent (ADR-0021 Sec 3 names this
+# exact shape as D-025's job) — NOT a live Plaid/bank-OAuth integration, which does
+# not exist anywhere in this codebase or environment. `linked_institutions` is the
+# consent record: only a MASKED last-4 account reference may ever be stored (a DB
+# CHECK makes this structural, not just an app-layer convention — no column is ever
+# wide enough to hold a full account/routing number). `aggregation_sync_runs` is the
+# append-only per-sync summary (mirrors D-019's `sync_runs`). `aggregation_ingested_
+# references` is the per-line-item dedup backstop — its composite PRIMARY KEY IS the
+# idempotency guarantee, mirroring D-024's `UNIQUE(tenant_id, idempotency_key)`.
+# Ingested transactions land in D-021's OWN `personal_transactions` ledger
+# (`source='aggregated'` — the CHECK widened again, exactly as D-024 exercised the
+# same extension point) so an aggregated transaction is visible to the owner's OWN
+# budgets/health score, never a shadow ledger. See
+# docs/adr/0025-delta-bank-aggregation.md.
+linked_institutions = sa.Table(
+    "linked_institutions",
+    metadata,
+    sa.Column("link_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("account_id", sa.String(64), nullable=False),
+    sa.Column("institution_name", sa.String(256), nullable=False),
+    sa.Column("masked_account_last4", sa.String(4), nullable=False),
+    sa.Column("status", sa.String(16), nullable=False),
+    sa.Column("consent_granted_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("consent_revoked_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+aggregation_sync_runs = sa.Table(
+    "aggregation_sync_runs",
+    metadata,
+    sa.Column("sync_run_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("link_id", sa.String(64), nullable=False),
+    sa.Column("triggered_by", sa.String(128), nullable=False),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("records_received", sa.Integer, nullable=False),
+    sa.Column("records_written", sa.Integer, nullable=False),
+    sa.Column("records_deduplicated", sa.Integer, nullable=False),
+    sa.Column("records_rejected", sa.Integer, nullable=False),
+    sa.Column("note", sa.String(1024), nullable=True),
+)
+
+aggregation_ingested_references = sa.Table(
+    "aggregation_ingested_references",
+    metadata,
+    sa.Column("link_id", sa.String(64), primary_key=True),
+    sa.Column("external_reference", sa.String(128), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("txn_id", sa.String(64), nullable=False),
+    sa.Column("ingested_at", sa.DateTime(timezone=True), nullable=False),
+)

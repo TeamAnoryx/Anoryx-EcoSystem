@@ -50,7 +50,10 @@ BudgetPeriod = Literal["monthly"]
 # 'execution' rows are written only by D-024's micro-transaction execution engine
 # (delta.micro_transactions.service) — never by this package's own manual-entry
 # endpoint (migration 0016 widened the DB CHECK in lock-step; ADR-0024 Fork 3).
-TransactionSource = Literal["manual", "execution"]
+# 'aggregated' rows are written only by D-025's bank-aggregation sync engine
+# (delta.bank_aggregation.service) — migration 0018 widened the DB CHECK in
+# lock-step; ADR-0025.
+TransactionSource = Literal["manual", "execution", "aggregated"]
 
 _NAME_MAX_LENGTH = 256
 _DESCRIPTION_MAX_LENGTH = 512

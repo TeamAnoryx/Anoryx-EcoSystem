@@ -89,6 +89,10 @@ MicroTransactionExecutionId = UuidStr
 # D-023 personal asset allocation + micro-investment recommendations.
 InvestmentHoldingId = UuidStr
 
+# D-025 privacy-first multi-bank financial data aggregation (B2C track, final task).
+LinkedInstitutionId = UuidStr
+AggregationSyncRunId = UuidStr
+
 # Internal Sentinel component slug (NOT the end-user model name).
 AgentId = Annotated[str, StringConstraints(pattern=_AGENT_ID_PATTERN, max_length=_ID_MAX_LENGTH)]
 
