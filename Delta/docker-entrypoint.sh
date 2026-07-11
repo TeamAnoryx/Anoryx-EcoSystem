@@ -64,6 +64,15 @@ if [ -z "${DELTA_INGEST_HMAC_SECRET:-}" ] && [ -n "$INGEST_HMAC" ]; then
     export DELTA_INGEST_HMAC_SECRET="$INGEST_HMAC"
 fi
 
+# --- Revenue-ingest HMAC secret (POST /v1/ingest/revenue, X-005) ------------ #
+# DEDICATED per-source secret: holding it identifies the caller as the source product
+# (v1: rendly). Distinct from DELTA_INGEST_HMAC_SECRET; the ingest app is fail-loud
+# without it. Bridged from the mounted file, falling back to the environment (k8s).
+REVENUE_INGEST_HMAC="$(_read_secret /run/secrets/delta_revenue_ingest_hmac_secret)"
+if [ -z "${DELTA_REVENUE_INGEST_HMAC_SECRET:-}" ] && [ -n "$REVENUE_INGEST_HMAC" ]; then
+    export DELTA_REVENUE_INGEST_HMAC_SECRET="$REVENUE_INGEST_HMAC"
+fi
+
 # --- Outbound Bearer token to the Orchestrator's O-004 distribution seam ---- #
 # Empty is a VALID value (the budget-engine/kill-switch configs treat "" as
 # "disabled, inert no-op" when their own *_ENABLED flag is off) — this shim

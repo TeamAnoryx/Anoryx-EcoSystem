@@ -201,6 +201,107 @@
         "end": { "$ref": "#/$defs/timestamp" },
         "granularity": { "$ref": "#/$defs/WindowGranularity" }
       }
+    },
+
+    "revenue_source_product": {
+      "type": "string",
+      "enum": ["rendly"],
+      "description": "The source product that recorded the real monetization event (X-005). v1 accepts ONLY `rendly`; further sources can be added ADDITIVELY without breaking this contract. SERVER-RESOLVED from the authenticated caller (the holder of the dedicated per-source revenue-ingest HMAC secret) — it is NEVER read from the request body, exactly like the Orchestrator O-010/X-004 source_product discipline. It therefore does not appear on RevenueIngestRecord (the request shape); it appears only on RevenueRecord (the resolved, stored shape)."
+    },
+
+    "RevenueEventType": {
+      "type": "string",
+      "enum": ["subscription_granted", "subscription_revoked"],
+      "description": "The monetization event class. v1 POSTS a ledger transaction for `subscription_granted` ONLY. `subscription_revoked` is accepted and durably recorded but does NOT reverse or void the granting transaction in v1 — automatic revocation/reversal posting is DEFERRED scope (a later X-005 follow-up). Nothing in this contract implies a revoke undoes a grant."
+    },
+
+    "revenue_idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+      "description": "Source-supplied dedup key, unique per source_product. A retried POST with the same (resolved source_product, idempotency_key) is an idempotent replay — recorded as such, never a second ledger transaction, never an error. Mirrors the Sentinel event_id -> ledger idempotency_key discipline used by the usage ingest path."
+    },
+
+    "RevenueIngestRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "X-005 wire request for POST /v1/ingest/revenue: ONE normalized 'a source product recorded a real monetization event' record. This is a GENUINE financial record (not metadata-only), but it is CLOSED and BOUNDED with the same discipline as UsageRecord and the Sentinel/Orchestrator event schemas. AUTH: this seam reuses Delta's EXISTING inbound-ingest trust model — a shared-secret HMAC signature over `{timestamp}.{body}` (`sha256=` prefix, ±300s replay window), identical in shape to the Orchestrator->Delta usage seam (ADR-0004 §3.3), but keyed by a DEDICATED per-source revenue-ingest HMAC secret so the authenticated key IDENTIFIES the source product. `source_product` is SERVER-RESOLVED from that authenticated caller and MUST NOT be supplied in the body (it is deliberately absent from this shape). Money is INTEGER minor units only — there is no float field anywhere in this record. RESPONSE: 200 with a RevenueIngestResult (mirrors the usage ingest's synchronous accepted/idempotent-replay 200, NOT an async 202).",
+      "required": ["tenant_id", "event_type", "tier", "amount_cents", "idempotency_key", "occurred_at"],
+      "properties": {
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "event_type": { "$ref": "#/$defs/RevenueEventType" },
+        "tier": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The source product's monetization tier name (e.g. a Rendly premium tier). OPAQUE to Delta — recorded verbatim, never interpreted or mapped."
+        },
+        "amount_cents": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000000000,
+          "description": "The monetization amount in INTEGER minor units (cents). Bounded to the same 1e11 ceiling as Money.minor_units. INTEGER ONLY — this is Delta; there is no float representation of money anywhere in this contract."
+        },
+        "currency": {
+          "$ref": "#/$defs/currency",
+          "description": "OPTIONAL ISO-4217 currency for the recorded amount. When omitted the posting path applies Delta's DEFAULT_CURRENCY (same convention as the usage ingest path). Present so a source is never forced to assume a currency it does not use."
+        },
+        "idempotency_key": { "$ref": "#/$defs/revenue_idempotency_key" },
+        "occurred_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64,
+          "description": "When the SOURCE product recorded this monetization event (ISO-8601; an explicit UTC offset is REQUIRED)."
+        }
+      }
+    },
+
+    "RevenueIngestResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "X-005 wire response for POST /v1/ingest/revenue (HTTP 200 for both a fresh accept and an idempotent replay, mirroring the usage ingest's 200 disposition). `applied` is true only when a ledger transaction was newly posted; for `subscription_revoked` (not posted in v1) and for an idempotent replay it is false, and `txn_id` names the transaction when one exists (null otherwise).",
+      "required": ["status", "applied", "idempotent_replay"],
+      "properties": {
+        "status": { "type": "string", "const": "accepted" },
+        "applied": {
+          "type": "boolean",
+          "description": "True iff a NEW balanced ledger transaction was posted by this request."
+        },
+        "idempotent_replay": {
+          "type": "boolean",
+          "description": "True iff this (source_product, idempotency_key) was already recorded — a no-op replay, not an error."
+        },
+        "txn_id": {
+          "oneOf": [{ "$ref": "#/$defs/txn_id" }, { "type": "null" }],
+          "description": "The posted transaction id when one exists; null for an accepted-but-not-posted event (e.g. v1 subscription_revoked)."
+        }
+      }
+    },
+
+    "RevenueRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The RESOLVED, stored X-005 monetization record: a RevenueIngestRecord after the server has resolved `source_product` from the authenticated caller and stamped `received_at`. Documented here as the Delta-owned domain shape (this file is the domain-model reference, not an endpoint list); a `subscription_granted` record joins its posted ledger Transaction by txn_id. NOTE: this seam is WRITE-ONLY — recorded revenue is read back through Delta's existing ledger/dashboard query surface (the ledger is the read authority), so no dedicated GET read-back endpoint is added (that would duplicate existing functionality).",
+      "required": ["tenant_id", "source_product", "event_type", "tier", "amount_cents", "currency", "idempotency_key", "occurred_at", "received_at"],
+      "properties": {
+        "tenant_id": { "$ref": "#/$defs/tenant_id" },
+        "source_product": { "$ref": "#/$defs/revenue_source_product" },
+        "event_type": { "$ref": "#/$defs/RevenueEventType" },
+        "tier": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "amount_cents": { "type": "integer", "minimum": 0, "maximum": 100000000000 },
+        "currency": { "$ref": "#/$defs/currency" },
+        "idempotency_key": { "$ref": "#/$defs/revenue_idempotency_key" },
+        "occurred_at": { "$ref": "#/$defs/timestamp" },
+        "received_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When Delta durably recorded this event."
+        },
+        "txn_id": {
+          "oneOf": [{ "$ref": "#/$defs/txn_id" }, { "type": "null" }],
+          "description": "The posted ledger transaction (subscription_granted); null when no transaction was posted (v1 subscription_revoked)."
+        }
+      }
     }
   }
 }

@@ -11,9 +11,9 @@
 #
 # Production checklist (see deploy/DEPLOY-K8s.md):
 #   - Set postgres.bundled=false -> point at a managed service.
-#   - Pre-create the envSecret (DELTA_INGEST_HMAC_SECRET, DELTA_ADMIN_TOKEN,
-#     ORCH_SERVICE_TOKEN, and in external-DB mode DATABASE_URL / APP_DATABASE_URL) and
-#     set envSecret below.
+#   - Pre-create the envSecret (DELTA_INGEST_HMAC_SECRET,
+#     DELTA_REVENUE_INGEST_HMAC_SECRET, DELTA_ADMIN_TOKEN, ORCH_SERVICE_TOKEN, and in
+#     external-DB mode DATABASE_URL / APP_DATABASE_URL) and set envSecret below.
 #   - Wire ingress + TLS (cert-manager) at your edge for the ingest service only — the
 #     admin console is INTERNAL-ONLY (see networkPolicy.admin below); do not expose it.
 #   - mTLS between Delta and the Orchestrator's O-004 distribution seam is NOT
@@ -79,7 +79,9 @@ ingress:
 # Name of a PRE-EXISTING Kubernetes Secret holding both services' sensitive env,
 # surfaced via envFrom: secretRef. Create it WITHOUT committing values — see
 # deploy/helm/gen-k8s-secret.sh. Required keys (bundled-store demo):
-#   DELTA_INGEST_HMAC_SECRET   inbound signature verification on POST /v1/ingest/usage
+#   DELTA_INGEST_HMAC_SECRET           inbound signature verification on POST /v1/ingest/usage
+#   DELTA_REVENUE_INGEST_HMAC_SECRET   inbound signature verification on POST /v1/ingest/revenue
+#                                      (X-005; dedicated per-source, MUST differ from the usage key)
 #   DELTA_ADMIN_TOKEN          break-glass bearer for the admin app (fail-loud if unset)
 #   ORCH_SERVICE_TOKEN         outbound Bearer to the Orchestrator O-004 distribution seam
 #                              (may be empty when budgetEngineEnabled/killSwitchEnabled

@@ -16,11 +16,18 @@ from fastapi.responses import JSONResponse
 
 from ..budget_engine.evaluator import evaluate_after_post
 from ..kill_switch.evaluator import evaluate_kill_switch
+from ..revenue import RevenueEventType
 from .config import ATTEMPT_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER
 from .dlq import dead_letter
 from .errors import DeadLetterReason, PermanentIngestError, is_transient
 from .hmac_verify import verify_signature
-from .posting import build_usage_record, post_usage
+from .posting import (
+    build_revenue_record,
+    build_usage_record,
+    post_revenue,
+    post_usage,
+    revenue_dlq_event_id,
+)
 
 logger = logging.getLogger("delta.ingest.router")
 
@@ -149,6 +156,102 @@ async def ingest_usage(request: Request) -> JSONResponse:
     # post-commit, never-raises, response-never-altered shape as the budget engine above.
     await evaluate_kill_switch(record, request.app.state.kill_switch_settings)
 
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "accepted",
+            "applied": result.applied,
+            "idempotent_replay": result.idempotent_replay,
+            "txn_id": result.txn_id,
+        },
+    )
+
+
+@router.post("/v1/ingest/revenue")
+async def ingest_revenue(request: Request) -> JSONResponse:
+    """X-005 monetization consume seam. Same pipeline shape as /v1/ingest/usage, but keyed by
+    the DEDICATED revenue secret; ``source_product`` is server-resolved (v1: rendly), never
+    read from the body. subscription_granted posts one balanced revenue-recognition txn;
+    subscription_revoked is a durable-accept no-op in v1.
+    """
+    raw = await request.body()
+
+    settings = request.app.state.ingest_settings
+    if not verify_signature(
+        secret=settings.revenue_hmac_secret,
+        timestamp_header=request.headers.get(TIMESTAMP_HEADER),
+        signature_header=request.headers.get(SIGNATURE_HEADER),
+        raw_body=raw,
+    ):
+        # Forged / unauthenticated (incl. a request signed with the USAGE secret, which is a
+        # different key): reject. Not a financial event to preserve.
+        return JSONResponse(status_code=401, content={"status": "unauthorized"})
+
+    attempt = _parse_attempt(request.headers.get(ATTEMPT_HEADER))
+
+    # --- parse JSON body
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        snippet = raw.decode("utf-8", "replace").replace("\x00", "")[:_MAX_RAW_DLQ_CHARS]
+        return await _dead_letter_or_503(
+            PermanentIngestError(DeadLetterReason.MALFORMED_PAYLOAD, "body is not valid JSON"),
+            original_payload={"_raw": snippet},
+            attempt=attempt,
+        )
+
+    dlq_payload = payload if isinstance(payload, dict) else {"_raw": payload}
+
+    # --- validate into a RevenueRecord (permanent failures are dead-lettered)
+    try:
+        record = build_revenue_record(payload)
+    except PermanentIngestError as exc:
+        return await _dead_letter_or_503(exc, original_payload=dlq_payload, attempt=attempt)
+
+    if record.event_type is RevenueEventType.SUBSCRIPTION_REVOKED:
+        # DEFERRED scope (X-005 follow-up): automatic revocation/reversal posting is NOT in
+        # v1. This branch is an INTENTIONAL durable-accept NO-OP — the contract records a
+        # revoke but never reverses/voids the granting transaction. We post nothing to the
+        # ledger; we log for audit visibility (no secret) and return accepted-but-not-applied.
+        logger.info(
+            "delta.ingest revenue subscription_revoked accepted (v1 no-op; reversal DEFERRED): "
+            "tenant=%s tier=%s idempotency_key=%s",
+            record.tenant_id,
+            record.tier,
+            record.idempotency_key,
+        )
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "accepted",
+                "applied": False,
+                "idempotent_replay": False,
+                "txn_id": None,
+            },
+        )
+
+    # --- subscription_granted: post one balanced, idempotent revenue-recognition txn
+    try:
+        result = await post_revenue(record)
+    except PermanentIngestError as exc:  # explicit permanent from the posting path
+        return await _dead_letter_or_503(exc, original_payload=dlq_payload, attempt=attempt)
+    except Exception as exc:  # noqa: BLE001 — classify transient vs permanent, never swallow
+        if is_transient(exc):
+            return JSONResponse(
+                status_code=503, content={"status": "retry", "detail": "downstream unavailable"}
+            )
+        perm = PermanentIngestError(
+            DeadLetterReason.UNRESOLVABLE_ACCOUNT,
+            f"posting rejected: {exc}",
+            tenant_id=record.tenant_id,
+            event_id=revenue_dlq_event_id(record.idempotency_key),
+            event_type="revenue",
+        )
+        return await _dead_letter_or_503(perm, original_payload=dlq_payload, attempt=attempt)
+
+    # NOTE: revenue is NOT spend, so the D-005 budget-engine and D-006 kill-switch post-hooks
+    # are DELIBERATELY NOT invoked here (they are usage-cost specific; recording revenue never
+    # triggers enforcement).
     return JSONResponse(
         status_code=200,
         content={
