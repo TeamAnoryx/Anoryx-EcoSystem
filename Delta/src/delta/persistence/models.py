@@ -580,3 +580,51 @@ sync_line_items = sa.Table(
     sa.Column("matched_entity_id", sa.String(64), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
+
+# --- D-021 personal finance core (migration 0014, B2C track) ----------------------
+# A B2C consumer IS one tenant_id here (ADR-0021 Fork 1) — reuses D-001's existing
+# multi-tenant RLS scoping, no new identity model. Deliberately separate from D-003's
+# `accounts`/`transactions`/`ledger_entries` (that ledger's `ledger_entries` bakes in
+# AI-usage-specific team_id/project_id/agent_id NOT NULL columns that have no meaning
+# for a person's grocery purchase — ADR-0021 Fork 2, the same "stay structurally
+# separate from the AI-cost ledger" discipline every D-013+ package has applied).
+# Single-entry (one signed amount per transaction, category-tagged) not double-entry —
+# matches how real personal-finance apps (not general-ledger accounting) model this.
+personal_accounts = sa.Table(
+    "personal_accounts",
+    metadata,
+    sa.Column("account_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("type", sa.String(16), nullable=False),
+    sa.Column("currency", sa.String(3), nullable=False),
+    sa.Column("name", sa.String(256), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+personal_transactions = sa.Table(
+    "personal_transactions",
+    metadata,
+    sa.Column("txn_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("account_id", sa.String(64), nullable=False),
+    sa.Column("category", sa.String(24), nullable=False),
+    sa.Column("amount_minor_units", sa.BigInteger, nullable=False),
+    sa.Column("currency", sa.String(3), nullable=False),
+    sa.Column("description", sa.String(512), nullable=False, server_default=""),
+    sa.Column("merchant", sa.String(256), nullable=True),
+    sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("source", sa.String(16), nullable=False, server_default="manual"),
+)
+
+personal_budgets = sa.Table(
+    "personal_budgets",
+    metadata,
+    sa.Column("budget_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("category", sa.String(24), nullable=False),
+    sa.Column("cap_minor_units", sa.BigInteger, nullable=False),
+    sa.Column("currency", sa.String(3), nullable=False),
+    sa.Column("period", sa.String(8), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)

@@ -1,13 +1,13 @@
 """Delta admin app factory — the operator admin API (D-007 allocations, D-008
 dashboards, D-011 forecasting, D-012 chargeback/anomaly, D-013 unified CRM, D-014 ERP,
 D-015 project management, D-016 team capacity, D-017 RBAC, D-018 invoicing, D-019
-ERP/procurement/cloud-cost sync, D-020 executive dashboard).
+ERP/procurement/cloud-cost sync, D-020 executive dashboard, D-021 personal finance).
 
 Exposes ``/v1/admin/*`` (allocations, decisions, history, dashboards, forecast,
-chargeback, crm, erp, pm, capacity, rbac, invoicing, integrations, executive) plus a
-``/health`` probe. One app/port for the whole admin console (D-008/.../D-020 add
-routes to the D-007 app rather than standing up a second process — same operators,
-same auth, same trust boundary).
+chargeback, crm, erp, pm, capacity, rbac, invoicing, integrations, executive,
+personal-finance) plus a ``/health`` probe. One app/port for the whole admin console
+(D-008/.../D-021 add routes to the D-007 app rather than standing up a second
+process — same operators, same auth, same trust boundary).
 Settings (the break-glass bearer token) are resolved fail-loud at construction,
 mirroring ``delta.ingest.app.create_app``. No public OpenAPI schema — this is an
 internal operator surface, not a versioned external contract.
@@ -27,6 +27,7 @@ from ..executive.router import router as executive_router
 from ..forecasting.router import router as forecasting_router
 from ..integrations.router import router as integrations_router
 from ..invoicing.router import router as invoicing_router
+from ..personal_finance.router import router as personal_finance_router
 from ..pm.router import router as pm_router
 from ..rbac.router import router as rbac_router
 from .config import load_settings
@@ -66,4 +67,5 @@ def create_app() -> FastAPI:
     app.include_router(capacity_router)
     app.include_router(rbac_router)
     app.include_router(executive_router)
+    app.include_router(personal_finance_router)
     return app
