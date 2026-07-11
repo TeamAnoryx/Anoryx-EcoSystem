@@ -2,8 +2,9 @@
 
 `create_recommendation` computes a DETERMINISTIC target-allocation percentage split
 (from the fixed `RISK_TIER_TARGET_ALLOCATION_PCT` table) plus a recommended one-time
-micro-investment amount (a fixed `MICRO_INVESTMENT_SURPLUS_RATE` of the tenant's net
-surplus over the caller's window, floored to 0 whenever that surplus is not positive).
+micro-investment amount (a fixed `MICRO_INVESTMENT_SURPLUS_RATE_BPS` of the tenant's
+net surplus over the caller's window, floored to 0 whenever that surplus is not
+positive).
 This is plain arithmetic over a fixed table and a caller-declared risk tier — NOT
 machine learning or AI, NOT a live market-data feed, and NOT real investment execution
 (mirrors D-011/D-012's "AI-sounding roadmap name, disclosed deterministic heuristic"
@@ -18,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import store
 from .schemas import (
-    MICRO_INVESTMENT_SURPLUS_RATE,
+    MICRO_INVESTMENT_SURPLUS_RATE_BPS,
     RISK_TIER_TARGET_ALLOCATION_PCT,
     AllocationRecommendationRequest,
     AllocationRecommendationView,
@@ -26,6 +27,7 @@ from .schemas import (
 )
 
 _METHOD = "risk_tier_target_allocation_v1"
+_BPS_DENOMINATOR = 10_000
 
 
 class AccountNotFoundError(Exception):
@@ -47,9 +49,11 @@ def list_risk_tiers() -> list[RiskTierAllocationView]:
 def _recommended_micro_investment_minor_units(surplus_minor_units: int) -> int:
     if surplus_minor_units <= 0:
         return 0
-    # int() truncates toward zero, which floors a positive value — never recommends
-    # more than MICRO_INVESTMENT_SURPLUS_RATE of the surplus actually observed.
-    return int(surplus_minor_units * MICRO_INVESTMENT_SURPLUS_RATE)
+    # Exact integer arithmetic (money.py: floats are forbidden in any monetary
+    # computation). `//` floors a nonnegative numerator — never recommends more than
+    # MICRO_INVESTMENT_SURPLUS_RATE_BPS / 10_000 of the surplus actually observed, at
+    # any magnitude (no float-precision edge case, unlike a float-rate multiplication).
+    return (surplus_minor_units * MICRO_INVESTMENT_SURPLUS_RATE_BPS) // _BPS_DENOMINATOR
 
 
 def _to_view(record: store.RecommendationRecord) -> AllocationRecommendationView:

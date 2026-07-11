@@ -208,6 +208,63 @@ async def test_micro_investment_floors_toward_zero_never_overrecommends(tenant_i
 
 
 @db_required
+async def test_large_surplus_micro_investment_uses_exact_integer_math(tenant_id) -> None:
+    # Security-review regression: a float-rate multiplication (surplus * 0.10) is not
+    # provably exact under IEEE-754 at large magnitudes — this surplus is a known case
+    # where int(surplus * 0.10) == 900_000_000_000_001 (1 minor unit OVER the honest
+    # 10% floor), while exact integer math (surplus * 1000 // 10_000) == the true
+    # floor. Proves the fix, not just the small-number happy path.
+    account_id = await _seed_account(tenant_id, type="investment")
+    await _seed_transaction(tenant_id, account_id, 9_000_000_000_000_009)
+
+    async with get_tenant_session(tenant_id) as session:
+        view = await create_recommendation(
+            session,
+            AllocationRecommendationRequest(
+                tenant_id=tenant_id,
+                account_id=account_id,
+                risk_tier="moderate",
+                period_start=_NOW - timedelta(days=30),
+                period_end=_NOW,
+            ),
+            now=_NOW,
+        )
+
+    assert view.surplus_minor_units == 9_000_000_000_000_009
+    assert view.recommended_micro_investment_minor_units == 900_000_000_000_000
+
+
+@db_required
+async def test_surplus_computed_tenant_wide_across_all_accounts(tenant_id) -> None:
+    # ADR-0023 Fork 4: surplus is the TENANT's net income-minus-expense across every
+    # personal_transactions row, not scoped to the target investment account — an
+    # investment account's own transaction history is not a meaningful proxy for a
+    # tenant's actual income/spending capacity. A transaction recorded against a
+    # SEPARATE account for the same tenant must still be reflected.
+    investment_account_id = await _seed_account(tenant_id, type="investment")
+    checking_account_id = await _seed_account(tenant_id, type="checking")
+    await _seed_transaction(tenant_id, investment_account_id, 100_00)
+    await _seed_transaction(tenant_id, checking_account_id, 900_00)
+
+    async with get_tenant_session(tenant_id) as session:
+        view = await create_recommendation(
+            session,
+            AllocationRecommendationRequest(
+                tenant_id=tenant_id,
+                account_id=investment_account_id,
+                risk_tier="moderate",
+                period_start=_NOW - timedelta(days=30),
+                period_end=_NOW,
+            ),
+            now=_NOW,
+        )
+
+    # 100.00 (investment account) + 900.00 (checking account) = 1000.00 tenant-wide.
+    assert view.surplus_minor_units == 1000_00
+    assert view.recommended_micro_investment_minor_units == 100_00
+
+
+@db_required
 async def test_list_recommendation_views_roundtrip(tenant_id) -> None:
     account_id = await _seed_account(tenant_id, type="investment")
     async with get_tenant_session(tenant_id) as session:

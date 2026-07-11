@@ -39,7 +39,11 @@ RISK_TIER_TARGET_ALLOCATION_PCT: dict[RiskTier, dict[str, int]] = {
 
 # Fixed fraction of a positive surplus recommended as a one-time micro-investment
 # (ADR-0023 Fork 3) — a disclosed constant, not a personalized/predicted figure.
-MICRO_INVESTMENT_SURPLUS_RATE = 0.10
+# Expressed as exact integer basis points (1000 / 10000 = 10.00%), never a float:
+# money.py's project-wide rule is that money is integer minor units and floats are
+# forbidden in any monetary computation (a float rate multiplied against a large
+# surplus is not provably exact under IEEE-754 — security-review finding, ADR-0023).
+MICRO_INVESTMENT_SURPLUS_RATE_BPS = 1000
 
 
 class RiskTierAllocationView(BaseModel):
@@ -87,7 +91,7 @@ class AllocationRecommendationView(BaseModel):
     # (may be negative or zero — never clamped/hidden, mirrors D-021's honesty rule of
     # showing an absent/negative signal rather than silently reweighting it).
     surplus_minor_units: int
-    # A fixed MICRO_INVESTMENT_SURPLUS_RATE of `surplus_minor_units`, floored to integer
+    # A fixed MICRO_INVESTMENT_SURPLUS_RATE_BPS of `surplus_minor_units`, floored to integer
     # minor units, and floored to exactly 0 whenever surplus_minor_units <= 0 (never a
     # negative or fabricated recommendation).
     recommended_micro_investment_minor_units: int
