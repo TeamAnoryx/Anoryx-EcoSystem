@@ -34,6 +34,9 @@ future persistence layer has nothing to reconcile.
 ``OpportunityId`` (R-021) follows the same shape for the same reason: it
 identifies records of another pure-domain, no-persistence-yet seam
 (``opportunity.py``).
+
+``SprintId`` (R-029) follows the same shape for the same reason: it identifies
+records of another pure-domain, no-persistence-yet seam (``workspace.py``).
 """
 
 from __future__ import annotations
@@ -57,3 +60,4 @@ ChannelId = UuidStr
 EventId = UuidStr
 SessionId = UuidStr
 OpportunityId = UuidStr
+SprintId = UuidStr
