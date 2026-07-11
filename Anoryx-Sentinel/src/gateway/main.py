@@ -74,6 +74,7 @@ from gateway.keyvault.factory import build_key_source
 from gateway.keyvault.settings import get_keyvault_settings
 from gateway.logging import configure_logging
 from gateway.middleware.auth import AuthMiddleware
+from gateway.middleware.region_guard import PassiveRegionGuardMiddleware
 from gateway.middleware.request_validation import RequestValidationMiddleware
 from gateway.middleware.tenant_context import TenantContextMiddleware
 from gateway.middleware.terminal_audit_wrapper import TerminalAuditMiddleware
@@ -283,11 +284,17 @@ def create_app() -> FastAPI:
             "X-Anoryx-Agent-Id",
         ],
     )
-    # HIGH-1 FIX: TerminalAuditMiddleware is the TRUE outermost layer.
-    # Added LAST so it wraps everything including CORS and the security
+    # HIGH-1 FIX: TerminalAuditMiddleware is the outermost AUDIT layer.
+    # Added here so it wraps everything including CORS and the security
     # middlewares. Uses pure-ASGI send-wrapping to observe every terminal
     # response regardless of where in the stack it originated.
     app.add_middleware(TerminalAuditMiddleware)
+    # F-022 H1 (ADR-0028 D2): PassiveRegionGuardMiddleware is the TRUE outermost
+    # layer — added LAST so it sits OUTSIDE the terminal audit. On a passive
+    # region it refuses every governed (audit-generating) request with 503 before
+    # the terminal audit can write a local events_audit_log row, so a passive
+    # standby cannot fork the hash chain. On an active region it is a pass-through.
+    app.add_middleware(PassiveRegionGuardMiddleware)
 
     # --- Routers ---
     app.include_router(health_router)  # /health, /ready (no /v1 prefix)

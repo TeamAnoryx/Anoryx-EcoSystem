@@ -1,7 +1,51 @@
 # Follow-up: enforce passive-region write-exclusion (F-022 audit H1)
 
-**Status:** OPEN — escalated to human. **Severity:** High (security). **Owner:** TBD
-(app-tier + persistence design decision; not a deployment-layer fix).
+**Status:** RESOLVED (app-tier enforcement, option 2) — the High is closed; one
+lower-priority L2 hardening item remains open (see bottom). **Severity:** High
+(security) — remediated. **Owner:** was app-tier design decision; decided below.
+
+---
+
+## Resolution (app-tier fail-closed gate — option 2)
+
+H1 is now **enforced**, not operator-owned. `GatewaySettings` reads
+`SENTINEL_REGION_ROLE` (`active` | `passive`; an invalid value fails startup), and
+`PassiveRegionGuardMiddleware` (`src/gateway/middleware/region_guard.py`) — the
+**outermost** middleware, sitting OUTSIDE the terminal-audit middleware — refuses
+every governed / audit-generating request on a `passive` region with **`503`
+before any audit row is written**. A passive region therefore cannot append to its
+local `events_audit_log` and cannot fork the hash chain or collide on the
+replicated sequence PK. Only the audit-exempt k8s probes stay served (so the pod
+is promotable on failover); promotion flips the role to `active`.
+
+**Design decision made (resolves the D2 tension in "Options" below).** We took
+option 2 (app-tier gate) with the strict posture from option 1: a passive region
+serves **no** governed traffic — **including reads**. This deliberately
+**supersedes ADR-0028 D2's "passive MAY serve residency-local reads"**, because
+the non-bypassable terminal audit writes the chain on *every* governed request
+(reads included), so any served read would reintroduce H1. Serving passive reads
+safely still needs option 3 (a global audit sequencer), which stays deferred.
+ADR-0028 D2 + the Known-limitation section were updated to state this enforced
+reality.
+
+**Acceptance criteria (below) — met:**
+- `tests/region/test_passive_no_audit_realdb.py` — real Postgres: a governed
+  request to a passive region returns 503 and the `events_audit_log` row count is
+  unchanged.
+- `tests/gateway/test_region_guard.py` — passive refuses governed traffic with no
+  audit `append`; probes still served; active still serves + audits (control);
+  unset defaults to active; invalid role fails startup.
+- The ADR/runbook read-only claim is restored **as an enforced** claim (passive
+  serves nothing governed), not the old unenforced one.
+
+Remaining open: only the **L2 identifier-hardening** item (bottom), lower
+priority.
+
+---
+
+## Original analysis (retained for context)
+
+**Status (original):** OPEN — escalated to human. **Severity:** High (security).
 
 ## The gap
 F-022 (multi-region, ADR-0028) ships an active/passive posture where a passive region

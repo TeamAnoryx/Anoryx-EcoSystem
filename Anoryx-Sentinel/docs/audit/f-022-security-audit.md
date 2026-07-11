@@ -19,12 +19,24 @@ schema; `policy.schema.json` untouched) · `src/`: unchanged.
 
 ## Executive verdict: BLOCK (as-shipped) → remediated, with one High escalated
 
+> **UPDATE — H1 RESOLVED (app-tier enforcement).** The escalated High (H1) has
+> since been remediated in the app tier: `GatewaySettings` reads
+> `SENTINEL_REGION_ROLE` and `PassiveRegionGuardMiddleware` (outermost middleware,
+> `src/gateway/middleware/region_guard.py`) refuses all governed traffic on a
+> passive region with `503` before the terminal audit writes — so a passive region
+> cannot append to its local `events_audit_log` or fork the hash chain. Proven by
+> `tests/region/test_passive_no_audit_realdb.py` (real-DB row count unchanged) and
+> `tests/gateway/test_region_guard.py`. ADR-0028 D2 was amended: a passive region
+> serves NO governed traffic (incl. reads) until a global audit sequencer lands.
+> The H1 row below is retained as the record of the finding at audit time; only
+> the lower-priority **L2** identifier-hardening item remains open.
+
 The independent pass returned **BLOCK** on the code as merged in PR #49. One **High**
-(H1) is load-bearing and is **not fully closable at the deployment layer** — it
-requires app-tier enforcement and is escalated for human ownership
-(`docs/followups/f-022-passive-readonly-enforcement.md`). All other findings are
-remediated in the reconciliation PR. The PR #49 body's "CLEAN, no High/Critical"
-claim is **not substantiated** by this pass.
+(H1) is load-bearing and was **not fully closable at the deployment layer** — it
+required app-tier enforcement and was escalated for human ownership
+(`docs/followups/f-022-passive-readonly-enforcement.md`; now resolved, see the
+update above). All other findings are remediated in the reconciliation PR. The PR
+#49 body's "CLEAN, no High/Critical" claim is **not substantiated** by this pass.
 
 ### Tooling limitation (recorded honestly)
 In the **audit sandbox**, `semgrep.dev` and `get.helm.sh` are blocked by egress
