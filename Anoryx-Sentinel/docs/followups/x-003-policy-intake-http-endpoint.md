@@ -1,9 +1,12 @@
 # Follow-up: Sentinel needs a real policy-intake HTTP endpoint for X-003
 
-**Status:** DESIGNED — the contract change and its reconciling ADR are fully
-authored and staged; blocked only on (1) a one-line launch-env fix so the
-api-architect agent can write `contracts/`, and (2) human security sign-off on
-the ADR-0009 §11 reversal. See "Update — design complete" below.
+**Status:** RESOLVED — shipped as X-003. Human security sign-off was given
+(2026-07-11) to reverse ADR-0009 §11 R1 for `intake_policy()` only; ADR-0042 is
+Accepted; api-architect applied the staged `contracts/openapi.yaml` additions;
+Sentinel mounts the thin-wrapper route (`src/admin/policies.py`); and the
+Orchestrator O-004 distribution e2e now drives the REAL mounted route + real
+auth. The historical "blocked on env-fix + sign-off" notes below are retained
+for context. See ADR-0042.
 **Severity:** None yet (no live vulnerability — the gap is that the loop
 cannot close at all today, not that it closes insecurely).
 **Owner:** conductor/human (launch-env fix + sign-off), then api-architect

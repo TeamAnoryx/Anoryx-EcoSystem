@@ -15,6 +15,7 @@ from admin.auth import ADMIN_PRINCIPAL, require_admin
 from admin.control import control_router
 from admin.keys import keys_router
 from admin.model_approval import model_approval_router
+from admin.policies import policies_router
 from admin.shadow_ai import shadow_ai_router
 from admin.sso.breakglass_routes import breakglass_router
 from admin.sso.idp_routes import idp_router
@@ -49,6 +50,7 @@ admin_router.include_router(audit_log_router)
 admin_router.include_router(shadow_ai_router)
 admin_router.include_router(control_router)
 admin_router.include_router(model_approval_router)
+admin_router.include_router(policies_router)
 admin_router.include_router(webhooks_router)
 admin_router.include_router(idp_router)
 admin_router.include_router(breakglass_router)

@@ -2,9 +2,12 @@
 
 Proves the WHOLE policy-distribution path with NOTHING stubbed on the distribution call:
 a real signed policy is distributed by the Orchestrator's REAL engine over real httpx → a
-real loopback socket → a uvicorn shim running Sentinel's REAL intake_policy(), which verifies
-the ES256 signature UNCHANGED and persists the policy; then Sentinel's REAL enforcement
-(evaluate_model_policies) returns ALLOW for an allow policy and DENY for a deny policy.
+real loopback socket → a uvicorn app serving Sentinel's REAL admin policy-intake route
+(X-003, ADR-0042: POST /admin/policies/intake on the real admin_router, gated by the real
+require_admin / reject_sso_global auth), which hands the byte-identical body to Sentinel's
+REAL intake_policy(), verifies the ES256 signature UNCHANGED, and persists the policy; then
+Sentinel's REAL enforcement (evaluate_model_policies) returns ALLOW for an allow policy and
+DENY for a deny policy.
 
   * ALLOW: distribute a model_allowlist → orchestrator target+parent == "distributed";
            GET status reflects it; the persisted signature is byte-identical (verify
@@ -18,12 +21,41 @@ the ES256 signature UNCHANGED and persists the policy; then Sentinel's REAL enfo
   * FORGED (threat T1): a tampered signature → Sentinel rejects (permanent 4xx) → target +
            parent == "failed" (no retry storm); the forged policy is NOT persisted.
 
-The shim runs Sentinel's REAL intake (delegated, never re-implemented). The only faking
+REAL-ROUTE proofs (X-003, ADR-0042) — assertions that could ONLY pass against Sentinel's
+actual production route + real auth, distinguishing it from the old hand-rolled shim (which
+did its own bearer check and returned {"result": ...}, not the `Error` envelope):
+
+  * BAD BEARER: O-004 configured with a WRONG SENTINEL_ADMIN_TOKEN gets a real 401 from
+           require_admin → the target/parent are `failed` and the policy is NOT persisted.
+  * ENVELOPE: a forged-signature record makes the real route return 403 with the standard
+           `Error` envelope error_code == "policy_intake_signature_rejected" (asserted by
+           calling the real route directly over the same loopback socket — the old shim never
+           produced that error_code / body shape).
+
+The intake path IS Sentinel's real route (mounted, never re-implemented). The only faking
 anywhere in O-004's test suite is the pure _aggregate_state UNIT test — never here.
+
+THREE-HOP SCOPE (X-003 Deliverable 3 — documented gap, honest by design):
+  The killer loop is Delta cap-breach → Orchestrator O-004 distribution → real Sentinel
+  intake → enforcement. Its two seams are each proven non-stubbed, but by SEPARATE e2es:
+    * O-004 → real Sentinel route → enforcement: proven HERE (real engine → real httpx →
+      real loopback socket → the REAL POST /admin/policies/intake route + real auth →
+      intake_policy() persist → evaluate_model_policies enforcement).
+    * Delta D-005 cap-breach → real O-004 seam: proven by Delta's OWN non-stubbed e2e,
+      Delta/tests/budget_engine/test_o004_e2e.py (the real budget engine signs a
+      budget_limit and POSTs it over a real socket to the real O-004 receiver).
+  Driving ALL THREE hops from a single real Delta cap-breach in ONE test is intentionally
+  NOT done here: it would require standing up Delta's ledger/outbox DB + drainer + budget
+  decision seeding AND Sentinel's DB + route AND the Orchestrator receiver simultaneously,
+  with all three products sharing one signing/verifying keypair — disproportionate
+  scaffolding across three separate products' databases for no additional seam coverage
+  beyond what the two e2es above already establish. Left as a documented gap (honesty over a
+  forced pseudo-e2e), per X-003 Deliverable 3.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 
 import httpx
@@ -38,6 +70,9 @@ from orchestrator.distribution.engine import drive_distribution
 pytestmark = pytest.mark.integration
 
 ORCH_SERVICE_TOKEN = "o004-orch-service-token"  # noqa: S105 - test-only fake
+# The break-glass admin bearer the shim's real require_admin authenticates (set into the
+# SENTINEL_ADMIN_TOKEN env by the sentinel_signing fixture; O-004 sends the same value).
+_ADMIN_TOKEN = "o004-sentinel-admin-token"  # noqa: S105 - test-only fake
 _TARGET = "sentinel-test"
 _ALLOWED_MODEL = "gpt-4o-mini"
 _UNLISTED_MODEL = "claude-3-opus"
@@ -266,3 +301,132 @@ async def test_forged_signature_rejected_target_and_parent_failed(
 
     # The forged policy was rejected before persist — nothing landed in Sentinel.
     assert await read_sentinel_policy_signature(forged["policy_id"]) is None
+
+
+# --------------------------------------------------------------------------------------- #
+# X-003 (ADR-0042) REAL-ROUTE proofs: assertions that could ONLY pass against Sentinel's
+# actual production /admin/policies/intake route + real require_admin / reject_sso_global
+# auth — NOT against the old hand-rolled shim (which did its own bearer compare and returned
+# {"result": ...} rather than the standard `Error` envelope).
+# --------------------------------------------------------------------------------------- #
+
+
+async def test_wrong_admin_bearer_is_rejected_by_real_require_admin(
+    dist_app,
+    db_conn,
+    seed_sentinel_tenant,
+    make_signed_policy,
+    seed_distribution,
+    read_sentinel_policy_signature,
+):
+    """A WRONG admin bearer → the real require_admin returns 401 → target/parent `failed`.
+
+    O-004 is driven with a DistributionSettings whose sentinel_admin_token does NOT match the
+    SENTINEL_ADMIN_TOKEN the shim's real require_admin authenticates. The real route's
+    router-level require_admin rejects it with a genuine 401 (a wrong bearer is neither the
+    break-glass env token nor a valid operator-session) BEFORE intake_policy() ever runs. The
+    engine treats 401 as a permanent 4xx (single attempt, no retry storm) and the policy is
+    never persisted. This could NOT pass against a shim that skipped or hand-rolled auth.
+    """
+    tenant = str(uuid.uuid4())
+    await seed_sentinel_tenant(tenant)
+    signed = make_signed_policy(
+        "model_allowlist", tenant_id=tenant, allowed_model_ids=[_ALLOWED_MODEL]
+    )
+    distribution_id = uuid.uuid4().hex
+    await seed_distribution(
+        distribution_id=distribution_id,
+        tenant_id=tenant,
+        signed_record=signed,
+        sentinel_ids=[_TARGET],
+    )
+
+    # A validly-signed record, but the outbound bearer is WRONG — only auth should fail.
+    bad_auth_settings = dataclasses.replace(
+        dist_app.state.distribution_settings,
+        sentinel_admin_token="not-the-admin-token",  # noqa: S106 - test-only fake
+    )
+    await drive_distribution(distribution_id, tenant, settings=bad_auth_settings)
+
+    target_row = await db_conn.fetchrow(
+        "SELECT state, attempt_count, last_error FROM policy_distribution_targets "
+        "WHERE distribution_id = $1",
+        distribution_id,
+    )
+    parent_state = await db_conn.fetchval(
+        "SELECT state FROM policy_distributions WHERE distribution_id = $1", distribution_id
+    )
+    assert target_row["state"] == "failed", dict(target_row)
+    assert parent_state == "failed", parent_state
+    # 401 is a permanent 4xx → a single attempt, no retry amplification.
+    assert target_row["attempt_count"] == 1, dict(target_row)
+    assert target_row["last_error"] == "http_401", dict(target_row)
+
+    # A validly-signed record that never authenticated must NOT have been persisted.
+    assert await read_sentinel_policy_signature(signed["policy_id"]) is None
+
+
+async def test_forged_signature_returns_real_error_envelope_over_the_wire(
+    sentinel_db_ready,
+    sentinel_shim_server,
+    seed_sentinel_tenant,
+    make_signed_policy,
+):
+    """The real route returns 403 + the standard `Error` envelope on a forged signature.
+
+    POSTs a forged-signature record straight at the REAL /admin/policies/intake route over the
+    same real loopback socket, carrying the correct admin bearer (so require_admin passes and
+    intake_policy() runs and rejects the signature). Asserts the response is 403 with the
+    standard `Error` envelope whose error_code is the contract-pinned
+    `policy_intake_signature_rejected` (contracts/openapi.yaml). The OLD hand-rolled shim
+    returned {"result": "RejectedSignature"} with no error_code, so this body shape could only
+    come from the real route's response mapping.
+    """
+    tenant = str(uuid.uuid4())
+    await seed_sentinel_tenant(tenant)
+    forged = make_signed_policy(
+        "model_allowlist",
+        tenant_id=tenant,
+        allowed_model_ids=[_ALLOWED_MODEL],
+        tamper_signature=True,
+    )
+
+    url = sentinel_shim_server.rstrip("/") + "/admin/policies/intake"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            url, json=forged, headers={"Authorization": f"Bearer {_ADMIN_TOKEN}"}
+        )
+
+    assert resp.status_code == 403, resp.text
+    body = resp.json()
+    # The standard `Error` envelope (error_code/message/request_id) — NOT the old shim's
+    # {"result": ...}. The stable, contract-pinned error_code proves it is the real route.
+    assert body["error_code"] == "policy_intake_signature_rejected", body
+    assert set(body) == {"error_code", "message", "request_id"}, body
+    assert "result" not in body
+
+
+async def test_absent_admin_bearer_is_rejected_by_real_require_admin(
+    sentinel_db_ready,
+    sentinel_shim_server,
+    seed_sentinel_tenant,
+    make_signed_policy,
+):
+    """No Authorization header at all → the real require_admin returns 401 with its detail.
+
+    Confirms the real router-level require_admin (not a hand-rolled check) is the gate: a
+    validly-signed record with NO bearer is 401'd before intake_policy() runs.
+    """
+    tenant = str(uuid.uuid4())
+    await seed_sentinel_tenant(tenant)
+    signed = make_signed_policy(
+        "model_allowlist", tenant_id=tenant, allowed_model_ids=[_ALLOWED_MODEL]
+    )
+
+    url = sentinel_shim_server.rstrip("/") + "/admin/policies/intake"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(url, json=signed)  # no Authorization header
+
+    assert resp.status_code == 401, resp.text
+    # require_admin raises HTTPException(detail="admin_unauthorized") → FastAPI {"detail": ...}.
+    assert resp.json()["detail"] == "admin_unauthorized"

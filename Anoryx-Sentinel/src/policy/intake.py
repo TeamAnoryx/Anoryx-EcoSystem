@@ -131,7 +131,12 @@ async def _run_intake(
         return RejectedSignature("no policy verifying key is configured (fail-closed)")
     try:
         claims = verify_compact_jws(record["signature"], key)
-    except (CompactJWSError, InvalidSignature):
+    except (CompactJWSError, InvalidSignature, UnicodeDecodeError):
+        # UnicodeDecodeError: a base64url JWS segment that decodes to invalid UTF-8 (raised
+        # by the pre-verify header decode in crypto.verify_compact_jws) is a malformed
+        # signature, not an internal fault — treat it as RejectedSignature so it fails closed
+        # AS AN AUDITED 403 on the F-008 wire path (X-003 / ADR-0042), never an uncaught 500
+        # that would skip the rejection audit event. (Security-audit X-003 finding, Low.)
         await _audit_reject(
             session, EVT_INTAKE_REJECTED_SIGNATURE, system_scope(), request_id, "signature.invalid"
         )
