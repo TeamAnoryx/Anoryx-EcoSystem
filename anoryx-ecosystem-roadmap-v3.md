@@ -730,7 +730,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] D-019 Corporate ERP integrations (NetSuite/SAP/Coupa/cloud) ✅ (shipped PR #118 — bounded vertical slice: generic external-system sync-ingestion + PO/invoice reconciliation-matching framework, not live per-vendor OAuth/API integrations, see docs/adr/0019-delta-erp-integrations.md)
 - [x] D-020 Executive financial dashboard ✅ (shipped PR #126 — pure read-only rollup composing D-008 spend, D-011 forecasts, D-013 pipeline via their own service functions; zero new tables/migration, see docs/adr/0020-delta-executive-dashboard.md)
 - [x] D-021 B2C personal budget tracking ✅ (shipped PR #137 — a B2C consumer is one tenant_id, no new identity model; a new schema structurally separate from D-003's AI-cost ledger; deterministic financial-health score, not AI/ML, see docs/adr/0021-delta-personal-finance-budget-tracking.md)
-- [ ] D-022 B2C subscription mgmt + charge alerts 🏦
+- [x] D-022 B2C subscription mgmt + charge alerts ✅ (shipped PR #139 — bounded ENTERPRISE-tenant slice: subscription registry + append-only charge ledger + anomaly alerts reusing D-012's chargeback.anomaly unmodified; no B2C onboarding shell/bank-linking exists in this codebase, see docs/adr/0022-delta-subscription-anomaly-alerts.md)
 - [ ] D-023 B2C asset allocation + micro-investment 🏦
 - [ ] D-024 B2C real-time micro-transactions 🏦
 - [ ] D-025 B2C privacy-first multi-bank aggregation 🏦

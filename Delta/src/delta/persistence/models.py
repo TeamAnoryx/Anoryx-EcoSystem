@@ -582,11 +582,11 @@ sync_line_items = sa.Table(
 )
 
 # --- D-021 personal finance core (migration 0014, B2C track) ----------------------
-# A B2C consumer IS one tenant_id here (ADR-0021 Fork 1) — reuses D-001's existing
+# A B2C consumer IS one tenant_id here (ADR-0022 Fork 1) — reuses D-001's existing
 # multi-tenant RLS scoping, no new identity model. Deliberately separate from D-003's
 # `accounts`/`transactions`/`ledger_entries` (that ledger's `ledger_entries` bakes in
 # AI-usage-specific team_id/project_id/agent_id NOT NULL columns that have no meaning
-# for a person's grocery purchase — ADR-0021 Fork 2, the same "stay structurally
+# for a person's grocery purchase — ADR-0022 Fork 2, the same "stay structurally
 # separate from the AI-cost ledger" discipline every D-013+ package has applied).
 # Single-entry (one signed amount per transaction, category-tagged) not double-entry —
 # matches how real personal-finance apps (not general-ledger accounting) model this.
@@ -626,5 +626,50 @@ personal_budgets = sa.Table(
     sa.Column("cap_minor_units", sa.BigInteger, nullable=False),
     sa.Column("currency", sa.String(3), nullable=False),
     sa.Column("period", sa.String(8), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# --- D-022 recurring-subscription registry + charge ledger (migration 0015) ---
+# No B2C onboarding shell / personal-account model exists anywhere in this codebase
+# (see docs/adr/0022-delta-subscription-anomaly-alerts.md Sec 1) — this is an
+# ENTERPRISE-tenant feature: a recurring commitment a tenant tracks (optionally
+# linked to a D-014 vendor), not a bank-linked personal subscription feed. `status`
+# moves forward only: active -> cancelled (enforced by delta.subscriptions.service,
+# mirrors D-014's asset-lifecycle terminality guard).
+subscriptions = sa.Table(
+    "subscriptions",
+    metadata,
+    sa.Column("subscription_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("vendor_id", sa.String(64), nullable=True),
+    sa.Column("name", sa.String(256), nullable=False),
+    sa.Column("expected_amount_minor_units", sa.BigInteger, nullable=True),
+    sa.Column("currency", sa.String(3), nullable=True),
+    sa.Column("cadence", sa.String(16), nullable=False),
+    sa.Column("status", sa.String(16), nullable=False),
+    sa.Column("created_by", sa.String(128), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("cancelled_at", sa.DateTime(timezone=True), nullable=True),
+)
+
+# Append-only ledger of billing occurrences against a subscription (no UPDATE/DELETE
+# grant — mirrors D-018's `invoice_payments`/D-019's `sync_line_items`: a correction
+# is a new charge row, never an edit to history). This is what
+# `delta.chargeback.anomaly.detect_anomalies` (D-012, unmodified) is applied against
+# to flag an anomalous charge — see ADR-0022 Fork 2 for how a per-subscription
+# trailing baseline is computed from this table without an N+1 query per
+# subscription.
+subscription_charges = sa.Table(
+    "subscription_charges",
+    metadata,
+    sa.Column("charge_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("subscription_id", sa.String(64), nullable=False),
+    sa.Column("amount_minor_units", sa.BigInteger, nullable=False),
+    sa.Column("currency", sa.String(3), nullable=False),
+    sa.Column("charged_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("recorded_by", sa.String(128), nullable=False),
+    sa.Column("note", sa.String(1024), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )

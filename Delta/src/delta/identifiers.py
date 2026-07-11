@@ -79,6 +79,10 @@ PersonalAccountId = UuidStr
 PersonalTransactionId = UuidStr
 PersonalBudgetId = UuidStr
 
+# D-022 recurring-subscription registry + charge ledger.
+SubscriptionId = UuidStr
+SubscriptionChargeId = UuidStr
+
 # Internal Sentinel component slug (NOT the end-user model name).
 AgentId = Annotated[str, StringConstraints(pattern=_AGENT_ID_PATTERN, max_length=_ID_MAX_LENGTH)]
 
