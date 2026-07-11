@@ -699,3 +699,23 @@ micro_transaction_executions = sa.Table(
     sa.Column("requested_by", sa.String(128), nullable=False),
     sa.Column("executed_at", sa.DateTime(timezone=True), nullable=False),
 )
+
+# --- D-023 personal asset allocation + micro-investment recommendations (migration
+# 0017) --- One row per self-reported holding SNAPSHOT for one (account_id,
+# asset_class) pair on a D-021 `investment`-type account. INSERT-only, like every
+# insert-only table in this codebase since D-018/D-019's "simplest possible write
+# pattern" precedent — a holding value change is a NEW row, and the store reads the
+# latest row per (account_id, asset_class). No live market data/pricing feed exists
+# anywhere in this codebase, so a holding's value is exactly what the caller declares
+# it to be — see docs/adr/0023-delta-investment-allocation-recommendations.md.
+investment_holdings = sa.Table(
+    "investment_holdings",
+    metadata,
+    sa.Column("holding_id", sa.String(64), primary_key=True),
+    sa.Column("tenant_id", sa.String(64), nullable=False),
+    sa.Column("account_id", sa.String(64), nullable=False),
+    sa.Column("asset_class", sa.String(24), nullable=False),
+    sa.Column("value_minor_units", sa.BigInteger, nullable=False),
+    sa.Column("currency", sa.String(3), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
