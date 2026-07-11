@@ -1,11 +1,64 @@
 # Follow-up: Sentinel needs a real policy-intake HTTP endpoint for X-003
 
-**Status:** OPEN — blocked on `contracts/` access (api-architect only) AND a
-security-relevant reversal of an explicit prior decision (ADR-0009 §11, R1).
+**Status:** DESIGNED — the contract change and its reconciling ADR are fully
+authored and staged; blocked only on (1) a one-line launch-env fix so the
+api-architect agent can write `contracts/`, and (2) human security sign-off on
+the ADR-0009 §11 reversal. See "Update — design complete" below.
 **Severity:** None yet (no live vulnerability — the gap is that the loop
 cannot close at all today, not that it closes insecurely).
-**Owner:** api-architect (contracts/openapi.yaml) + human sign-off (this
-reverses a deliberate attack-surface-reduction call, not an oversight).
+**Owner:** conductor/human (launch-env fix + sign-off), then api-architect
+(apply the staged `contracts/openapi.yaml` additions), then a builder (route +
+non-stubbed e2e).
+
+---
+
+## Update — design complete, blocked only on env + sign-off (2026-07-11)
+
+The design work for this endpoint is now DONE and version-controlled; nothing
+about the API shape or the security reasoning is still open. What exists:
+
+- **`docs/adr/0042-policy-intake-http-endpoint.md`** — the ADR that reverses
+  ADR-0009 §11 R1 for `intake_policy()` only, with the full threat model
+  (admin-bearer-only ingress; the route adds *ingress, not trust* because the
+  fail-closed pipeline still verifies schema/signature/scope/content-hash/replay
+  on every record). Status: **Proposed — requires human security sign-off.**
+- **`docs/followups/x-003-openapi-additions.yaml`** — the EXACT, verified
+  additions to `contracts/openapi.yaml`: `POST /admin/policies/intake`
+  (`operationId: adminIntakePolicy`, `security: adminAuth`), the
+  `SignedPolicyRecord` + `AdminPolicyIntakeAccepted` schemas, the
+  `PolicyIntake*` responses, and the four new `Error` enum entries. Four
+  insertions, each keyed to a unique existing anchor in the file.
+
+### The remaining blocker is infrastructural, not design
+
+The api-architect agent is the only identity allowed to write `contracts/`
+(enforced by `.claude/hooks/protect-paths-and-secrets.sh`). That hook
+authenticates the agent via the `ANORYX_ACTIVE_AGENT` env var — which the
+current launch environment leaves **unset**, so the hook falls back to the
+agent's opaque session id and blocks the write. This is the same
+`ANORYX_ACTIVE_AGENT` propagation gap that has kept every new HTTP surface this
+phase CLI-only. It was NOT worked around: the agent did not edit/weaken the
+hook, spoof an identity, or alter `.claude/` config to defeat a control it is
+meant to steward.
+
+**One-line fix (conductor/human):** launch the api-architect agent with
+`ANORYX_ACTIVE_AGENT=api-architect` in its environment. Then applying
+`x-003-openapi-additions.yaml` to `contracts/openapi.yaml` is mechanical and the
+`policy-schema-guard` CI check will validate it.
+
+### Then it is a normal builder task
+
+Once the endpoint is in the contract (and the ADR-0009 reversal is signed off),
+building the route is straightforward and is NOT contract-gated — but MUST come
+*after* the contract, per CLAUDE.md non-negotiable #1 ("NEVER invent
+endpoints"). The route is a thin wrapper (see "Proposed shape" below): mount
+`POST /admin/policies/intake` under the existing `require_admin` admin router,
+call `intake_policy(record)` directly, and map its `IntakeResult` to the exact
+statuses ADR-0042 §2.1 specifies (Accepted→200, RejectedSchema→422,
+RejectedSignature→403, RejectedScopeMismatch→409, RejectedReplay→409). Then
+replace the in-test accepting shims in Orchestrator's `test_o004_e2e.py` /
+`test_distribution_e2e.py` with the real route for the non-stubbed three-hop
+e2e proof.
 
 ## What X-003 needs
 

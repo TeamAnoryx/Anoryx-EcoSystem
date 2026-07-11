@@ -764,7 +764,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] R-025 Premium features + monetization (B2C) 🏦 ✅ (shipped PR #124, scoped to a deterministic, fail-closed feature-entitlement seam — two-tier gate model + two compositions over R-022/R-024's already-public limits; no payment processing, no Delta ledger wiring — that remains X-005, see ADR-0025)
 - [x] R-026 Creator economy features 🏦 ✅ (shipped PR #127, scoped to a deterministic, tier-gated revenue-share allocation seam over R-025's PremiumEntitlement — no payment collection/payout, no follower/content persistence, no Delta wiring; see ADR-0026)
 - [x] R-027 B2B tenant + RBAC 🏦 ✅ (shipped PR #133, scoped to a fixed OrgRole -> PlatformPermission resolution seam over the existing Tenant/Profile types — no tenant-definable custom roles, no persistence, no REST/UI, no B2B onboarding; see ADR-0027)
-- [ ] R-028 Intent-driven talent routing + skills inventory 🏦
+- [x] R-028 Intent-driven talent routing + skills inventory 🏦 ✅ (shipped PR #135, scoped to a permission-gated, intra-tenant composition seam over R-016's IntentProfile.offering + R-021's opportunity scorer + R-027's PlatformPermission — no persisted skills catalog, no job-board workflow, no new permission, no persistence, no REST/UI; see ADR-0028)
 - [ ] R-029 Project/sprint workspaces + B2B analytics 🏦
 - [ ] R-030 Public embedding API + developer portal 🏦
 
@@ -772,7 +772,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 
 - [x] X-001 Sentinel ↔ Orchestrator wiring — Easy-Tricky (6-10h) (shipped PR #91)
 - [x] X-002 Orchestrator ↔ Delta wiring — Easy-Tricky (6-10h) (shipped PR #97)
-- [ ] X-003 Budget enforcement loop (killer feature) — Tricky (10-14h) — BLOCKED: closing the loop needs a new Sentinel `POST /admin/policies/intake` endpoint (`contracts/openapi.yaml`, api-architect-only) that also reconciles ADR-0009 §11's "no HTTP intake" decision (R1); draft PR #98 opened for human/api-architect review, see `Anoryx-Sentinel/docs/followups/x-003-policy-intake-http-endpoint.md`
+- [ ] X-003 Budget enforcement loop (killer feature) — Tricky (10-14h) — DESIGNED, blocked on env-fix + human sign-off: the `POST /admin/policies/intake` endpoint is fully authored — ADR-0042 (reverses ADR-0009 §11 R1, with threat model, status Proposed) + the exact staged `contracts/openapi.yaml` additions (`Anoryx-Sentinel/docs/followups/x-003-openapi-additions.yaml`). Two remaining blockers, both human: (1) launch the api-architect agent with `ANORYX_ACTIVE_AGENT=api-architect` so the hook lets it write `contracts/` (the propagation gap that kept all HTTP surfaces CLI-only), (2) security sign-off on the ADR-0009 reversal. Then route + non-stubbed 3-hop e2e is a normal builder task. See `Anoryx-Sentinel/docs/followups/x-003-policy-intake-http-endpoint.md`
 - [x] X-004 Rendly ↔ Sentinel safety — Easy-Tricky 🔮 ✅ (scoped to a bounded metadata-only oversight-visibility seam Rendly → Orchestrator — NOT a direct Rendly-Sentinel wire, NOT a detector integration; R-008's data-sovereignty decision is unchanged — see Rendly ADR-0026, Orchestrator ADR-0017)
 - [ ] X-005 Rendly ↔ Delta monetization — Tricky 🏦
 - [ ] X-006 End-to-end ecosystem demo — Tricky 🔮
