@@ -673,7 +673,7 @@ After this, Sentinel is genuinely demoable + deployable. **Natural moment for de
 - [x] F-019 Custom model + fine-tune approval policies
 - [x] F-020 Integration suite (Slack/Jira/Splunk)
 - [x] F-021 Advanced governance UI
-- [x] F-022 Multi-region deployment — merged #49; reconciled + independently audited (PR #50): allowlist-enforced residency scope, call-site-gated byte-identical render, fail-hard replication bootstrap, least-privilege secret, verify-full TLS. ⚠️ 1 High open (passive read-only NOT enforced — docs/audit/f-022-security-audit.md, docs/followups/f-022-passive-readonly-enforcement.md) → human remediation required before operating a serving passive region.
+- [x] F-022 Multi-region deployment — merged #49; reconciled + independently audited (PR #50): allowlist-enforced residency scope, call-site-gated byte-identical render, fail-hard replication bootstrap, least-privilege secret, verify-full TLS. ✅ Audit H1 (passive read-only NOT enforced) REMEDIATED: app-tier fail-closed PassiveRegionGuardMiddleware reads SENTINEL_REGION_ROLE and 503s all governed traffic on a passive region before any audit write (cannot fork the hash chain) — proven by a real-DB row-count test + gateway guard tests; ADR-0028 D2 amended (passive serves NO governed traffic incl. reads until a global sequencer lands). See docs/adr/0028 + docs/followups/f-022-passive-readonly-enforcement.md (only lower-priority L2 identifier-hardening remains open).
 - [x] F-023 Performance hardening 🔮 (shipped PR #52)
 - [x] F-024 Disaster recovery 🔮 (shipped PR #59)
 - [x] F-025 Self-serve onboarding 🔮 (shipped PR #63 — operator CLI, scoped down from public signup; team/project admin API deferred, see docs/followups/f-025-team-project-admin-api.md)
