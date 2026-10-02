@@ -35,8 +35,10 @@ things at once:
 The event hook ``_inject_sni`` is registered on the client as a
 ``request`` hook so it fires on EVERY request the client makes, making it
 impossible for a caller to forget it.  ``request.extensions`` is a plain dict;
-setting ``sni_hostname`` to the *bytes*-encoded original hostname before the
-request is sent is all that is required.
+setting ``sni_hostname`` to the IDNA-encoded original hostname (an ASCII
+``str`` — httpcore passes it straight to the TLS layer as ``server_hostname``,
+and anyio >= 4.12 rejects ``bytes`` there) before the request is sent is all
+that is required.
 
 The caller (dispatcher worker) is responsible for calling url_guard.check_url()
 BEFORE constructing a client and MUST use the pinned_ip returned by the guard.
@@ -93,21 +95,23 @@ async def guarded_http_client(
     settings = get_webhook_settings()
     timeout = httpx.Timeout(settings.webhook_http_timeout_seconds)
 
-    # Encode hostname once — sni_hostname extension requires bytes.
-    sni_hostname_bytes: bytes = hostname.encode("idna")
+    # Encode hostname once — IDNA/punycode, as an ASCII str. httpcore hands the
+    # extension to the TLS layer as server_hostname; anyio's TLSStream calls
+    # .encode() on it, so bytes raise AttributeError and every send fails.
+    sni_hostname: str = hostname.encode("idna").decode("ascii")
 
     async def _inject_sni(request: httpx.Request) -> None:
         """Event hook: inject sni_hostname into every request before it is sent.
 
         httpx 0.24+ exposes request.extensions as a mutable dict.  Setting
-        ``sni_hostname`` (bytes) causes the underlying SSL layer to use that
+        ``sni_hostname`` (ASCII str) causes the underlying SSL layer to use that
         value as both the TLS SNI server_name AND the certificate verification
         hostname, overriding the URL host (which is the raw pinned IP).
 
         Registering this as a ``request`` event hook means it fires on every
         request the client makes — callers cannot omit it by accident.
         """
-        request.extensions["sni_hostname"] = sni_hostname_bytes
+        request.extensions["sni_hostname"] = sni_hostname
 
     # Base URL points to the pinned IP — all TCP connections go here directly,
     # defeating DNS-rebind at the connect layer (§7 hardening point 2).
