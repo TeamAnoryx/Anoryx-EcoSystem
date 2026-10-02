@@ -136,7 +136,10 @@ async def set_cached_decision(
     except _REDIS_ERRORS:
         return
     try:
-        await client.set(_decision_key(scope, model_id, version), _encode(decision), ex=ttl_seconds)
+        # redis-py rejects a float `ex` (DataError, outside _REDIS_ERRORS), and the
+        # setting is a float — pass integer milliseconds so sub-second TTLs survive.
+        ttl_ms = max(int(ttl_seconds * 1000), 1)
+        await client.set(_decision_key(scope, model_id, version), _encode(decision), px=ttl_ms)
     except _REDIS_ERRORS as exc:
         log.warning("policy_eval_cache_write_error", redis_error_class=type(exc).__name__)
     finally:
