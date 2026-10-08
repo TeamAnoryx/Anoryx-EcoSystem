@@ -16,7 +16,7 @@ Fix 1 — SNI regression guard (http_client.py _inject_sni event hook):
   tests guard against a regression back to sync.
 
   The offline unit tests below (test_sni_hook_*) verify the STRUCTURAL invariants
-  (hook registered, sni_hostname bytes correct, IDN encoding, non-default port)
+  (hook registered, sni_hostname value correct, IDN encoding, non-default port)
   and also contain a smoke test that EXPOSES THE BUG by attempting a mock request
   through the full client + hook dispatch path.
 
@@ -152,7 +152,7 @@ class TestSniHookStructural:
 
     @pytest.mark.asyncio
     async def test_sni_hook_sets_hostname_bytes_on_request(self, monkeypatch):
-        """The registered hook sets request.extensions['sni_hostname'] to IDNA bytes.
+        """The registered hook sets request.extensions['sni_hostname'] to the IDNA ASCII str.
 
         This is the primary regression guard: if someone removes the event hook or
         stops setting sni_hostname, this test fails.
@@ -167,7 +167,7 @@ class TestSniHookStructural:
         )
 
         hostname = "hooks.slack.com"
-        expected_sni = b"hooks.slack.com"
+        expected_sni = "hooks.slack.com"
 
         async with guarded_http_client(
             pinned_ip=_PUBLIC_IP,
@@ -251,7 +251,7 @@ class TestSniHookStructural:
 
         hostname = "splunk.example.com"
         port = 8088
-        expected_sni = b"splunk.example.com"
+        expected_sni = "splunk.example.com"
 
         async with guarded_http_client(
             pinned_ip=_PUBLIC_IP,
@@ -275,7 +275,7 @@ class TestSniHookStructural:
 
     @pytest.mark.asyncio
     async def test_sni_hook_idna_encodes_punycode_hostname(self, monkeypatch):
-        """Pre-encoded IDNA (punycode) hostname is preserved correctly in sni_hostname bytes.
+        """Pre-encoded IDNA (punycode) hostname is preserved correctly in the sni_hostname value.
 
         In practice callers pass the hostname as resolved from url_guard, which
         returns the hostname string from urlparse (ASCII/punycode form for IDN labels).
@@ -300,7 +300,7 @@ class TestSniHookStructural:
 
         # Real production path: url_guard returns the ASCII hostname (punycode already).
         punycode_hostname = "xn--bcher-kva.example.com"
-        expected_sni = b"xn--bcher-kva.example.com"
+        expected_sni = "xn--bcher-kva.example.com"
 
         async with guarded_http_client(
             pinned_ip=_PUBLIC_IP,
@@ -330,13 +330,13 @@ class TestSniHookStructural:
         non-ASCII domain labels (the hook body uses this encoding).
         """
         cases = [
-            ("hooks.slack.com", b"hooks.slack.com"),
-            ("mycompany.atlassian.net", b"mycompany.atlassian.net"),
-            ("xn--bcher-kva.example.com", b"xn--bcher-kva.example.com"),
+            ("hooks.slack.com", "hooks.slack.com"),
+            ("mycompany.atlassian.net", "mycompany.atlassian.net"),
+            ("xn--bcher-kva.example.com", "xn--bcher-kva.example.com"),
             # The production path always passes punycode (ASCII) form from urlparse.
         ]
         for hostname, expected in cases:
-            got = hostname.encode("idna")
+            got = hostname.encode("idna").decode("ascii")
             assert (
                 got == expected
             ), f"hostname.encode('idna') for {hostname!r}: expected {expected!r}, got {got!r}"
@@ -354,7 +354,7 @@ class TestSniHookStructural:
         )
 
         hostname = "hooks.slack.com"
-        expected_sni = b"hooks.slack.com"
+        expected_sni = "hooks.slack.com"
 
         async with guarded_http_client(
             pinned_ip=_PUBLIC_IP,
@@ -496,7 +496,7 @@ class TestRealTlsHandshakeProof:
     COVERAGE SCOPE:
       The positive case proves:
         - An httpx.AsyncClient wired with a 'request' event hook that sets
-          sni_hostname=b"webhook-sink.test" (mirroring _inject_sni) can:
+          sni_hostname="webhook-sink.test" (mirroring _inject_sni) can:
           (a) Connect a TCP socket to 127.0.0.1:{port} (pinned IP)
           (b) Complete a TLS handshake where the server sees SNI="webhook-sink.test"
           (c) Validate the server cert (SAN=DNS:webhook-sink.test) against the
@@ -618,7 +618,7 @@ class TestRealTlsHandshakeProof:
 
         What this proves:
           - TCP connects to 127.0.0.1:{port} (pinned IP, not the hostname).
-          - sni_hostname=b"webhook-sink.test" in request.extensions causes httpx/httpcore
+          - sni_hostname="webhook-sink.test" in request.extensions causes httpx/httpcore
             to pass server_hostname="webhook-sink.test" to the TLS layer.
           - The client verifies the server cert's SAN against "webhook-sink.test"
             (not against "127.0.0.1" — the IP literal in the URL).
@@ -669,7 +669,7 @@ class TestRealTlsHandshakeProof:
             client_ctx = ssl.create_default_context()
             client_ctx.load_verify_locations(ca_path)
 
-            sni_bytes = self.TEST_HOSTNAME.encode("idna")
+            sni_bytes = self.TEST_HOSTNAME.encode("idna").decode("ascii")
 
             # Use an ASYNC hook (the correct implementation; mirroring the bug fix).
             async def _inject_sni_async(request: httpx.Request) -> None:
@@ -747,7 +747,7 @@ class TestRealTlsHandshakeProof:
             client_ctx = ssl.create_default_context()
             client_ctx.load_verify_locations(ca_path)
 
-            sni_bytes = self.TEST_HOSTNAME.encode("idna")  # webhook-sink.test
+            sni_bytes = self.TEST_HOSTNAME.encode("idna").decode("ascii")  # webhook-sink.test
 
             async def _inject_sni_async(request: httpx.Request) -> None:
                 request.extensions["sni_hostname"] = sni_bytes

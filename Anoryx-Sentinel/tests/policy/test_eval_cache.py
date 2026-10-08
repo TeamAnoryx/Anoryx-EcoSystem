@@ -27,7 +27,11 @@ class _FakeRedis:
     async def get(self, key: str):
         return self.store.get(key)
 
-    async def set(self, key: str, value: str, ex=None):
+    async def set(self, key: str, value: str, ex=None, px=None):
+        # Mirror redis-py: expiry args must be int (or timedelta), never float.
+        for arg in (ex, px):
+            if arg is not None and not isinstance(arg, int):
+                raise TypeError("expiry must be int")
         self.store[key] = value
 
     async def incr(self, key: str) -> int:
@@ -155,7 +159,7 @@ async def test_connection_error_on_read_is_a_miss_not_a_raise():
 @pytest.mark.asyncio
 async def test_write_error_is_swallowed_not_raised():
     class _FailingRedis(_FakeRedis):
-        async def set(self, key, value, ex=None):
+        async def set(self, key, value, ex=None, px=None):
             raise RedisConnectionError("down")
 
     with (
